@@ -67,8 +67,10 @@ export interface EventMap {
   fpsUpdate: {
     /** Current FPS. */
     fps: number;
-    /** Current live cell count. */
+    /** Total live cells (Life + LifeVariant combined). */
     liveCells: number;
+    /** Number of LifeVariant (Variant B) cells currently alive. */
+    variantCells: number;
   };
 }
 
