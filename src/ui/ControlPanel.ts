@@ -1,18 +1,21 @@
 /**
  * @fileoverview Control Panel sidebar component for the What Simulator.
  *
- * Renders the left sidebar with all life-parameter sliders and wires them to
- * AppState.  Phase 1 includes the core life parameters.  Obstacle parameters
- * are scaffolded (commented) so Phase 2 can enable them with minimal diff.
+ * Renders the left sidebar with life-parameter sliders, drawing tools, and
+ * viewport controls.  Wired to AppState so all changes take effect on the
+ * next simulation tick.
  *
  * Each slider is a labeled row:
  *   [Label]  [range input]  [live value readout]
+ *
+ * Phase 2 additions:
+ *   - Drawing Tools section: brush type selector + brush size slider.
  *
  * Slider changes call `appState.updateConfig(key, value)` which fires the
  * `configChange` event consumed by the simulation engine on the next tick.
  */
 
-import { appState } from '../state/AppState.js';
+import { appState, type DrawingTool } from '../state/AppState.js';
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
 import { Presets } from '../simulation/config/SimulationConfig.js';
 
@@ -35,6 +38,54 @@ interface SliderSpec {
   /** Tooltip / description shown on hover. */
   title: string;
 }
+
+// ---------------------------------------------------------------------------
+// Drawing tool definitions (Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes one brush tool button in the Drawing Tools section.
+ * `color` is a CSS color string used for the small swatch indicator.
+ */
+interface ToolDef {
+  /** DrawingTool value stored in AppState. */
+  tool: DrawingTool;
+  /** Human-readable label. */
+  label: string;
+  /** Swatch color displayed on the button. */
+  color: string;
+  /** Tooltip description. */
+  title: string;
+}
+
+/** Phase 2 brush tool definitions. */
+const TOOL_DEFS: readonly ToolDef[] = [
+  {
+    tool: 'life',     label: 'Life',
+    color: '#00ff88',
+    title: 'Paint life cells that spread and expand.',
+  },
+  {
+    tool: 'wall',     label: 'Wall',
+    color: '#3a3a3a',
+    title: 'Impassable barrier — life cannot spread through walls.',
+  },
+  {
+    tool: 'toxin',    label: 'Toxin',
+    color: '#cc00ff',
+    title: 'Damages adjacent life cells each tick; life entering a toxin cell loses energy.',
+  },
+  {
+    tool: 'nutrient', label: 'Nutrient',
+    color: '#00cc44',
+    title: 'Boosts adjacent life energy each tick; depletes over time.',
+  },
+  {
+    tool: 'erase',    label: 'Erase',
+    color: '#555577',
+    title: 'Remove cells (right-click on canvas also erases).',
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Slider spec definitions
@@ -109,6 +160,12 @@ export class ControlPanel {
   private readonly _inputs = new Map<keyof SimulationConfig, HTMLInputElement>();
 
   /**
+   * Map from ToolDef.tool → the button element, so the active-state CSS class
+   * can be updated when `appState.activeTool` changes.
+   */
+  private readonly _toolButtons = new Map<DrawingTool, HTMLButtonElement>();
+
+  /**
    * Builds and inserts the control panel DOM into `container`.
    *
    * @param container - The element to append the panel into.
@@ -120,6 +177,9 @@ export class ControlPanel {
 
     // --- Presets section ---------------------------------------------------
     panel.append(this._buildPresetsSection());
+
+    // --- Drawing Tools section (Phase 2) ----------------------------------
+    panel.append(this._buildDrawingToolsSection());
 
     // --- Life parameters section -------------------------------------------
     panel.append(this._buildSection('Life Parameters', LIFE_SLIDERS));
@@ -136,6 +196,102 @@ export class ControlPanel {
   // -------------------------------------------------------------------------
   // Section builders
   // -------------------------------------------------------------------------
+
+  /**
+   * Builds the Drawing Tools section (Phase 2).
+   *
+   * Contains a row of brush-type buttons (one per {@link ToolDef}) and a
+   * brush-size slider.  Clicking a button updates `appState.activeTool` and
+   * highlights the active button with the `active` CSS class.
+   *
+   * @returns The built section element.
+   */
+  private _buildDrawingToolsSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'panel-section';
+
+    const heading = document.createElement('h2');
+    heading.className   = 'panel-heading';
+    heading.textContent = 'Drawing Tools';
+    section.append(heading);
+
+    // --- Brush type selector — a grid of tool buttons --------------------
+    const btnGroup = document.createElement('div');
+    btnGroup.className = 'tool-btn-group';
+    btnGroup.setAttribute('role', 'radiogroup');
+    btnGroup.setAttribute('aria-label', 'Select drawing brush');
+
+    for (const def of TOOL_DEFS) {
+      const btn = document.createElement('button');
+      btn.type      = 'button';
+      btn.className = 'tool-btn';
+      btn.title     = def.title;
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', String(appState.activeTool === def.tool));
+
+      // Colour swatch dot + label text.
+      const swatch = document.createElement('span');
+      swatch.className          = 'tool-btn-swatch';
+      swatch.style.backgroundColor = def.color;
+      swatch.setAttribute('aria-hidden', 'true');
+
+      btn.append(swatch, def.label);
+
+      if (appState.activeTool === def.tool) {
+        btn.classList.add('active');
+      }
+
+      btn.addEventListener('click', () => {
+        appState.activeTool = def.tool;
+        // Update all button states.
+        for (const [tool, b] of this._toolButtons) {
+          const isActive = tool === def.tool;
+          b.classList.toggle('active', isActive);
+          b.setAttribute('aria-checked', String(isActive));
+        }
+      });
+
+      this._toolButtons.set(def.tool, btn);
+      btnGroup.append(btn);
+    }
+
+    section.append(btnGroup);
+
+    // --- Brush size slider -----------------------------------------------
+    const sizeRow = document.createElement('div');
+    sizeRow.className = 'slider-row';
+    sizeRow.title     = 'Brush radius in cells. Size 1 = single cell.';
+
+    const sizeLabel = document.createElement('label');
+    sizeLabel.htmlFor     = 'brush-size-slider';
+    sizeLabel.textContent = 'Brush Size';
+    sizeLabel.className   = 'slider-label';
+
+    const sizeInput = document.createElement('input');
+    sizeInput.type      = 'range';
+    sizeInput.id        = 'brush-size-slider';
+    sizeInput.min       = '1';
+    sizeInput.max       = '20';
+    sizeInput.step      = '1';
+    sizeInput.value     = String(appState.brushSize);
+    sizeInput.className = 'slider';
+    sizeInput.setAttribute('aria-label', 'Brush size');
+
+    const sizeReadout = document.createElement('span');
+    sizeReadout.className   = 'slider-value';
+    sizeReadout.textContent = String(appState.brushSize);
+
+    sizeInput.addEventListener('input', () => {
+      const v = Number(sizeInput.value);
+      appState.brushSize          = v;
+      sizeReadout.textContent     = String(v);
+    });
+
+    sizeRow.append(sizeLabel, sizeInput, sizeReadout);
+    section.append(sizeRow);
+
+    return section;
+  }
 
   /**
    * Builds a collapsible section containing a set of sliders.
