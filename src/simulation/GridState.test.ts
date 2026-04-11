@@ -1,0 +1,230 @@
+/**
+ * @fileoverview Unit tests for GridState.
+ *
+ * Tests cover:
+ *   - Buffer allocation and dimensions.
+ *   - seed() randomness and density.
+ *   - clear() zeroing all buffers.
+ *   - copyFrontToBack() faithfulness.
+ *   - swap() pointer swap.
+ *   - paintCell() bounds checking and value writes.
+ *   - countCells() correctness.
+ *
+ * @vitest-environment node
+ */
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { GridState, CellType } from './GridState.js';
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const W = 8;
+const H = 8;
+let grid: GridState;
+
+beforeEach(() => {
+  grid = new GridState(W, H);
+});
+
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
+describe('GridState — construction', () => {
+  it('reports correct dimensions', () => {
+    expect(grid.width).toBe(W);
+    expect(grid.height).toBe(H);
+    expect(grid.totalCells).toBe(W * H);
+  });
+
+  it('allocates front and back buffers of the correct length', () => {
+    expect(grid.front.cellType.length).toBe(W * H);
+    expect(grid.front.energy.length).toBe(W * H);
+    expect(grid.front.age.length).toBe(W * H);
+    expect(grid.front.flags.length).toBe(W * H);
+
+    expect(grid.back.cellType.length).toBe(W * H);
+  });
+
+  it('starts with all cells zeroed (Empty)', () => {
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.front.cellType[i]).toBe(CellType.Empty);
+      expect(grid.front.energy[i]).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// seed()
+// ---------------------------------------------------------------------------
+
+describe('GridState — seed()', () => {
+  it('seeds with density 0 → all empty', () => {
+    grid.seed(0);
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.front.cellType[i]).toBe(CellType.Empty);
+    }
+  });
+
+  it('seeds with density 1 → all life', () => {
+    grid.seed(1.0, 0.8);
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.front.cellType[i]).toBe(CellType.Life);
+      expect(grid.front.energy[i]).toBeCloseTo(0.8);
+    }
+  });
+
+  it('seeds with density 0.5 → roughly half the cells are Life', () => {
+    // Use a large grid for statistical stability.
+    const bigGrid = new GridState(100, 100);
+    bigGrid.seed(0.5);
+    let lifeCount = 0;
+    for (let i = 0; i < bigGrid.totalCells; i++) {
+      if (bigGrid.front.cellType[i] === CellType.Life) lifeCount++;
+    }
+    // Allow ±15% from the expected 50%.
+    expect(lifeCount).toBeGreaterThan(bigGrid.totalCells * 0.35);
+    expect(lifeCount).toBeLessThan(bigGrid.totalCells * 0.65);
+  });
+
+  it('resets age and flags to 0', () => {
+    // Manually dirty age and flags.
+    grid.front.age[0]   = 999;
+    grid.front.flags[0] = 0xff;
+
+    grid.seed(1.0);
+
+    expect(grid.front.age[0]).toBe(0);
+    expect(grid.front.flags[0]).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clear()
+// ---------------------------------------------------------------------------
+
+describe('GridState — clear()', () => {
+  it('zeros all values in both front and back buffers', () => {
+    grid.seed(1.0, 1.0);
+
+    // Dirty the back buffer too.
+    grid.back.cellType[0] = CellType.Wall;
+    grid.back.energy[0]   = 0.5;
+
+    grid.clear();
+
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.front.cellType[i]).toBe(0);
+      expect(grid.front.energy[i]).toBe(0);
+      expect(grid.back.cellType[i]).toBe(0);
+      expect(grid.back.energy[i]).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// copyFrontToBack()
+// ---------------------------------------------------------------------------
+
+describe('GridState — copyFrontToBack()', () => {
+  it('makes back an exact copy of front', () => {
+    grid.seed(0.7, 0.6);
+
+    // Manually differ the back buffer.
+    grid.back.cellType[0] = CellType.Wall;
+
+    grid.copyFrontToBack();
+
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.back.cellType[i]).toBe(grid.front.cellType[i]);
+      expect(grid.back.energy[i]).toBeCloseTo(grid.front.energy[i]);
+      expect(grid.back.age[i]).toBe(grid.front.age[i]);
+      expect(grid.back.flags[i]).toBe(grid.front.flags[i]);
+    }
+  });
+
+  it('produces independent copies (mutation of back does not affect front)', () => {
+    grid.seed(1.0, 0.5);
+    grid.copyFrontToBack();
+
+    // Mutate back.
+    grid.back.cellType[3] = CellType.Wall;
+    grid.back.energy[3]   = 0.0;
+
+    // Front should be unchanged.
+    expect(grid.front.cellType[3]).toBe(CellType.Life);
+    expect(grid.front.energy[3]).toBeCloseTo(0.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swap()
+// ---------------------------------------------------------------------------
+
+describe('GridState — swap()', () => {
+  it('swaps front and back references', () => {
+    grid.seed(1.0);
+    const originalFront = grid.front;
+    const originalBack  = grid.back;
+
+    grid.swap();
+
+    expect(grid.front).toBe(originalBack);
+    expect(grid.back).toBe(originalFront);
+  });
+
+  it('double-swap returns to original references', () => {
+    const originalFront = grid.front;
+    grid.swap();
+    grid.swap();
+    expect(grid.front).toBe(originalFront);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// paintCell()
+// ---------------------------------------------------------------------------
+
+describe('GridState — paintCell()', () => {
+  it('writes the correct type and energy', () => {
+    grid.paintCell(5, CellType.Life, 0.75);
+    expect(grid.front.cellType[5]).toBe(CellType.Life);
+    expect(grid.front.energy[5]).toBeCloseTo(0.75);
+    expect(grid.front.age[5]).toBe(0);
+    expect(grid.front.flags[5]).toBe(0);
+  });
+
+  it('sets energy to 0 for non-life types', () => {
+    grid.paintCell(2, CellType.Wall);
+    expect(grid.front.energy[2]).toBe(0);
+  });
+
+  it('ignores out-of-bounds indices silently', () => {
+    expect(() => grid.paintCell(-1, CellType.Life)).not.toThrow();
+    expect(() => grid.paintCell(grid.totalCells + 10, CellType.Life)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countCells()
+// ---------------------------------------------------------------------------
+
+describe('GridState — countCells()', () => {
+  it('returns 0 on a freshly constructed grid', () => {
+    expect(grid.countCells(CellType.Life)).toBe(0);
+  });
+
+  it('counts correctly after seeding with density 1', () => {
+    grid.seed(1.0);
+    expect(grid.countCells(CellType.Life)).toBe(grid.totalCells);
+    expect(grid.countCells(CellType.Empty)).toBe(0);
+  });
+
+  it('counts a single painted cell', () => {
+    grid.paintCell(0, CellType.Wall);
+    expect(grid.countCells(CellType.Wall)).toBe(1);
+    expect(grid.countCells(CellType.Life)).toBe(0);
+  });
+});
