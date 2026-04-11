@@ -27,6 +27,11 @@ import { bus } from './state/EventBus.js';
 import { FpsCounter, TickCounter } from './utils/performance.js';
 
 // ---------------------------------------------------------------------------
+// Module-level zeroed TickStats used before the first tick runs.
+// ---------------------------------------------------------------------------
+const ZERO_STATS: TickStats = { liveCells: 0, variantCells: 0, births: 0, deaths: 0 };
+
+// ---------------------------------------------------------------------------
 // App class
 // ---------------------------------------------------------------------------
 
@@ -70,6 +75,13 @@ export class App {
   private readonly _tickCounter = new TickCounter();
 
   /**
+   * Most recently completed tick's statistics.
+   * Initialised to zero; updated by the tick loop.
+   * Used by the render loop to emit `fpsUpdate` without scanning the grid.
+   */
+  private _lastStats: TickStats = { ...ZERO_STATS };
+
+  /**
    * @param canvas - The `<canvas>` element to render into.
    */
   constructor(canvas: HTMLCanvasElement) {
@@ -84,8 +96,8 @@ export class App {
     // Create renderer pointed at the canvas.
     this._renderer = new Renderer(canvas, { cellSize: appState.cellSize });
 
-    // Seed the initial grid.
-    this._grid.seed(0.3, appState.config.initialEnergy);
+    // Seed the initial grid using the configured density.
+    this._grid.seed(appState.initialDensity, appState.config.initialEnergy);
 
     // Wire up EventBus → local handlers.
     this._subscribeToEvents();
@@ -178,6 +190,9 @@ export class App {
       appState.config,
     );
 
+    // Cache stats so the render loop can emit fpsUpdate without a grid scan.
+    this._lastStats = stats;
+
     this._grid.swap();
 
     const tick = this._tickCounter.advance();
@@ -205,10 +220,12 @@ export class App {
       this._renderer.render(this._grid.front, appState.gridWidth, appState.gridHeight);
 
       // Emit FPS update at ~4 Hz to avoid flooding the status bar.
+      // Use cached _lastStats so we don't scan the full grid every emission.
       if (this._tickCounter.current % 15 === 0 || this._tickCounter.current < 2) {
         bus.emit('fpsUpdate', {
-          fps:       this._fpsCounter.fps,
-          liveCells: this._grid.countCells(1), // CellType.Life = 1
+          fps:          this._fpsCounter.fps,
+          liveCells:    this._lastStats.liveCells + this._lastStats.variantCells,
+          variantCells: this._lastStats.variantCells,
         });
       }
 
@@ -248,7 +265,8 @@ export class App {
       this._stopTickLoop();
       appState.running = false;
       this._grid.clear();
-      this._grid.seed(0.3, appState.config.initialEnergy);
+      this._grid.seed(appState.initialDensity, appState.config.initialEnergy);
+      this._lastStats = { ...ZERO_STATS };
       this._renderer.invalidate();
       this._tickCounter.reset();
     });

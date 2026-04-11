@@ -72,19 +72,28 @@ function bootstrap(): void {
   // --- Status bar updates ---------------------------------------------------
 
   if (statusBar) {
-    let currentTick = 0;
-    let currentFps  = 0;
-    let currentLive = 0;
+    let currentTick    = 0;
+    let currentFps     = 0;
+    let currentLive    = 0;
+    let currentVariant = 0;
 
     bus.on('tick', ({ tick }) => {
       currentTick = tick;
     });
 
-    bus.on('fpsUpdate', ({ fps, liveCells }) => {
-      currentFps  = Math.round(fps);
-      currentLive = liveCells;
+    bus.on('fpsUpdate', ({ fps, liveCells, variantCells }) => {
+      currentFps     = Math.round(fps);
+      currentLive    = liveCells;
+      currentVariant = variantCells;
+
+      // Show variant count only when variants actually exist, to avoid
+      // cluttering the status bar during normal (no-mutation) runs.
+      const variantInfo = currentVariant > 0
+        ? `  |  Variant B: ${currentVariant.toLocaleString()}`
+        : '';
+
       statusBar.textContent =
-        `Tick: ${currentTick}  |  FPS: ${currentFps}  |  Live cells: ${currentLive.toLocaleString()}`;
+        `Tick: ${currentTick}  |  FPS: ${currentFps}  |  Live: ${currentLive.toLocaleString()}${variantInfo}`;
     });
   }
 }
