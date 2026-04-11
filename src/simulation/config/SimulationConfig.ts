@@ -85,6 +85,41 @@ export interface SimulationConfig {
    */
   underpopulationLimit: number;
 
+  // --- Life Variant B parameters (Phase 3) --------------------------------
+
+  /**
+   * Spread probability [0, 1] used by LifeVariant cells instead of
+   * `spreadRate`.  Allows Variant B to evolve a different expansion speed.
+   */
+  variantSpreadRate: number;
+
+  /**
+   * Energy lost per tick for LifeVariant cells.
+   * Independent of `energyDecayRate` so variants can have a different
+   * metabolic cost to regular Life.
+   * Range: [0, 1].
+   */
+  variantEnergyDecayRate: number;
+
+  /**
+   * Minimum energy a LifeVariant cell must have before it can spread.
+   * Range: [0, 1].
+   */
+  variantReproductionThreshold: number;
+
+  /**
+   * Starting energy assigned to newly born LifeVariant cells.
+   * Range: [0, 1].
+   */
+  variantInitialEnergy: number;
+
+  /**
+   * Probability [0, 1] that a LifeVariant cell spreads into (and kills) an
+   * adjacent regular Life cell in one tick.  0 = no competition;
+   * 1 = guaranteed hostile takeover every tick.
+   */
+  competitionStrength: number;
+
   // --- Environmental sensitivity ------------------------------------------
 
   /**
@@ -152,6 +187,13 @@ export function defaultConfig(): SimulationConfig {
     neighbourhoodMode:    'moore',
     overpopulationLimit:  8,     // disabled (value > possible neighbours)
     underpopulationLimit: 0,     // disabled
+
+    // Life Variant B (Phase 3) — slightly more aggressive than base Life
+    variantSpreadRate:             0.6,
+    variantEnergyDecayRate:        0.008,
+    variantReproductionThreshold:  0.1,
+    variantInitialEnergy:          0.8,
+    competitionStrength:           0.3,
 
     // Environmental sensitivity
     toxinResistance:    0.0,
