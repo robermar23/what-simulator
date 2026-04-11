@@ -134,7 +134,12 @@ export type RenderWorkerInMsg =
   /** Force a full pixel-buffer rebuild (e.g. after a grid reset). */
   | { type: 'invalidate' }
   /** Request a PNG snapshot; worker responds with 'snapshotBlob'. */
-  | { type: 'snapshot' };
+  | { type: 'snapshot' }
+  /**
+   * Toggle the grid-line overlay drawn over the simulation canvas.
+   * Phase 6.
+   */
+  | { type: 'gridLinesChange'; show: boolean };
 
 // ---------------------------------------------------------------------------
 // RenderWorker → main thread
