@@ -513,6 +513,68 @@ details.variant-section[open] > summary::after {
 }
 
 /* --------------------------------------------------------------------------
+   Overlay canvas (Phase 5 — GravityWell arrows)
+   -------------------------------------------------------------------------- */
+
+/**
+ * The overlay canvas sits directly on top of the simulation canvas inside
+ * #canvas-container.  It is transparent everywhere except where GravityWell
+ * arrows are drawn.  pointer-events: none lets all mouse/touch input pass
+ * through to the simulation canvas below.
+ *
+ * position: absolute + inset: 0 aligns it perfectly over the sim canvas
+ * regardless of scroll or zoom changes (the overlay is re-sized programmatically
+ * in OverlayRenderer.mount / setCellSize).
+ */
+#overlay-canvas {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  pointer-events: none;
+  /* Ensure crisp pixel rendering — no anti-aliasing for arrow shapes. */
+  image-rendering: pixelated;
+}
+
+/**
+ * The canvas-container must be position: relative so the overlay canvas can
+ * be absolutely positioned inside it.
+ */
+#canvas-container {
+  position: relative;
+}
+
+/* --------------------------------------------------------------------------
+   Collapsible panel section (Phase 5 — Obstacle Parameters)
+   -------------------------------------------------------------------------- */
+
+/**
+ * Shares the .panel-section card styling but uses a <details> element for
+ * native expand/collapse.  The <summary> child renders as the clickable heading.
+ */
+details.panel-section > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+details.panel-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Chevron indicator — same pattern as .variant-section. */
+details.panel-section > summary.panel-heading::after {
+  content: '▶';
+  font-size: 9px;
+  color: var(--color-text-muted);
+  transition: transform 0.15s;
+  float: inline-end;
+}
+
+details.panel-section[open] > summary.panel-heading::after {
+  transform: rotate(90deg);
+}
+
+/* --------------------------------------------------------------------------
    Utility classes
    -------------------------------------------------------------------------- */
 

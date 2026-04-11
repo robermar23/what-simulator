@@ -15,7 +15,9 @@ import { App } from './app.js';
 import { Toolbar } from './ui/Toolbar.js';
 import { ControlPanel } from './ui/ControlPanel.js';
 import { DrawingTools } from './ui/DrawingTools.js';
+import { OverlayRenderer } from './rendering/OverlayRenderer.js';
 import { bus } from './state/EventBus.js';
+import { appState } from './state/AppState.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -63,7 +65,38 @@ function bootstrap(): void {
   const drawingTools = new DrawingTools();
   drawingTools.mount(canvas, (cellX, cellY, type) => {
     app.paintCell(cellX, cellY, type);
+    // Repaint the overlay after every brush stroke so GravityWell arrows
+    // appear / disappear immediately as the user paints or erases wells.
+    overlay.repaint();
   });
+
+  // --- Create overlay canvas for GravityWell arrows -------------------------
+  // A transparent <canvas> is positioned directly over the simulation canvas.
+  // It never captures pointer events (pointer-events: none in CSS).
+  const canvasContainer = document.getElementById('canvas-container');
+  const overlayCanvas   = document.createElement('canvas');
+  overlayCanvas.id      = 'overlay-canvas';
+  overlayCanvas.setAttribute('aria-hidden', 'true');
+  if (canvasContainer) {
+    canvasContainer.append(overlayCanvas);
+  } else {
+    // Fallback: append next to the sim canvas.
+    canvas.parentElement?.append(overlayCanvas);
+  }
+
+  const overlay = new OverlayRenderer();
+  overlay.mount(
+    overlayCanvas,
+    appState.cellSize,
+    appState.gridWidth,
+    appState.gridHeight,
+    () => app.getWellIndices(),
+  );
+
+  // Repaint overlay whenever zoom level changes.
+  bus.on('cellSizeChange', ({ cellSize }) => overlay.setCellSize(cellSize));
+  // Repaint overlay on reset (all well cells are cleared).
+  bus.on('reset', () => overlay.repaint());
 
   // Wire step-requested from toolbar to app (the DOM event bubbles to window).
   // Already handled inside App via the window event listener.

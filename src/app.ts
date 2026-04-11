@@ -35,8 +35,8 @@
  * ```
  */
 
-import { CellType }                          from './simulation/GridState.js';
-import { allocateSharedGrid }                from './workers/sharedBuffers.js';
+import { CellType }                           from './simulation/GridState.js';
+import { allocateSharedGrid, makeControlView, makeBufferViews, CTRL_FRONT_IDX } from './workers/sharedBuffers.js';
 import { appState }                          from './state/AppState.js';
 import { bus }                               from './state/EventBus.js';
 import { FpsCounter }                        from './utils/performance.js';
@@ -72,6 +72,22 @@ export class App {
    */
   readonly canvas: HTMLCanvasElement;
 
+  // --- SAB front-buffer access (for OverlayRenderer) -----------------------
+
+  /**
+   * Int32Array control section of the SharedArrayBuffer.
+   * Used to determine which buffer set is currently the display front so
+   * `getWellIndices` can read GravityWell positions without racing the sim.
+   */
+  private readonly _ctrl: Int32Array;
+
+  /**
+   * Typed views into the two SAB buffer sets.
+   * Index 0 = set 0, index 1 = set 1.  The control section's CTRL_FRONT_IDX
+   * tells us which set is currently authoritative.
+   */
+  private readonly _sabViews: [ReturnType<typeof makeBufferViews>, ReturnType<typeof makeBufferViews>];
+
   // --- FPS tracking (main-thread side) --------------------------------------
 
   /**
@@ -94,7 +110,16 @@ export class App {
     // 1. Allocate SharedArrayBuffer for zero-copy grid sharing.
     // -----------------------------------------------------------------------
 
-    const sab = allocateSharedGrid(appState.gridWidth, appState.gridHeight);
+    const sab        = allocateSharedGrid(appState.gridWidth, appState.gridHeight);
+    const totalCells = appState.gridWidth * appState.gridHeight;
+
+    // Keep main-thread SAB views so getWellIndices() can scan the front buffer
+    // without posting messages to the sim worker.
+    this._ctrl     = makeControlView(sab);
+    this._sabViews = [
+      makeBufferViews(sab, totalCells, 0),
+      makeBufferViews(sab, totalCells, 1),
+    ];
 
     // -----------------------------------------------------------------------
     // 2. Spawn workers via Vite's worker-bundling syntax.
@@ -207,6 +232,30 @@ export class App {
 
     const msg: SimWorkerInMsg = { type: 'editCmd', index: idx, cellType: type, energy };
     this._simWorker.postMessage(msg);
+  }
+
+  /**
+   * Scans the SAB front buffer and returns all flat indices of GravityWell
+   * cells.  Used by the OverlayRenderer in `main.ts` to know where to draw
+   * directional arrows without messaging the simulation worker.
+   *
+   * Reads are done directly from the SharedArrayBuffer.  The seqlock is NOT
+   * checked here — a slightly torn read is acceptable since the overlay is a
+   * visual hint, not simulation data.  Missing a single frame of arrow update
+   * is invisible to the user.
+   *
+   * @returns Array of flat cell indices where CellType === GravityWell.
+   */
+  getWellIndices(): readonly number[] {
+    const frontIdx  = Atomics.load(this._ctrl, CTRL_FRONT_IDX) as 0 | 1;
+    const cellType  = this._sabViews[frontIdx].cellType;
+    const wells: number[] = [];
+    // CellType.GravityWell = 6 (const enum — inline the value to avoid
+    // importing the enum into a non-worker context).
+    for (let i = 0; i < cellType.length; i++) {
+      if (cellType[i] === 6 /* CellType.GravityWell */) wells.push(i);
+    }
+    return wells;
   }
 
   // -------------------------------------------------------------------------
