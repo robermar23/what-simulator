@@ -162,6 +162,13 @@ export interface SimulationConfig {
 
   /** Energy loss per tick for Life cells adjacent to Drain cells. */
   drainRate: number;
+
+  /**
+   * Energy (fuel) consumed by a Fire cell per tick.
+   * Fresh fire starts at energy = 1.0; it burns out when energy reaches 0.
+   * Range: (0, 1].  Lower values = longer-burning fire.
+   */
+  fireBurnRate: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +215,7 @@ export function defaultConfig(): SimulationConfig {
     barrierLifetime:   200,
     gravityStrength:   0.5,
     drainRate:         0.01,
+    fireBurnRate:      0.005,
   };
 }
 

@@ -221,7 +221,11 @@ export class GridState {
    *   - `Life` / `LifeVariant`: vitality — uses the caller-supplied `energy`.
    *   - `Nutrient`: durability / remaining potency — always initialised to
    *     1.0 (full) regardless of the `energy` argument.
-   *   - All others (`Wall`, `Toxin`, `Empty`, etc.): energy is unused; set to 0.
+   *   - `Fire`: fuel supply — always initialised to 1.0 (fully fuelled).
+   *   - `Barrier`: fade factor — always initialised to 1.0 (fully opaque).
+   *     The engine linearly reduces this to 0 over the barrier's lifetime.
+   *   - All others (`Wall`, `Toxin`, `Drain`, `GravityWell`, `Ice`, `Empty`):
+   *     energy is unused; set to 0.
    *
    * @param index - Flat cell index (`y * width + x`).
    * @param type - Cell type to set.
@@ -236,11 +240,15 @@ export class GridState {
     if (type === CellType.Life || type === CellType.LifeVariant) {
       // Life vitality — caller-controlled.
       this.front.energy[index] = energy;
-    } else if (type === CellType.Nutrient) {
-      // Nutrients always start at full potency (1.0) when painted.
+    } else if (
+      type === CellType.Nutrient ||
+      type === CellType.Fire     ||
+      type === CellType.Barrier
+    ) {
+      // Nutrient potency, Fire fuel, and Barrier fade all start at full (1.0).
       this.front.energy[index] = 1.0;
     } else {
-      // Walls, Toxins, Empty, etc.: energy field is unused.
+      // Walls, Toxins, Drain, GravityWell, Ice, Empty: energy field is unused.
       this.front.energy[index] = 0;
     }
 
