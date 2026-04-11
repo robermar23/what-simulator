@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>What Simulator</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+
+    <!--
+      Layout:
+      ┌─────────────────────────────────────────────────┐
+      │  #toolbar-container  (top bar)                  │
+      ├────────────────┬────────────────────────────────┤
+      │ #panel-container│  #canvas-container             │
+      │ (320px sidebar) │  (fills remaining space)       │
+      ├────────────────┴────────────────────────────────┤
+      │  #status-bar  (bottom)                          │
+      └─────────────────────────────────────────────────┘
+    -->
+
+    <div id="app">
+
+      <!-- Top toolbar — Play / Pause / Step / Reset / Speed / Snapshot -->
+      <div id="toolbar-container"></div>
+
+      <!-- Main content area: sidebar + canvas -->
+      <div id="main-area">
+
+        <!-- Left control panel: sliders, presets, drawing tools -->
+        <div id="panel-container"></div>
+
+        <!-- Canvas wrapper — scrollable when grid > viewport -->
+        <div id="canvas-container">
+          <canvas
+            id="sim-canvas"
+            aria-label="Simulation grid — life cells expanding across the canvas"
+            role="img"
+          ></canvas>
+        </div>
+
+      </div><!-- /#main-area -->
+
+      <!-- Bottom status bar: tick | FPS | live cells -->
+      <div id="status-bar" aria-live="polite" aria-atomic="true">
+        Tick: 0  |  FPS: 0  |  Live cells: 0
+      </div>
+
+    </div><!-- /#app -->
+
+    <!--
+      Module entry point.  Vite will bundle this with tree-shaking.
+      The `type="module"` attribute means the script is deferred by default.
+    -->
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
