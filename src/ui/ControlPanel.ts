@@ -16,6 +16,10 @@
  *   - Life Variant B section (collapsible; appears when mutations occur).
  *   - Variant B parameter sliders + competition strength slider.
  *
+ * Phase 5 additions:
+ *   - Drawing Tools: added Drain, GravityWell, Barrier, Fire, Ice buttons.
+ *   - Obstacle Parameters section: sliders for all Phase 5 obstacle settings.
+ *
  * Slider changes call `appState.updateConfig(key, value)` which fires the
  * `configChange` event consumed by the simulation engine on the next tick.
  */
@@ -64,30 +68,62 @@ interface ToolDef {
   title: string;
 }
 
-/** Phase 2 brush tool definitions. */
+/**
+ * All brush tool definitions — Phase 2 + Phase 5 additions.
+ * Ordered to group related tools logically in the UI.
+ */
 const TOOL_DEFS: readonly ToolDef[] = [
+  // --- Life tools ---
   {
-    tool: 'life',     label: 'Life',
+    tool: 'life',        label: 'Life',
     color: '#00ff88',
     title: 'Paint life cells that spread and expand.',
   },
+  // --- Phase 2 obstacles ---
   {
-    tool: 'wall',     label: 'Wall',
+    tool: 'wall',        label: 'Wall',
     color: '#3a3a3a',
     title: 'Impassable barrier — life cannot spread through walls.',
   },
   {
-    tool: 'toxin',    label: 'Toxin',
+    tool: 'toxin',       label: 'Toxin',
     color: '#cc00ff',
     title: 'Damages adjacent life cells each tick; life entering a toxin cell loses energy.',
   },
   {
-    tool: 'nutrient', label: 'Nutrient',
+    tool: 'nutrient',    label: 'Nutrient',
     color: '#00cc44',
     title: 'Boosts adjacent life energy each tick; depletes over time.',
   },
+  // --- Phase 5 obstacles ---
   {
-    tool: 'erase',    label: 'Erase',
+    tool: 'drain',       label: 'Drain',
+    color: '#0044cc',
+    title: 'Drains energy from adjacent life each tick and halves their spread rate.',
+  },
+  {
+    tool: 'gravityWell', label: 'Gravity',
+    color: '#ff8800',
+    title: 'Pulls life spread probability toward the well centre (inverse-square).',
+  },
+  {
+    tool: 'barrier',     label: 'Barrier',
+    color: '#ffee00',
+    title: 'Impassable wall that fades and crumbles after a set number of ticks.',
+  },
+  {
+    tool: 'fire',        label: 'Fire',
+    color: '#ff4400',
+    title: 'Kills adjacent life instantly; spreads to neighbouring life/nutrient; burns out.',
+  },
+  {
+    tool: 'ice',         label: 'Ice',
+    color: '#aaddff',
+    title: 'Freezes adjacent life cells — no energy decay, no spread, no death.',
+  },
+  // --- Erase ---
+  {
+    tool: 'erase',       label: 'Erase',
     color: '#555577',
     title: 'Remove cells (right-click on canvas also erases).',
   },
@@ -96,6 +132,61 @@ const TOOL_DEFS: readonly ToolDef[] = [
 // ---------------------------------------------------------------------------
 // Slider spec definitions
 // ---------------------------------------------------------------------------
+
+/**
+ * Phase 5 — Obstacle Parameter slider specs.
+ * Controls all tuneable obstacle behaviours that affect Phase 5 cell types.
+ */
+const OBSTACLE_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Toxin Strength',
+    key:   'toxinStrength',
+    min: 0, max: 0.2, step: 0.001,
+    title: 'Energy damage dealt to adjacent life cells each tick by Toxin.',
+  },
+  {
+    label: 'Toxin Durability',
+    key:   'toxinDurability',
+    min: 1, max: 50, step: 1,
+    title: 'Number of life kills before a Toxin cell is consumed (not yet implemented — reserved).',
+  },
+  {
+    label: 'Nutrient Boost',
+    key:   'nutrientBoost',
+    min: 0, max: 0.1, step: 0.001,
+    title: 'Energy gained by adjacent life cells each tick from Nutrient.',
+  },
+  {
+    label: 'Nutrient Decay',
+    key:   'nutrientDecayRate',
+    min: 0, max: 0.01, step: 0.0001,
+    title: 'Rate at which Nutrient cells deplete per tick.',
+  },
+  {
+    label: 'Drain Rate',
+    key:   'drainRate',
+    min: 0, max: 0.05, step: 0.001,
+    title: 'Energy drained from adjacent life cells per tick by Drain cells.',
+  },
+  {
+    label: 'Gravity Strength',
+    key:   'gravityStrength',
+    min: 0, max: 1, step: 0.01,
+    title: 'Pull-force magnitude of GravityWell cells (inverse-square falloff).',
+  },
+  {
+    label: 'Barrier Lifetime',
+    key:   'barrierLifetime',
+    min: 10, max: 1000, step: 10,
+    title: 'Ticks before a Barrier cell crumbles to Empty.',
+  },
+  {
+    label: 'Fire Burn Rate',
+    key:   'fireBurnRate',
+    min: 0.001, max: 0.05, step: 0.001,
+    title: 'Fuel consumed by Fire per tick. Higher = faster burnout.',
+  },
+];
 
 /** All Phase-1 life parameters as slider specs. */
 const LIFE_SLIDERS: readonly SliderSpec[] = [
@@ -240,6 +331,9 @@ export class ControlPanel {
 
     // --- Life parameters section -------------------------------------------
     panel.append(this._buildSection('Life Parameters', LIFE_SLIDERS));
+
+    // --- Obstacle Parameters section (Phase 5) ----------------------------
+    panel.append(this._buildCollapsibleSection('Obstacle Parameters', OBSTACLE_SLIDERS));
 
     // --- Life Variant B section (Phase 3: collapsible, hidden initially) --
     const variantSection = this._buildVariantSection();
@@ -492,7 +586,7 @@ export class ControlPanel {
   }
 
   /**
-   * Builds a collapsible section containing a set of sliders.
+   * Builds a plain section containing a set of sliders.
    *
    * @param title - Section heading text.
    * @param sliders - Slider specifications.
@@ -512,6 +606,33 @@ export class ControlPanel {
     }
 
     return section;
+  }
+
+  /**
+   * Builds a natively collapsible `<details>` section containing a set of
+   * sliders.  The section starts collapsed so it does not dominate the panel
+   * on first load.
+   *
+   * @param title - Section heading text (rendered as a `<summary>`).
+   * @param sliders - Slider specifications.
+   * @returns The built `<details>` element.
+   */
+  private _buildCollapsibleSection(title: string, sliders: readonly SliderSpec[]): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'panel-section';
+    // Start collapsed — user opens it explicitly when they want these controls.
+    details.open = false;
+
+    const summary = document.createElement('summary');
+    summary.className   = 'panel-heading';
+    summary.textContent = title;
+    details.append(summary);
+
+    for (const spec of sliders) {
+      details.append(this._buildSlider(spec));
+    }
+
+    return details;
   }
 
   /**

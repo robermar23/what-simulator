@@ -37,6 +37,29 @@ export function fromIndex(index: number, width: number): [number, number] {
 }
 
 /**
+ * Converts a flat 1-D array index to an `{x, y}` coordinate object.
+ *
+ * Prefer this over {@link fromIndex} when the result is passed to functions
+ * that destructure named properties — avoids tuple positional confusion.
+ *
+ * @param index - Flat array index (`y * width + x`).
+ * @param width - Grid width in cells.
+ * @param _height - Grid height in cells (unused; provided for call-site
+ *   symmetry with other coordinate helpers so callers don't need special-
+ *   case logic).
+ * @returns Object with `x` (column) and `y` (row).
+ */
+export function indexToXY(
+  index: number,
+  width: number,
+  _height: number,
+): { x: number; y: number } {
+  const x = index % width;
+  const y = (index - x) / width;
+  return { x, y };
+}
+
+/**
  * Returns the flat indices of the 4 Von Neumann neighbors (N, S, E, W) for
  * cell `i`.  Out-of-bounds neighbors are omitted — the result length is 2–4.
  *
