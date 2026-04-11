@@ -1,286 +1,340 @@
 /**
  * @fileoverview Top-level application orchestrator for the What Simulator.
  *
- * `App` owns:
- *   - The `GridState` (double-buffered cell arrays).
- *   - The `SimulationEngine` (pure tick logic).
- *   - The `Renderer` (ImageData pixel pipeline).
- *   - The simulation interval and the render `requestAnimationFrame` loop.
+ * Phase 4 rewrite: `App` no longer owns `GridState`, `SimulationEngine`, or
+ * `Renderer` directly.  Instead it:
  *
- * It wires the EventBus to respond to Play/Pause, Reset, Speed, and CellSize
- * events fired by the UI components.
+ *   1. Allocates a `SharedArrayBuffer` for zero-copy grid state sharing.
+ *   2. Spawns a `SimulationWorker` that runs the tick loop off-thread.
+ *   3. Spawns a `RenderWorker` that drives the OffscreenCanvas rAF loop.
+ *   4. Transfers the canvas element to the RenderWorker so the main thread
+ *      never touches pixels directly.
+ *   5. Routes `EventBus` events to workers via typed `postMessage` calls.
+ *   6. Forwards incoming worker messages back to the `EventBus` so the rest
+ *      of the UI (status bar, ControlPanel) is unaffected by the move to
+ *      workers.
  *
- * Phase 1 runs everything on the main thread.  Phase 4 will move the
- * simulation into a Web Worker; only this file and `workerBridge.ts` will
- * need significant changes.
+ * The public API surface (`.start()`, `.paintCell()`) is intentionally
+ * unchanged from Phase 1–3 so `main.ts` and `DrawingTools` need no edits.
  *
- * Phase 2 addition: `paintCell(x, y, type)` exposes a grid-write API so that
- * {@link DrawingTools} can directly modify cells in response to canvas pointer
- * events.  In Phase 4 this call will become a postMessage to the Worker.
+ * ## Data flow
+ *
+ * ```
+ * EventBus                App (main thread)            Workers
+ * ─────────               ──────────────────           ───────
+ * playStateChange  ──►  postMessage('play/pause')  ──► SimWorker
+ * speedChange      ──►  postMessage('speedChange') ──► SimWorker
+ * configChange     ──►  postMessage('configUpdate')──► SimWorker
+ * reset            ──►  postMessage('reset')        ──► SimWorker
+ *                        postMessage('invalidate')  ──► RenderWorker
+ * cellSizeChange   ──►  postMessage('cellSizeChange')─► RenderWorker
+ * snapshotRequested──►  postMessage('snapshot')     ──► RenderWorker
+ *
+ * SimWorker   ──► onmessage('tick')         ──► bus.emit('fpsUpdate')
+ * RenderWorker──► onmessage('snapshotBlob') ──► bus.emit('snapshotReady')
+ * ```
  */
 
-import { GridState, CellType } from './simulation/GridState.js';
-import { SimulationEngine, type TickStats } from './simulation/SimulationEngine.js';
-import { Renderer } from './rendering/Renderer.js';
-import { appState } from './state/AppState.js';
-import { bus } from './state/EventBus.js';
-import { FpsCounter, TickCounter } from './utils/performance.js';
-
-// ---------------------------------------------------------------------------
-// Module-level zeroed TickStats used before the first tick runs.
-// ---------------------------------------------------------------------------
-const ZERO_STATS: TickStats = { liveCells: 0, variantCells: 0, births: 0, deaths: 0 };
+import { CellType }                          from './simulation/GridState.js';
+import { allocateSharedGrid }                from './workers/sharedBuffers.js';
+import { appState }                          from './state/AppState.js';
+import { bus }                               from './state/EventBus.js';
+import { FpsCounter }                        from './utils/performance.js';
+import { type SimWorkerInMsg, type SimWorkerOutMsg }       from './workers/workerBridge.js';
+import { type RenderWorkerInMsg, type RenderWorkerOutMsg } from './workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // App class
 // ---------------------------------------------------------------------------
 
 /**
- * Main application controller.  Instantiate once and call {@link App.start}.
+ * Main application controller for Phase 4+.
+ *
+ * Instantiate once with the `<canvas>` element and call {@link App.start}.
  */
 export class App {
-  // --- Simulation core -------------------------------------------------------
+  // --- Workers ---------------------------------------------------------------
 
-  /** Current grid state (double-buffered). */
-  private _grid: GridState;
+  /** Web Worker running the simulation tick loop. */
+  private readonly _simWorker: Worker;
 
-  /** Tick logic engine (pure functions over TypedArrays). */
-  private _engine: SimulationEngine;
+  /** Web Worker running the OffscreenCanvas render loop. */
+  private readonly _renderWorker: Worker;
 
-  // --- Rendering -------------------------------------------------------------
+  // --- Canvas (kept for DrawingTools pointer-event wiring) ------------------
 
-  /** ImageData pixel renderer. */
-  private _renderer: Renderer;
-
-  // The canvas element is kept so Phase 6 pan/zoom can attach pointer events.
+  /**
+   * The original DOM canvas element.
+   *
+   * After `transferControlToOffscreen()` the main thread can no longer call
+   * `getContext()` or read pixels from this element, but it can still receive
+   * pointer events — so DrawingTools continues to attach listeners here.
+   */
   readonly canvas: HTMLCanvasElement;
 
-  // --- Loop handles ----------------------------------------------------------
+  // --- FPS tracking (main-thread side) --------------------------------------
 
   /**
-   * ID returned by `setInterval` for the simulation tick loop.
-   * Stored so we can cancel it on pause or speed change.
+   * Smoothed "sim ticks per second" counter.
+   *
+   * The render rAF loop lives in the RenderWorker, so we can no longer
+   * measure render FPS directly on the main thread.  Instead we count
+   * `SimWorkerOutMsg` tick messages, which arrive at the configured sim Hz.
+   * At 60 Hz this matches render FPS closely enough for the status bar.
    */
-  private _tickIntervalId: ReturnType<typeof setInterval> | null = null;
-
-  /** RAF handle for the render loop. */
-  private _rafId: number | null = null;
-
-  // --- Counters --------------------------------------------------------------
-
-  /** FPS smoothing counter (render loop). */
   private readonly _fpsCounter = new FpsCounter(60);
 
-  /** Monotonic tick counter. */
-  private readonly _tickCounter = new TickCounter();
-
   /**
-   * Most recently completed tick's statistics.
-   * Initialised to zero; updated by the tick loop.
-   * Used by the render loop to emit `fpsUpdate` without scanning the grid.
-   */
-  private _lastStats: TickStats = { ...ZERO_STATS };
-
-  /**
-   * @param canvas - The `<canvas>` element to render into.
+   * @param canvas - The `<canvas>` element to hand off to the RenderWorker.
    */
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
 
-    // Allocate grid at the dimensions stored in AppState.
-    this._grid = new GridState(appState.gridWidth, appState.gridHeight);
+    // -----------------------------------------------------------------------
+    // 1. Allocate SharedArrayBuffer for zero-copy grid sharing.
+    // -----------------------------------------------------------------------
 
-    // Allocate engine with the same dimensions.
-    this._engine = new SimulationEngine(appState.gridWidth, appState.gridHeight);
+    const sab = allocateSharedGrid(appState.gridWidth, appState.gridHeight);
 
-    // Create renderer pointed at the canvas.
-    this._renderer = new Renderer(canvas, { cellSize: appState.cellSize });
+    // -----------------------------------------------------------------------
+    // 2. Spawn workers via Vite's worker-bundling syntax.
+    //    Each `new URL(…, import.meta.url)` tells Vite to bundle the file as
+    //    a separate worker chunk so it can safely use `self` / `importScripts`.
+    // -----------------------------------------------------------------------
 
-    // Seed the initial grid using the configured density.
-    this._grid.seed(appState.initialDensity, appState.config.initialEnergy);
+    this._simWorker = new Worker(
+      new URL('./simulation/SimulationWorker.ts', import.meta.url),
+      { type: 'module' },
+    );
 
-    // Wire up EventBus → local handlers.
+    this._renderWorker = new Worker(
+      new URL('./rendering/RenderWorker.ts', import.meta.url),
+      { type: 'module' },
+    );
+
+    // -----------------------------------------------------------------------
+    // 3. Transfer the canvas to the RenderWorker.
+    //    After this call the main thread loses direct access to canvas pixels.
+    //    DrawingTools can still attach pointer listeners to the DOM element.
+    // -----------------------------------------------------------------------
+
+    const offscreen = canvas.transferControlToOffscreen();
+
+    const renderInit: RenderWorkerInMsg = {
+      type:     'init',
+      canvas:   offscreen,
+      sab,
+      width:    appState.gridWidth,
+      height:   appState.gridHeight,
+      cellSize: appState.cellSize,
+    };
+    // `offscreen` must be listed in the transferables array — it is a
+    // `Transferable` that can only live in one thread at a time.
+    this._renderWorker.postMessage(renderInit, [offscreen]);
+
+    // -----------------------------------------------------------------------
+    // 4. Initialise the SimulationWorker with the same SAB.
+    //    The SAB is *shared* (not transferred) so both workers and the main
+    //    thread can all hold references to it simultaneously.
+    // -----------------------------------------------------------------------
+
+    const simInit: SimWorkerInMsg = {
+      type: 'init',
+      payload: {
+        sab,
+        width:         appState.gridWidth,
+        height:        appState.gridHeight,
+        config:        appState.config,
+        density:       appState.initialDensity,
+        initialEnergy: appState.config.initialEnergy,
+      },
+    };
+    this._simWorker.postMessage(simInit);
+
+    // -----------------------------------------------------------------------
+    // 5. Wire incoming worker messages → EventBus / downloads.
+    // -----------------------------------------------------------------------
+
+    this._simWorker.onmessage    = (e: MessageEvent<SimWorkerOutMsg>) =>
+      this._onSimMessage(e.data);
+
+    this._renderWorker.onmessage = (e: MessageEvent<RenderWorkerOutMsg>) =>
+      this._onRenderMessage(e.data);
+
+    // -----------------------------------------------------------------------
+    // 6. Subscribe to EventBus to forward UI interactions to the workers.
+    // -----------------------------------------------------------------------
+
     this._subscribeToEvents();
   }
 
   // -------------------------------------------------------------------------
-  // Public API
+  // Public API (unchanged surface from Phase 1–3)
   // -------------------------------------------------------------------------
 
   /**
-   * Starts the render loop (always running) and optionally the tick loop.
-   * The simulation starts paused; the user clicks Play to begin.
+   * Called once from `main.ts` after construction.
+   *
+   * In Phase 4 the workers are already running their loops after `init` — the
+   * RenderWorker starts its rAF loop immediately, and the SimWorker waits for
+   * a `play` message.  Nothing extra is needed here.
    */
   start(): void {
-    this._startRenderLoop();
-    // Do NOT auto-start the tick loop — let the user hit Play.
+    // Render loop started automatically in RenderWorker on 'init'.
+    // Sim loop starts when the user clicks Play (bus → 'play' message).
   }
 
   /**
-   * Advances the simulation by exactly one tick.
-   * Used by the Step button when the simulation is paused.
-   */
-  stepOnce(): void {
-    this._tick();
-  }
-
-  /**
-   * Writes a single cell at grid coordinates `(cellX, cellY)` into the front
-   * buffer.  Called by {@link DrawingTools} in response to canvas pointer events.
+   * Paints a single cell at grid coordinates `(cellX, cellY)`.
    *
-   * The change is immediately visible on the next render frame — no explicit
-   * invalidation is needed because the renderer compares previous vs current
-   * colours for every cell on each frame.
+   * Sends an `editCmd` to the SimulationWorker, which writes the change to
+   * both its local `GridState` and the SAB front buffer so the RenderWorker
+   * sees the updated pixel on the very next animation frame — even while
+   * the simulation is paused.
    *
-   * In Phase 4 this method will become a postMessage to the SimulationWorker.
-   *
-   * @param cellX - Column index (0-based, clamped to grid bounds internally).
-   * @param cellY - Row index (0-based, clamped to grid bounds internally).
+   * @param cellX - Column index (0-based).
+   * @param cellY - Row index (0-based).
    * @param type  - The {@link CellType} to place at that coordinate.
    */
   paintCell(cellX: number, cellY: number, type: CellType): void {
     const idx = cellX + cellY * appState.gridWidth;
 
-    // For Life cells use the configured initial energy; Nutrient / Toxin
-    // energy is handled inside GridState.paintCell (Nutrient → 1.0, others → 0).
+    // For Life cells, use the configured initial energy; obstacles default to
+    // their own energy logic inside SimulationWorker.applyEdit.
     const energy = (type === CellType.Life || type === CellType.LifeVariant)
       ? appState.config.initialEnergy
       : 1.0;
 
-    this._grid.paintCell(idx, type, energy);
+    const msg: SimWorkerInMsg = { type: 'editCmd', index: idx, cellType: type, energy };
+    this._simWorker.postMessage(msg);
   }
 
   // -------------------------------------------------------------------------
-  // Simulation loop
+  // Incoming SimulationWorker messages
   // -------------------------------------------------------------------------
 
   /**
-   * Starts (or restarts) the `setInterval`-driven simulation tick loop at the
-   * current `appState.hz`.
+   * Handles all messages posted by the SimulationWorker.
+   *
+   * @param msg - Typed discriminated-union message from the worker.
    */
-  private _startTickLoop(): void {
-    this._stopTickLoop();
-    const intervalMs = 1000 / appState.hz;
-    this._tickIntervalId = setInterval(() => this._tick(), intervalMs);
-  }
+  private _onSimMessage(msg: SimWorkerOutMsg): void {
+    switch (msg.type) {
 
-  /**
-   * Stops the tick loop if it is running.
-   */
-  private _stopTickLoop(): void {
-    if (this._tickIntervalId !== null) {
-      clearInterval(this._tickIntervalId);
-      this._tickIntervalId = null;
-    }
-  }
+      case 'ready':
+        // Worker has finished its `init` handler and is waiting for 'play'.
+        // Nothing to do — the render loop already started independently.
+        break;
 
-  /**
-   * Executes one simulation tick:
-   * 1. Copies front → back (so back starts as a faithful copy).
-   * 2. Runs the engine (reads front, writes back).
-   * 3. Swaps front ↔ back.
-   * 4. Emits tick event.
-   */
-  private _tick(): void {
-    this._grid.copyFrontToBack();
+      case 'tick': {
+        // Tick messages arrive at the configured sim Hz.
+        // We use their timestamps to compute "sim ticks per second" as a
+        // proxy for the status-bar FPS display.
+        this._fpsCounter.frame(performance.now());
+        const fps = this._fpsCounter.fps;
 
-    const stats: TickStats = this._engine.tick(
-      this._grid.front,
-      this._grid.back,
-      appState.config,
-    );
-
-    // Cache stats so the render loop can emit fpsUpdate without a grid scan.
-    this._lastStats = stats;
-
-    this._grid.swap();
-
-    const tick = this._tickCounter.advance();
-    bus.emit('tick', { tick, stats });
-  }
-
-  // -------------------------------------------------------------------------
-  // Render loop
-  // -------------------------------------------------------------------------
-
-  /**
-   * Starts the `requestAnimationFrame` render loop.
-   * This loop runs regardless of whether the simulation is ticking, so the
-   * canvas always shows the latest committed state.
-   */
-  private _startRenderLoop(): void {
-    // Cancel any existing loop before starting a new one.
-    if (this._rafId !== null) {
-      cancelAnimationFrame(this._rafId);
-      this._rafId = null;
-    }
-
-    const loop = (now: number): void => {
-      this._fpsCounter.frame(now);
-      this._renderer.render(this._grid.front, appState.gridWidth, appState.gridHeight);
-
-      // Emit FPS update at ~4 Hz to avoid flooding the status bar.
-      // Use cached _lastStats so we don't scan the full grid every emission.
-      if (this._tickCounter.current % 15 === 0 || this._tickCounter.current < 2) {
-        bus.emit('fpsUpdate', {
-          fps:          this._fpsCounter.fps,
-          liveCells:    this._lastStats.liveCells + this._lastStats.variantCells,
-          variantCells: this._lastStats.variantCells,
-        });
+        // Emit fpsUpdate every 15 ticks (~4 Hz at 60 Hz sim rate) to avoid
+        // flooding the DOM with status-bar updates.
+        if (msg.tickNum % 15 === 0 || msg.tickNum < 2) {
+          bus.emit('fpsUpdate', {
+            fps,
+            tickNum:      msg.tickNum,
+            liveCells:    msg.liveCells + msg.variantCells,
+            variantCells: msg.variantCells,
+          });
+        }
+        break;
       }
-
-      this._rafId = requestAnimationFrame(loop);
-    };
-
-    this._rafId = requestAnimationFrame(loop);
+    }
   }
 
   // -------------------------------------------------------------------------
-  // EventBus subscriptions
+  // Incoming RenderWorker messages
   // -------------------------------------------------------------------------
 
   /**
-   * Wires all EventBus events to local handlers.
+   * Handles all messages posted by the RenderWorker.
+   *
+   * @param msg - Typed discriminated-union message from the worker.
+   */
+  private _onRenderMessage(msg: RenderWorkerOutMsg): void {
+    switch (msg.type) {
+
+      case 'snapshotBlob':
+        // Forward the blob URL to the EventBus.
+        // `main.ts` listens to `snapshotReady` and triggers the download link.
+        bus.emit('snapshotReady', { url: msg.url });
+        break;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // EventBus subscriptions → worker messages
+  // -------------------------------------------------------------------------
+
+  /**
+   * Wires all EventBus events to the appropriate worker `postMessage` calls.
    * Called once during construction.
    */
   private _subscribeToEvents(): void {
-    // Play / Pause
+
+    // Play / Pause — toggle the sim tick loop.
     bus.on('playStateChange', ({ running }) => {
-      if (running) {
-        this._startTickLoop();
-      } else {
-        this._stopTickLoop();
-      }
+      this._simWorker.postMessage(
+        running
+          ? ({ type: 'play' }  as SimWorkerInMsg)
+          : ({ type: 'pause' } as SimWorkerInMsg),
+      );
     });
 
-    // Speed change — restart tick loop at new interval.
-    bus.on('speedChange', () => {
-      if (appState.running) {
-        this._startTickLoop();
-      }
+    // Speed — change the tick interval inside the sim worker.
+    bus.on('speedChange', ({ hz }) => {
+      const msg: SimWorkerInMsg = { type: 'speedChange', hz };
+      this._simWorker.postMessage(msg);
     });
 
-    // Reset — clear grid, re-seed, restart counters.
+    // Config — update simulation parameters for the next tick.
+    bus.on('configChange', ({ config }) => {
+      const msg: SimWorkerInMsg = { type: 'configUpdate', config };
+      this._simWorker.postMessage(msg);
+    });
+
+    // Reset — stop the sim, re-seed, force a full render redraw.
     bus.on('reset', () => {
-      this._stopTickLoop();
+      // Pause first so the worker isn't mid-tick during reset.
       appState.running = false;
-      this._grid.clear();
-      this._grid.seed(appState.initialDensity, appState.config.initialEnergy);
-      this._lastStats = { ...ZERO_STATS };
-      this._renderer.invalidate();
-      this._tickCounter.reset();
+
+      const resetMsg: SimWorkerInMsg = {
+        type:          'reset',
+        density:       appState.initialDensity,
+        initialEnergy: appState.config.initialEnergy,
+      };
+      this._simWorker.postMessage(resetMsg);
+
+      // Tell the render worker to discard its dirty-region cache.
+      const invalidateMsg: RenderWorkerInMsg = { type: 'invalidate' };
+      this._renderWorker.postMessage(invalidateMsg);
     });
 
-    // Cell size change — tell renderer and invalidate.
+    // Cell size — re-zoom the renderer inside the render worker.
     bus.on('cellSizeChange', ({ cellSize }) => {
-      this._renderer.cellSize = cellSize;
-      this._renderer.invalidate();
+      const msg: RenderWorkerInMsg = { type: 'cellSizeChange', cellSize };
+      this._renderWorker.postMessage(msg);
     });
 
-    // Step (paused mode): handled via custom DOM event in Toolbar.
-    // We listen at the window level since the event bubbles up.
+    // Snapshot — delegate to the render worker (main thread can't read pixels
+    // after `transferControlToOffscreen`).
+    bus.on('snapshotRequested', () => {
+      const msg: RenderWorkerInMsg = { type: 'snapshot' };
+      this._renderWorker.postMessage(msg);
+    });
+
+    // Step (single tick while paused) — fired via DOM custom event from
+    // Toolbar's Step button.
     window.addEventListener('step-requested', () => {
-      if (!appState.running) this.stepOnce();
+      if (!appState.running) {
+        this._simWorker.postMessage({ type: 'step' } as SimWorkerInMsg);
+      }
     });
   }
 }
