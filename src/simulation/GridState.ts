@@ -26,7 +26,7 @@
  * Every cell in the grid has exactly one of these types.
  * Stored as a Uint8 — values must remain in [0, 255].
  *
- * Phase 1 only uses Empty and Life; other types are reserved for Phase 2+.
+ * Phase 2 activates Wall, Toxin, and Nutrient.  Remaining types are Phase 5+.
  */
 export const enum CellType {
   Empty       = 0,
@@ -217,16 +217,35 @@ export class GridState {
    * Writes a single cell directly into the front buffer.
    * Used by the drawing tools to paint cells while the simulation runs.
    *
-   * @param index - Flat cell index.
+   * Energy semantics vary by cell type:
+   *   - `Life` / `LifeVariant`: vitality — uses the caller-supplied `energy`.
+   *   - `Nutrient`: durability / remaining potency — always initialised to
+   *     1.0 (full) regardless of the `energy` argument.
+   *   - All others (`Wall`, `Toxin`, `Empty`, etc.): energy is unused; set to 0.
+   *
+   * @param index - Flat cell index (`y * width + x`).
    * @param type - Cell type to set.
-   * @param energy - Energy value to set (default 1.0).
+   * @param energy - Vitality for Life/LifeVariant cells [0, 1] (default 1.0).
+   *   Ignored for all other cell types.
    */
   paintCell(index: number, type: CellType, energy = 1.0): void {
     if (index < 0 || index >= this.totalCells) return;
     this.front.cellType[index] = type;
-    this.front.energy[index]   = type === CellType.Life ? energy : 0;
-    this.front.age[index]      = 0;
-    this.front.flags[index]    = 0;
+
+    // Assign energy according to cell-type semantics.
+    if (type === CellType.Life || type === CellType.LifeVariant) {
+      // Life vitality — caller-controlled.
+      this.front.energy[index] = energy;
+    } else if (type === CellType.Nutrient) {
+      // Nutrients always start at full potency (1.0) when painted.
+      this.front.energy[index] = 1.0;
+    } else {
+      // Walls, Toxins, Empty, etc.: energy field is unused.
+      this.front.energy[index] = 0;
+    }
+
+    this.front.age[index]   = 0;
+    this.front.flags[index] = 0;
   }
 
   /**
