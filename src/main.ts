@@ -16,6 +16,7 @@ import { Toolbar } from './ui/Toolbar.js';
 import { ControlPanel } from './ui/ControlPanel.js';
 import { DrawingTools } from './ui/DrawingTools.js';
 import { OverlayRenderer } from './rendering/OverlayRenderer.js';
+import { Tooltip } from './ui/Tooltip.js';
 import { bus } from './state/EventBus.js';
 import { appState } from './state/AppState.js';
 
@@ -44,7 +45,9 @@ function bootstrap(): void {
     throw new Error('bootstrap: #panel-container element not found.');
   }
 
-  const statusBar = document.getElementById('status-bar');
+  const statusBar     = document.getElementById('status-bar');
+  const mainArea      = document.getElementById('main-area');
+  const canvasContainer = document.getElementById('canvas-container');
 
   // --- Mount UI components --------------------------------------------------
 
@@ -61,7 +64,8 @@ function bootstrap(): void {
 
   // --- Mount drawing tools on the canvas -----------------------------------
   // DrawingTools translates pointer events into paintCell calls on the App.
-  // Right-click is suppressed from the browser context menu (erase mode).
+  // Right-click suppresses the context menu (erase mode).
+  // Phase 6: also handles scroll-wheel zoom, middle-drag pan, and hover events.
   const drawingTools = new DrawingTools();
   drawingTools.mount(canvas, (cellX, cellY, type) => {
     app.paintCell(cellX, cellY, type);
@@ -73,14 +77,12 @@ function bootstrap(): void {
   // --- Create overlay canvas for GravityWell arrows -------------------------
   // A transparent <canvas> is positioned directly over the simulation canvas.
   // It never captures pointer events (pointer-events: none in CSS).
-  const canvasContainer = document.getElementById('canvas-container');
-  const overlayCanvas   = document.createElement('canvas');
-  overlayCanvas.id      = 'overlay-canvas';
+  const overlayCanvas = document.createElement('canvas');
+  overlayCanvas.id    = 'overlay-canvas';
   overlayCanvas.setAttribute('aria-hidden', 'true');
   if (canvasContainer) {
     canvasContainer.append(overlayCanvas);
   } else {
-    // Fallback: append next to the sim canvas.
     canvas.parentElement?.append(overlayCanvas);
   }
 
@@ -98,29 +100,77 @@ function bootstrap(): void {
   // Repaint overlay on reset (all well cells are cleared).
   bus.on('reset', () => overlay.repaint());
 
-  // Wire step-requested from toolbar to app (the DOM event bubbles to window).
-  // Already handled inside App via the window event listener.
+  // --- Phase 6: Hover tooltip -----------------------------------------------
+  // The tooltip is a fixed-position div that shows cell state information
+  // when the cursor rests on a grid cell.  It reads from the SAB front buffer
+  // via App.getCellInfo so no worker round-trip is needed.
+  const tooltip = new Tooltip();
+  tooltip.mount(document.body);
+
+  bus.on('cellHover', ({ cellX, cellY }) => {
+    if (cellX < 0 || cellY < 0) {
+      // Cursor left the canvas.
+      tooltip.hide();
+      return;
+    }
+    const info = app.getCellInfo(cellX, cellY);
+    if (!info) {
+      tooltip.hide();
+      return;
+    }
+    // Use the most-recent pointermove clientX/Y.  We proxy them via a closure
+    // updated by a mousemove listener on the canvas so the tooltip follows
+    // the cursor accurately even when the cell index hasn't changed.
+    tooltip.show(info, _lastClientX, _lastClientY);
+  });
+
+  // Track cursor position for tooltip placement.
+  let _lastClientX = 0;
+  let _lastClientY = 0;
+  canvas.addEventListener('mousemove', (e) => {
+    _lastClientX = e.clientX;
+    _lastClientY = e.clientY;
+  });
+  canvas.addEventListener('mouseleave', () => tooltip.hide());
+
+  // --- Phase 6: Panel collapse toggle ---------------------------------------
+  // A small button at the top of the canvas area lets the user collapse the
+  // left panel to gain more canvas width.  The toggle stores its state via a
+  // CSS class on #main-area.
+  if (mainArea) {
+    const collapseBtn = document.createElement('button');
+    collapseBtn.id        = 'panel-collapse-btn';
+    collapseBtn.className = 'btn panel-collapse-btn';
+    collapseBtn.title     = 'Toggle control panel';
+    collapseBtn.setAttribute('aria-label', 'Toggle control panel');
+    collapseBtn.textContent = '◀';
+
+    collapseBtn.addEventListener('click', () => {
+      const collapsed = mainArea.classList.toggle('panel-collapsed');
+      collapseBtn.textContent = collapsed ? '▶' : '◀';
+      collapseBtn.setAttribute('aria-pressed', String(collapsed));
+    });
+
+    // Insert the button as the first child of the canvas container so it
+    // is always visible in the top-left corner of the canvas area.
+    if (canvasContainer) {
+      canvasContainer.prepend(collapseBtn);
+    }
+  }
 
   // --- Snapshot download ----------------------------------------------------
-  // In Phase 4 the canvas is owned by the RenderWorker; snapshots come back
-  // as blob URLs via the EventBus `snapshotReady` event.
   bus.on('snapshotReady', ({ url }) => {
     const link    = document.createElement('a');
     link.href     = url;
     link.download = `what-simulator-${Date.now()}.png`;
     link.click();
-    // Revoke the object URL after the download is triggered to free memory.
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   });
 
   // --- Status bar updates ---------------------------------------------------
 
   if (statusBar) {
-    // In Phase 4, all status-bar data comes from fpsUpdate (tickNum is now
-    // included in the payload — no separate 'tick' bus listener needed).
     bus.on('fpsUpdate', ({ fps, tickNum, liveCells, variantCells }) => {
-      // Show variant count only when variants actually exist, to avoid
-      // cluttering the status bar during normal (no-mutation) runs.
       const variantInfo = variantCells > 0
         ? `  |  Variant B: ${variantCells.toLocaleString()}`
         : '';

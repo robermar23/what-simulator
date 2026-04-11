@@ -575,6 +575,185 @@ details.panel-section[open] > summary.panel-heading::after {
 }
 
 /* --------------------------------------------------------------------------
+   Phase 6 — Hover tooltip
+   -------------------------------------------------------------------------- */
+
+/**
+ * Floating tooltip that shows cell state on hover.
+ * Uses position: fixed so it escapes any overflow:hidden ancestors and
+ * always sits relative to the viewport.
+ * Hidden by default; the `visible` class makes it appear.
+ */
+.cell-tooltip {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;         /* never blocks canvas interactions */
+  background-color: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 130px;
+  backdrop-filter: blur(4px);
+  /* Hidden by default — toggled via .visible */
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.1s, transform 0.1s;
+}
+
+.cell-tooltip.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/** Cell type name — shown as a small heading. */
+.cell-tooltip-type {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary);
+  letter-spacing: 0.04em;
+}
+
+/** Thin horizontal rule separating type from details. */
+.cell-tooltip-sep {
+  border: none;
+  border-block-start: 1px solid var(--color-border);
+  margin-block: 2px;
+}
+
+/** Detail line (energy, age, coords). */
+.cell-tooltip-row {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  white-space: pre;             /* preserve spacing for alignment */
+}
+
+/** Coordinate line — slightly dimmer. */
+.cell-tooltip-coord {
+  color: color-mix(in srgb, var(--color-text-muted) 70%, transparent);
+  font-size: 9px;
+  margin-block-start: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Phase 6 — Panel collapse button
+   -------------------------------------------------------------------------- */
+
+/**
+ * Small chevron button fixed at the top-left corner of the canvas container.
+ * Collapses / expands the left control panel to give the canvas more space.
+ */
+.panel-collapse-btn {
+  position: absolute;   /* relative to #canvas-container (position: relative) */
+  inset-block-start: var(--space-sm);
+  inset-inline-start: var(--space-sm);
+  z-index: 10;
+  padding: 2px 6px;
+  font-size: 10px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  line-height: 1;
+}
+
+.panel-collapse-btn:hover {
+  opacity: 1;
+}
+
+/**
+ * When #main-area has `.panel-collapsed`, slide the panel off-screen.
+ * A CSS grid transition handles the animation so no JS layout math is needed.
+ */
+#main-area {
+  transition: grid-template-columns 0.2s ease;
+}
+
+#main-area.panel-collapsed {
+  grid-template-columns: 0 1fr;
+}
+
+#main-area.panel-collapsed #panel-container {
+  overflow: hidden;
+  padding: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Phase 6 — Grid lines toggle row (inside Viewport section)
+   -------------------------------------------------------------------------- */
+
+/**
+ * Label text used beside the grid-lines checkbox.
+ * Shares base sizing with .radio-option labels for visual consistency.
+ */
+.toggle-label {
+  font-size: 12px;
+  color: var(--color-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+/**
+ * Small pill showing the keyboard shortcut for the adjacent control.
+ * Styled identically to a keyboard key badge.
+ */
+.toggle-shortcut {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-muted);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-inline-start: auto;
+}
+
+/* --------------------------------------------------------------------------
+   Phase 6 — Responsive layout (≤ 768 px)
+   -------------------------------------------------------------------------- */
+
+/**
+ * On narrow screens the panel overlays the canvas and starts collapsed so
+ * the canvas gets full width immediately.  The collapse button remains
+ * available so the user can slide the panel in.
+ */
+@media (max-width: 768px) {
+  :root {
+    --panel-width: 260px;
+  }
+
+  /* Stack panel on top of canvas rather than side-by-side. */
+  #main-area {
+    grid-template-columns: 1fr;
+    position: relative;
+  }
+
+  #panel-container {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    height: 100%;
+    width: var(--panel-width);
+    z-index: 20;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
+    /* Start collapsed on mobile. */
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+
+  /* When the parent has panel-collapsed removed on mobile, slide panel in. */
+  #main-area:not(.panel-collapsed) #panel-container {
+    transform: translateX(0);
+  }
+
+  /* On mobile the collapse button opens/closes an overlay drawer. */
+  #main-area.panel-collapsed {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --------------------------------------------------------------------------
    Utility classes
    -------------------------------------------------------------------------- */
 

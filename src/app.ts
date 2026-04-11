@@ -36,6 +36,28 @@
  */
 
 import { CellType }                           from './simulation/GridState.js';
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot of a single grid cell's current state.
+ * Returned by {@link App.getCellInfo} and used to populate the hover tooltip.
+ * Phase 6.
+ */
+export interface CellInfo {
+  /** Grid column index (0-based). */
+  readonly cellX: number;
+  /** Grid row index (0-based). */
+  readonly cellY: number;
+  /** Raw CellType enum value. */
+  readonly cellType: number;
+  /** Energy level [0, 1]. */
+  readonly energy: number;
+  /** Age in simulation ticks. */
+  readonly age: number;
+}
 import { allocateSharedGrid, makeControlView, makeBufferViews, CTRL_FRONT_IDX } from './workers/sharedBuffers.js';
 import { appState }                          from './state/AppState.js';
 import { bus }                               from './state/EventBus.js';
@@ -258,6 +280,37 @@ export class App {
     return wells;
   }
 
+  /**
+   * Returns a snapshot of the cell at grid coordinates `(cellX, cellY)`,
+   * or `null` if the coordinates are out-of-bounds.
+   *
+   * Reads directly from the SAB front buffer without messaging the sim worker.
+   * A slightly torn read is acceptable here — the tooltip is a visual hint,
+   * not authoritative simulation data.  The seqlock is intentionally NOT
+   * checked so this never blocks the main thread.
+   *
+   * @param cellX - Grid column index (0-based).
+   * @param cellY - Grid row index (0-based).
+   * @returns Cell info, or null if out of bounds.
+   */
+  getCellInfo(cellX: number, cellY: number): CellInfo | null {
+    const w = appState.gridWidth;
+    const h = appState.gridHeight;
+    if (cellX < 0 || cellX >= w || cellY < 0 || cellY >= h) return null;
+
+    const frontIdx = Atomics.load(this._ctrl, CTRL_FRONT_IDX) as 0 | 1;
+    const views    = this._sabViews[frontIdx];
+    const idx      = cellY * w + cellX;
+
+    return {
+      cellX,
+      cellY,
+      cellType: views.cellType[idx],
+      energy:   views.energy[idx],
+      age:      views.age[idx],
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Incoming SimulationWorker messages
   // -------------------------------------------------------------------------
@@ -384,6 +437,13 @@ export class App {
       if (!appState.running) {
         this._simWorker.postMessage({ type: 'step' } as SimWorkerInMsg);
       }
+    });
+
+    // Grid lines toggle (Phase 6) — forward to the render worker so it can
+    // enable/disable grid-line drawing in its rAF loop.
+    bus.on('gridLinesChange', ({ show }) => {
+      const msg: RenderWorkerInMsg = { type: 'gridLinesChange', show };
+      this._renderWorker.postMessage(msg);
     });
   }
 }
