@@ -24,6 +24,15 @@
  *     time and are consumed when Life spreads into them.
  *   - A single neighbour scan per Life cell now serves triple duty:
  *     live-neighbour counting, toxin/nutrient detection, and spread targeting.
+ *
+ * Phase 3 additions:
+ *   - Mutation: Life cells can randomly mutate into LifeVariant (Variant B)
+ *     each tick with probability `mutationRate`.
+ *   - LifeVariant cells use their own independent config parameters
+ *     (variantSpreadRate, variantEnergyDecayRate, etc.).
+ *   - Competition: LifeVariant cells can spread INTO adjacent regular Life
+ *     cells with probability `competitionStrength`, killing the Life cell.
+ *   - TickStats now tracks `variantCells` separately from `liveCells`.
  */
 
 import { CellType, CellFlags, type GridBuffers } from './GridState.js';
@@ -40,9 +49,11 @@ import { isEnterable, calcSpreadEnergy } from './rules/obstacleRules.js';
  * Populated by reusing the same object instance each tick — no allocation.
  */
 export interface TickStats {
-  /** Total living cells (Life + LifeVariant) after this tick. */
+  /** Total surviving regular Life cells (excluding Variant B) this tick. */
   liveCells: number;
-  /** Number of new cells born this tick. */
+  /** Total surviving LifeVariant (Variant B) cells this tick. */
+  variantCells: number;
+  /** Number of new cells born this tick (both Life and LifeVariant). */
   births: number;
   /** Number of cells that died this tick. */
   deaths: number;
@@ -74,7 +85,9 @@ export class SimulationEngine {
   private readonly _neighborBuf: Int32Array = new Int32Array(8);
 
   /** Reused stats object — mutated in place each tick. */
-  private readonly _stats: TickStats = { liveCells: 0, births: 0, deaths: 0 };
+  private readonly _stats: TickStats = {
+    liveCells: 0, variantCells: 0, births: 0, deaths: 0,
+  };
 
   /**
    * @param width - Grid width in cells.
@@ -109,23 +122,26 @@ export class SimulationEngine {
     back: GridBuffers,
     config: SimulationConfig,
   ): TickStats {
-    // Reset stats.
-    this._stats.liveCells = 0;
-    this._stats.births    = 0;
-    this._stats.deaths    = 0;
+    // Reset stats each tick.
+    this._stats.liveCells    = 0;
+    this._stats.variantCells = 0;
+    this._stats.births       = 0;
+    this._stats.deaths       = 0;
 
     const {
-      cellType:  ftType,  energy:  ftEnergy,  age:  ftAge,
+      cellType:  ftType,  energy:  ftEnergy,  age:  ftAge, flags: ftFlags,
     } = front;
     const {
-      cellType:  bkType,  energy:  bkEnergy,  age:  bkAge,
+      cellType:  bkType,  energy:  bkEnergy,  age:  bkAge, flags: bkFlags,
     } = back;
 
     const {
+      // Regular Life params
       spreadRate,
       energyDecayRate,
       reproductionThreshold,
       initialEnergy,
+      mutationRate,
       overpopulationLimit,
       underpopulationLimit,
       neighbourhoodMode,
@@ -134,6 +150,12 @@ export class SimulationEngine {
       nutrientBoost,
       nutrientAbsorption,
       nutrientDecayRate,
+      // Variant B params (Phase 3)
+      variantSpreadRate,
+      variantEnergyDecayRate,
+      variantReproductionThreshold,
+      variantInitialEnergy,
+      competitionStrength,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -152,8 +174,18 @@ export class SimulationEngine {
 
       // ------------------------------------------------------------------
       // Life cells (both variants)
+      //
+      // Phase 3: LifeVariant uses separate config values for decay and
+      // spread, but shares the same neighbour scanning, death checks, and
+      // obstacle interaction logic as regular Life.
       // ------------------------------------------------------------------
       if (type === CellType.Life || type === CellType.LifeVariant) {
+        // Determine which set of parameters to use based on cell type.
+        const isVariant = type === CellType.LifeVariant;
+        const cellDecayRate   = isVariant ? variantEnergyDecayRate        : energyDecayRate;
+        const cellSpreadRate  = isVariant ? variantSpreadRate              : spreadRate;
+        const cellReproThresh = isVariant ? variantReproductionThreshold   : reproductionThreshold;
+        const cellInitEnergy  = isVariant ? variantInitialEnergy           : initialEnergy;
 
         // Fill the neighbour buffer ONCE and use it for:
         //   1) live-neighbour counting (over/underpop)
@@ -172,16 +204,14 @@ export class SimulationEngine {
           if (nType === CellType.Life || nType === CellType.LifeVariant) {
             liveNeighbours++;
           } else if (nType === CellType.Toxin) {
-            // Only record first toxin found (Phase 2: no stacking).
             if (!adjacentToxin) adjacentToxin = true;
           } else if (nType === CellType.Nutrient) {
-            // Only record first nutrient found (Phase 2: no stacking).
             if (!adjacentNutrient) adjacentNutrient = true;
           }
         }
 
         // --- Energy budget: decay, toxin damage, nutrient boost ----------
-        let newEnergy = ftEnergy[i] - energyDecayRate;
+        let newEnergy = ftEnergy[i] - cellDecayRate;
 
         if (adjacentToxin) {
           // Damage scaled by toxin strength, reduced by life's resistance.
@@ -202,6 +232,7 @@ export class SimulationEngine {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
           bkAge[i]    = 0;
+          bkFlags[i]  = 0;
           this._stats.deaths++;
           continue;
         }
@@ -211,6 +242,7 @@ export class SimulationEngine {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
           bkAge[i]    = 0;
+          bkFlags[i]  = 0;
           this._stats.deaths++;
           continue;
         }
@@ -220,6 +252,7 @@ export class SimulationEngine {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
           bkAge[i]    = 0;
+          bkFlags[i]  = 0;
           this._stats.deaths++;
           continue;
         }
@@ -228,15 +261,39 @@ export class SimulationEngine {
         bkEnergy[i] = newEnergy;
         // Age increments, capped at Uint16 max (65 535).
         bkAge[i] = ftAge[i] < 65535 ? ftAge[i] + 1 : 65535;
-        this._stats.liveCells++;
+
+        // --- Mutation (Phase 3): regular Life may mutate to LifeVariant --
+        // This runs AFTER survival is confirmed so dying cells cannot
+        // mutate.  Mutation is written to the back buffer so it takes
+        // effect next tick.
+        if (!isVariant && mutationRate > 0 && Math.random() < mutationRate) {
+          // Transform this cell into LifeVariant B.
+          bkType[i]  = CellType.LifeVariant;
+          bkFlags[i] = ftFlags[i] | CellFlags.MUTATED;
+          this._stats.variantCells++;
+        } else {
+          // Cell type and flags remain as they were (already pre-copied).
+          // Just update the stats counter.
+          if (isVariant) {
+            this._stats.variantCells++;
+          } else {
+            this._stats.liveCells++;
+          }
+        }
 
         // --- Spread (reproduction) ----------------------------------------
-        if (newEnergy >= reproductionThreshold) {
+        // Uses variant-specific spread rate and initial energy.
+        if (newEnergy >= cellReproThresh) {
           this._trySpread(
             nLen, ftType, bkType, bkEnergy, bkAge,
-            type, spreadRate, initialEnergy,
-            toxinStrength, toxinResistance,
-            nutrientBoost, nutrientAbsorption,
+            type,
+            cellSpreadRate,
+            cellInitEnergy,
+            competitionStrength,
+            toxinStrength,
+            toxinResistance,
+            nutrientBoost,
+            nutrientAbsorption,
           );
         }
 
@@ -316,15 +373,21 @@ export class SimulationEngine {
    * Attempts to spread the life cell at index `i` into eligible neighbours.
    *
    * Phase 2 spread targets:
-   *   - Empty cells:    Life spawns at full `initialEnergy`.
+   *   - Empty cells:    Life spawns at full `cellInitEnergy`.
    *   - Toxin cells:    Life spawns with reduced energy (entry damage).
    *                     Toxin is consumed (overwritten by Life type).
    *   - Nutrient cells: Life spawns with boosted energy.
    *                     Nutrient is consumed (overwritten by Life type).
    *   - Wall cells:     Impassable — spread never succeeds.
-   *   - Life/LifeVariant: Already occupied — skipped.
+   *   - Life/LifeVariant: Normally occupied — skipped.
    *
-   * Each eligible slot is tried independently at probability `spreadRate`.
+   * Phase 3 addition — LifeVariant competition:
+   *   - LifeVariant cells MAY spread into regular Life cells with probability
+   *     `competitionStrength`.  This "hostile takeover" replaces the Life
+   *     cell with a LifeVariant cell, simulating competitive exclusion.
+   *   - Regular Life cells cannot spread into LifeVariant cells.
+   *
+   * Each eligible slot is tried independently.
    * Reads always use the front buffer so spread order doesn't create bias.
    *
    * @param nLen - Number of valid entries in `_neighborBuf`.
@@ -333,8 +396,9 @@ export class SimulationEngine {
    * @param bkEnergy - Back energy array (write).
    * @param bkAge - Back age array (write).
    * @param lifeType - The specific life type to propagate (Life or LifeVariant).
-   * @param spreadRate - Per-neighbour spread probability [0, 1].
-   * @param initialEnergy - Base energy assigned to newly born cells.
+   * @param cellSpreadRate - Per-neighbour spread probability [0, 1].
+   * @param cellInitEnergy - Base energy assigned to newly born cells.
+   * @param competitionStrength - Probability LifeVariant captures a Life cell.
    * @param toxinStrength - Toxin entry damage parameter.
    * @param toxinResistance - Toxin resistance multiplier.
    * @param nutrientBoost - Nutrient entry boost parameter.
@@ -347,26 +411,44 @@ export class SimulationEngine {
     bkEnergy: Float32Array,
     bkAge: Uint16Array,
     lifeType: CellType,
-    spreadRate: number,
-    initialEnergy: number,
+    cellSpreadRate: number,
+    cellInitEnergy: number,
+    competitionStrength: number,
     toxinStrength: number,
     toxinResistance: number,
     nutrientBoost: number,
     nutrientAbsorption: number,
   ): void {
+    const isVariant = lifeType === CellType.LifeVariant;
+
     for (let k = 0; k < nLen; k++) {
       const ni     = this._neighborBuf[k];
       const nType  = ftType[ni];
 
-      // Phase 2: isEnterable returns true for Empty, Toxin, and Nutrient.
-      // Wall and Life/LifeVariant cells are skipped.
-      if (!isEnterable(nType)) continue;
+      // Determine whether this neighbour is a valid spread target and which
+      // probability applies.
+      let prob: number;
 
-      if (Math.random() < spreadRate) {
+      if (isEnterable(nType)) {
+        // Normal spread into Empty / Toxin / Nutrient cells.
+        prob = cellSpreadRate;
+      } else if (isVariant && nType === CellType.Life) {
+        // Phase 3: LifeVariant can compete against regular Life cells.
+        // Uses the separate `competitionStrength` probability.
+        prob = competitionStrength;
+      } else {
+        // Wall, same-type, or opponent variant — cannot spread here.
+        continue;
+      }
+
+      if (Math.random() < prob) {
         // Compute spawn energy based on the target cell's type.
+        // Competition targets are treated as Empty for energy purposes
+        // (the variant takes over at its own initial energy).
+        const targetForEnergy = (nType === CellType.Life) ? CellType.Empty : nType;
         const spawnEnergy = calcSpreadEnergy(
-          nType,
-          initialEnergy,
+          targetForEnergy,
+          cellInitEnergy,
           toxinStrength,
           toxinResistance,
           nutrientBoost,
@@ -377,7 +459,12 @@ export class SimulationEngine {
         bkEnergy[ni] = spawnEnergy;
         bkAge[ni]    = 0;
         this._stats.births++;
-        this._stats.liveCells++;
+        // Track spread result in the right counter.
+        if (isVariant) {
+          this._stats.variantCells++;
+        } else {
+          this._stats.liveCells++;
+        }
       }
     }
   }

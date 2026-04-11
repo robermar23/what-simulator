@@ -597,6 +597,299 @@ describe('SimulationEngine — Nutrient obstacle', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phase 3 — Mutation (Life → LifeVariant)
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — mutation', () => {
+  it('a Life cell with mutationRate=1 becomes LifeVariant after one tick', () => {
+    // Place a single isolated life cell with guaranteed mutation.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 1.0;
+
+    const { front } = runOneTick(grid, engine, {
+      mutationRate:         1.0,  // guaranteed
+      energyDecayRate:      0.0,
+      spreadRate:           0.0,
+      underpopulationLimit: 0,
+    });
+
+    expect(front.cellType[i]).toBe(CellType.LifeVariant);
+  });
+
+  it('mutated cell receives the MUTATED flag', () => {
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 1.0;
+
+    runOneTick(grid, engine, {
+      mutationRate:         1.0,
+      energyDecayRate:      0.0,
+      spreadRate:           0.0,
+      underpopulationLimit: 0,
+    });
+
+    expect(SimulationEngine.hasFlag(grid.front.flags, i, CellFlags.MUTATED)).toBe(true);
+  });
+
+  it('mutated cell retains its energy', () => {
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 0.7;
+
+    const { front } = runOneTick(grid, engine, {
+      mutationRate:         1.0,
+      energyDecayRate:      0.0,  // no decay so energy is unchanged
+      spreadRate:           0.0,
+      underpopulationLimit: 0,
+    });
+
+    // Energy must be preserved through mutation.
+    expect(front.energy[i]).toBeCloseTo(0.7, 5);
+  });
+
+  it('mutationRate=0 never produces LifeVariant cells', () => {
+    // Seed the grid fully with Life; no mutation should occur.
+    grid.seed(1.0, 1.0);
+
+    runOneTick(grid, engine, {
+      mutationRate:         0.0,
+      energyDecayRate:      0.0,
+      spreadRate:           0.0,
+      underpopulationLimit: 0,
+      overpopulationLimit:  8,
+    });
+
+    for (let i = 0; i < grid.totalCells; i++) {
+      const t = grid.front.cellType[i];
+      // After tick every cell must remain Life or Empty — never LifeVariant.
+      expect(t === CellType.Life || t === CellType.Empty).toBe(true);
+    }
+  });
+
+  it('dead cells do not mutate (mutation only fires after survival check)', () => {
+    // A cell that will die this tick must not become LifeVariant.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 0.001; // will die from decay
+
+    const { front } = runOneTick(grid, engine, {
+      mutationRate:         1.0,  // would mutate if it survived
+      energyDecayRate:      0.01, // enough to kill it
+      spreadRate:           0.0,
+      underpopulationLimit: 0,
+    });
+
+    // The cell must be Empty, not LifeVariant.
+    expect(front.cellType[i]).toBe(CellType.Empty);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 — LifeVariant independent parameters
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — LifeVariant parameters', () => {
+  it('LifeVariant decays at variantEnergyDecayRate, not energyDecayRate', () => {
+    // Place a LifeVariant cell with high regular decay but low variant decay.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.LifeVariant;
+    grid.front.energy[i]   = 0.5;
+
+    const { front } = runOneTick(grid, engine, {
+      energyDecayRate:        0.2,   // would kill Life A almost immediately
+      variantEnergyDecayRate: 0.05,  // only a small hit for Variant B
+      spreadRate:             0.0,
+      variantSpreadRate:      0.0,
+      underpopulationLimit:   0,
+    });
+
+    // Variant B should have only lost 0.05, not 0.2.
+    expect(front.energy[i]).toBeCloseTo(0.45, 5);
+    expect(front.cellType[i]).toBe(CellType.LifeVariant);
+  });
+
+  it('LifeVariant spreads at variantSpreadRate (spreadRate = 0 has no effect)', () => {
+    // Centre LifeVariant, all neighbours empty, spreadRate=0 but
+    // variantSpreadRate=1 → all 8 neighbours become LifeVariant.
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre] = CellType.LifeVariant;
+    grid.front.energy[centre]   = 1.0;
+
+    runOneTick(grid, engine, {
+      spreadRate:                    0.0,   // Life A would not spread
+      variantSpreadRate:             1.0,   // Variant B definitely spreads
+      energyDecayRate:               0.0,
+      variantEnergyDecayRate:        0.0,
+      variantReproductionThreshold:  0.01,
+      variantInitialEnergy:          0.8,
+      underpopulationLimit:          0,
+    });
+
+    // All 8 Moore neighbours of the centre should now be LifeVariant.
+    const neighbours = [
+      1 * W + 1, 1 * W + 2, 1 * W + 3,
+      2 * W + 1,             2 * W + 3,
+      3 * W + 1, 3 * W + 2, 3 * W + 3,
+    ];
+    for (const n of neighbours) {
+      expect(grid.front.cellType[n]).toBe(CellType.LifeVariant);
+    }
+  });
+
+  it('LifeVariant newborns start at variantInitialEnergy', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3; // the one neighbour we can predict
+
+    grid.front.cellType[centre] = CellType.LifeVariant;
+    grid.front.energy[centre]   = 1.0;
+
+    runOneTick(grid, engine, {
+      variantSpreadRate:             1.0,
+      variantEnergyDecayRate:        0.0,
+      variantReproductionThreshold:  0.01,
+      variantInitialEnergy:          0.6,
+      energyDecayRate:               0.0,
+      spreadRate:                    0.0,
+      underpopulationLimit:          0,
+    });
+
+    // Any LifeVariant child should have spawned with variantInitialEnergy.
+    if (grid.front.cellType[right] === CellType.LifeVariant) {
+      expect(grid.front.energy[right]).toBeCloseTo(0.6, 5);
+    }
+  });
+
+  it('TickStats counts surviving LifeVariant cells in variantCells', () => {
+    // Place 3 isolated LifeVariant cells, no deaths expected.
+    const positions = [0 * W + 0, 0 * W + 4, 4 * W + 0];
+    for (const p of positions) {
+      grid.front.cellType[p] = CellType.LifeVariant;
+      grid.front.energy[p]   = 1.0;
+    }
+
+    const { stats } = runOneTick(grid, engine, {
+      variantEnergyDecayRate: 0.0,
+      variantSpreadRate:      0.0,
+      energyDecayRate:        0.0,
+      spreadRate:             0.0,
+      underpopulationLimit:   0,
+    });
+
+    // All 3 cells survive; variantCells should be at least 3 (corners may
+    // share neighbours at 5×5 but no overpop config is set here).
+    expect(stats.variantCells).toBeGreaterThanOrEqual(3);
+    // Regular liveCells should be 0 (no Life A on the grid).
+    expect(stats.liveCells).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Competition (LifeVariant vs Life A)
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — competition', () => {
+  it('LifeVariant spreads into adjacent Life A with competitionStrength=1', () => {
+    // LifeVariant at centre, Life to its right, empty everywhere else.
+    const centre    = 2 * W + 2;
+    const lifeRight = 2 * W + 3;
+
+    grid.front.cellType[centre]    = CellType.LifeVariant;
+    grid.front.energy[centre]      = 1.0;
+    grid.front.cellType[lifeRight] = CellType.Life;
+    grid.front.energy[lifeRight]   = 1.0;
+
+    runOneTick(grid, engine, {
+      // Guaranteed competition takeover.
+      competitionStrength:           1.0,
+      variantSpreadRate:             0.0,  // no normal spread, just competition
+      variantEnergyDecayRate:        0.0,
+      variantReproductionThreshold:  0.01,
+      variantInitialEnergy:          0.7,
+      energyDecayRate:               0.0,
+      spreadRate:                    0.0,
+      underpopulationLimit:          0,
+    });
+
+    // The Life A cell must have been taken over by LifeVariant.
+    expect(grid.front.cellType[lifeRight]).toBe(CellType.LifeVariant);
+  });
+
+  it('Life A cannot spread into LifeVariant cells', () => {
+    // Life at centre, LifeVariant to its right.  Life's spreadRate = 1 but
+    // it must not overwrite the LifeVariant.
+    const centre        = 2 * W + 2;
+    const variantRight  = 2 * W + 3;
+
+    grid.front.cellType[centre]       = CellType.Life;
+    grid.front.energy[centre]         = 1.0;
+    grid.front.cellType[variantRight] = CellType.LifeVariant;
+    grid.front.energy[variantRight]   = 1.0;
+
+    runOneTick(grid, engine, {
+      spreadRate:            1.0,   // Life A tries to spread everywhere
+      energyDecayRate:       0.0,
+      variantEnergyDecayRate: 0.0,
+      variantSpreadRate:     0.0,
+      competitionStrength:   0.0,  // no counter-competition
+      underpopulationLimit:  0,
+    });
+
+    // LifeVariant must remain — Life A cannot displace it.
+    expect(grid.front.cellType[variantRight]).toBe(CellType.LifeVariant);
+  });
+
+  it('LifeVariant does NOT spread into another LifeVariant cell', () => {
+    // Two adjacent LifeVariant cells — neither should change the other.
+    const left  = 2 * W + 1;
+    const right = 2 * W + 3;
+
+    grid.front.cellType[left]  = CellType.LifeVariant;
+    grid.front.energy[left]    = 1.0;
+    grid.front.cellType[right] = CellType.LifeVariant;
+    grid.front.energy[right]   = 1.0;
+
+    runOneTick(grid, engine, {
+      variantSpreadRate:             1.0,
+      competitionStrength:           1.0,
+      variantEnergyDecayRate:        0.0,
+      variantReproductionThreshold:  0.01,
+      variantInitialEnergy:          0.5,
+      energyDecayRate:               0.0,
+      spreadRate:                    0.0,
+      underpopulationLimit:          0,
+    });
+
+    // Each cell should remain LifeVariant (same type, not treated as a target).
+    expect(grid.front.cellType[left]).toBe(CellType.LifeVariant);
+    expect(grid.front.cellType[right]).toBe(CellType.LifeVariant);
+  });
+
+  it('competitionStrength=0 means LifeVariant never displaces Life A', () => {
+    const centre    = 2 * W + 2;
+    const lifeRight = 2 * W + 3;
+
+    grid.front.cellType[centre]    = CellType.LifeVariant;
+    grid.front.energy[centre]      = 1.0;
+    grid.front.cellType[lifeRight] = CellType.Life;
+    grid.front.energy[lifeRight]   = 1.0;
+
+    runOneTick(grid, engine, {
+      competitionStrength:           0.0,  // no competition
+      variantSpreadRate:             0.0,
+      variantEnergyDecayRate:        0.0,
+      variantReproductionThreshold:  0.01,
+      energyDecayRate:               0.0,
+      spreadRate:                    0.0,
+      underpopulationLimit:          0,
+    });
+
+    // The Life A cell must survive untouched.
+    expect(grid.front.cellType[lifeRight]).toBe(CellType.Life);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CellFlags static helpers
 // ---------------------------------------------------------------------------
 
