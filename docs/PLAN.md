@@ -497,6 +497,7 @@ Goal: All tunable sliders work and affect the simulation live.
 - Implement mutation and life variants (Variant B)
 - Add overpopulation/underpopulation death rules
 - Add neighborhood mode toggle (Moore vs Von Neumann)
+- Add **Initial Density slider** (0–100%) — controls the fraction of cells seeded as Life on Reset; wired to the `seed(density, ...)` call in `App`
 - Add Reset button
 - Add Status Bar (tick count, FPS, live cell count)
 
