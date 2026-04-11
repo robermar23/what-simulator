@@ -11,11 +11,17 @@
  * Phase 2 additions:
  *   - Drawing Tools section: brush type selector + brush size slider.
  *
+ * Phase 3 additions:
+ *   - Initial Density slider (controls seed fraction on Reset).
+ *   - Life Variant B section (collapsible; appears when mutations occur).
+ *   - Variant B parameter sliders + competition strength slider.
+ *
  * Slider changes call `appState.updateConfig(key, value)` which fires the
  * `configChange` event consumed by the simulation engine on the next tick.
  */
 
 import { appState, type DrawingTool } from '../state/AppState.js';
+import { bus } from '../state/EventBus.js';
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
 import { Presets } from '../simulation/config/SimulationConfig.js';
 
@@ -121,7 +127,7 @@ const LIFE_SLIDERS: readonly SliderSpec[] = [
     label: 'Mutation Rate',
     key:   'mutationRate',
     min: 0, max: 0.1, step: 0.001,
-    title: 'Probability per tick that a cell mutates into Life Variant B.',
+    title: 'Probability per tick that a Life cell mutates into Variant B (yellow).',
   },
   {
     label: 'Overpop. Limit',
@@ -134,6 +140,43 @@ const LIFE_SLIDERS: readonly SliderSpec[] = [
     key:   'underpopulationLimit',
     min: 0, max: 8, step: 1,
     title: 'Minimum live neighbours needed to survive. 0 = disabled.',
+  },
+];
+
+/**
+ * Phase 3 — Life Variant B slider specs.
+ * These control the independent parameters for mutated (LifeVariant) cells.
+ */
+const VARIANT_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Spread Rate',
+    key:   'variantSpreadRate',
+    min: 0, max: 1, step: 0.01,
+    title: 'Spread probability for Variant B cells — can differ from Life A.',
+  },
+  {
+    label: 'Energy Decay',
+    key:   'variantEnergyDecayRate',
+    min: 0, max: 0.1, step: 0.001,
+    title: 'Metabolic cost per tick for Variant B.',
+  },
+  {
+    label: 'Repro. Threshold',
+    key:   'variantReproductionThreshold',
+    min: 0, max: 1, step: 0.01,
+    title: 'Minimum energy for Variant B to reproduce.',
+  },
+  {
+    label: 'Initial Energy',
+    key:   'variantInitialEnergy',
+    min: 0, max: 1, step: 0.01,
+    title: 'Starting energy for newly born Variant B cells.',
+  },
+  {
+    label: 'Competition',
+    key:   'competitionStrength',
+    min: 0, max: 1, step: 0.01,
+    title: 'Probability per tick that Variant B spreads into (kills) an adjacent Life A cell.',
   },
 ];
 
@@ -166,6 +209,17 @@ export class ControlPanel {
   private readonly _toolButtons = new Map<DrawingTool, HTMLButtonElement>();
 
   /**
+   * The Life Variant B collapsible section element.
+   * Hidden until at least one variant cell exists.
+   */
+  private _variantSection: HTMLElement | null = null;
+
+  /**
+   * Badge element inside the variant section heading that shows variant count.
+   */
+  private _variantBadge: HTMLSpanElement | null = null;
+
+  /**
    * Builds and inserts the control panel DOM into `container`.
    *
    * @param container - The element to append the panel into.
@@ -178,11 +232,19 @@ export class ControlPanel {
     // --- Presets section ---------------------------------------------------
     panel.append(this._buildPresetsSection());
 
+    // --- Seed settings (Phase 3: Initial Density) -------------------------
+    panel.append(this._buildSeedSection());
+
     // --- Drawing Tools section (Phase 2) ----------------------------------
     panel.append(this._buildDrawingToolsSection());
 
     // --- Life parameters section -------------------------------------------
     panel.append(this._buildSection('Life Parameters', LIFE_SLIDERS));
+
+    // --- Life Variant B section (Phase 3: collapsible, hidden initially) --
+    const variantSection = this._buildVariantSection();
+    this._variantSection = variantSection;
+    panel.append(variantSection);
 
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
@@ -191,11 +253,147 @@ export class ControlPanel {
     panel.append(this._buildViewportSection());
 
     container.append(panel);
+
+    // Subscribe to fpsUpdate so the variant section can be shown/hidden as
+    // soon as variants appear.  Fires at ~4 Hz — cheap enough.
+    bus.on('fpsUpdate', ({ variantCells }) => {
+      this._updateVariantSectionVisibility(variantCells);
+    });
   }
 
   // -------------------------------------------------------------------------
   // Section builders
   // -------------------------------------------------------------------------
+
+  /**
+   * Builds the Seed Settings section (Phase 3).
+   *
+   * Contains the Initial Density slider which controls what fraction of cells
+   * are seeded as Life when the user hits Reset.  This value is stored in
+   * AppState (not SimulationConfig) because it only applies at reset time.
+   *
+   * @returns The built section element.
+   */
+  private _buildSeedSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'panel-section';
+
+    const heading = document.createElement('h2');
+    heading.className   = 'panel-heading';
+    heading.textContent = 'Seed Settings';
+    section.append(heading);
+
+    // --- Initial Density slider -------------------------------------------
+    const row = document.createElement('div');
+    row.className = 'slider-row';
+    row.title     = 'Fraction of cells filled with Life when the simulation is reset.';
+
+    const label = document.createElement('label');
+    label.htmlFor     = 'initial-density-slider';
+    label.textContent = 'Initial Density';
+    label.className   = 'slider-label';
+
+    const input = document.createElement('input');
+    input.type      = 'range';
+    input.id        = 'initial-density-slider';
+    input.min       = '0';
+    input.max       = '1';
+    input.step      = '0.01';
+    input.value     = String(appState.initialDensity);
+    input.className = 'slider';
+    input.setAttribute('aria-label', 'Initial density on reset');
+
+    const readout = document.createElement('span');
+    readout.className   = 'slider-value';
+    readout.textContent = `${Math.round(appState.initialDensity * 100)}%`;
+
+    input.addEventListener('input', () => {
+      const v = Number(input.value);
+      appState.initialDensity = v;
+      // Display as a percentage for clarity.
+      readout.textContent = `${Math.round(v * 100)}%`;
+    });
+
+    row.append(label, input, readout);
+    section.append(row);
+
+    return section;
+  }
+
+  /**
+   * Builds the Life Variant B collapsible section (Phase 3).
+   *
+   * Initially hidden (via the `hidden` attribute).  Shown when the
+   * {@link fpsUpdate} event reports `variantCells > 0`.  Uses a
+   * `<details>/<summary>` element so the user can collapse it even after
+   * it appears.
+   *
+   * The heading badge shows the live Variant B cell count.
+   *
+   * @returns The built section element (initially hidden).
+   */
+  private _buildVariantSection(): HTMLElement {
+    // Use a <details> element for native browser collapsing behaviour.
+    const details = document.createElement('details');
+    details.className = 'panel-section variant-section';
+    // Open by default when first revealed so the user notices it.
+    details.open = true;
+    // Hidden until variants are detected.
+    details.hidden = true;
+
+    // Summary acts as the clickable heading / toggle.
+    const summary = document.createElement('summary');
+    summary.className = 'panel-heading variant-heading';
+
+    const headingText = document.createElement('span');
+    headingText.textContent = 'Life Variant B';
+
+    // Badge showing the live variant count (e.g. "1 234").
+    const badge = document.createElement('span');
+    badge.className   = 'variant-badge';
+    badge.textContent = '0';
+    badge.setAttribute('aria-label', 'Variant B cell count');
+    this._variantBadge = badge;
+
+    summary.append(headingText, badge);
+    details.append(summary);
+
+    // Description blurb so first-time users understand what they are seeing.
+    const blurb = document.createElement('p');
+    blurb.className   = 'variant-blurb';
+    blurb.textContent =
+      'Mutated Life cells (yellow). Adjust their independent parameters ' +
+      'or use Competition to control how aggressively they displace Life A.';
+    details.append(blurb);
+
+    // Sliders for all Variant B parameters.
+    for (const spec of VARIANT_SLIDERS) {
+      details.append(this._buildSlider(spec));
+    }
+
+    return details;
+  }
+
+  /**
+   * Shows or hides the Life Variant B section and updates its badge count.
+   *
+   * Called each time an `fpsUpdate` event fires (~4 Hz).
+   *
+   * @param variantCells - Current number of LifeVariant cells.
+   */
+  private _updateVariantSectionVisibility(variantCells: number): void {
+    if (!this._variantSection) return;
+
+    if (variantCells > 0) {
+      // Reveal the section the first time variants appear.
+      this._variantSection.hidden = false;
+    }
+
+    // Always update the badge so the user can watch the colony grow / shrink.
+    if (this._variantBadge) {
+      this._variantBadge.textContent = variantCells.toLocaleString();
+    }
+  }
 
   /**
    * Builds the Drawing Tools section (Phase 2).
@@ -353,7 +551,7 @@ export class ControlPanel {
     // Wire the input.
     input.addEventListener('input', () => {
       const numVal = Number(input.value);
-      // SimulationConfig values are all numeric in Phase 1.
+      // SimulationConfig values are all numeric in Phase 1–3.
       appState.updateConfig(spec.key, numVal as SimulationConfig[typeof spec.key]);
       readout.textContent = this._format(numVal, spec.step);
     });
@@ -425,17 +623,10 @@ export class ControlPanel {
     heading.textContent = 'Viewport';
     section.append(heading);
 
-    const spec: SliderSpec = {
-      label: 'Cell Size',
-      key:   'initialEnergy', // placeholder — handled separately below
-      min: 1, max: 8, step: 1,
-      title: 'Canvas pixels per cell (zoom level).',
-    };
-
     // Build a custom non-config slider for cellSize.
     const row  = document.createElement('div');
     row.className = 'slider-row';
-    row.title     = spec.title;
+    row.title     = 'Canvas pixels per cell (zoom level).';
 
     const label = document.createElement('label');
     label.htmlFor     = 'cell-size-slider';
@@ -530,10 +721,21 @@ export class ControlPanel {
    * Called when a preset is loaded.
    */
   private _syncSliders(): void {
+    // Sync main Life sliders.
     for (const spec of LIFE_SLIDERS) {
       const val = Number(appState.config[spec.key]);
       this._inputs.get(spec.key)!.value = String(val);
       this._readouts.get(spec.key)!.textContent = this._format(val, spec.step);
+    }
+    // Sync Variant B sliders.
+    for (const spec of VARIANT_SLIDERS) {
+      const input   = this._inputs.get(spec.key);
+      const readout = this._readouts.get(spec.key);
+      if (input && readout) {
+        const val = Number(appState.config[spec.key]);
+        input.value          = String(val);
+        readout.textContent  = this._format(val, spec.step);
+      }
     }
   }
 }
