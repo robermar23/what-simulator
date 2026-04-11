@@ -355,6 +355,67 @@ body {
 }
 
 /* --------------------------------------------------------------------------
+   Drawing tool button group (Phase 2)
+   -------------------------------------------------------------------------- */
+
+/**
+ * Wraps the row of brush-type tool buttons.
+ * Uses a wrapping flex layout so buttons reflow on narrow panels.
+ */
+.tool-btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+/**
+ * Individual tool selector button.
+ * Smaller and more compact than the toolbar buttons.
+ */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  background-color: var(--color-surface);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s, color 0.1s;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tool-btn:hover {
+  background-color: var(--color-surface-2);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+/** Active (selected) state — highlighted with primary colour border. */
+.tool-btn.active {
+  background-color: var(--color-surface-2);
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  box-shadow: 0 0 6px rgba(0, 255, 136, 0.25);
+}
+
+/**
+ * Small colour swatch circle shown to the left of the button label.
+ * The background-color is set inline per-tool to match the cell colour.
+ */
+.tool-btn-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------------------
    Scrollbar styling (Chromium/Firefox)
    -------------------------------------------------------------------------- */
 
