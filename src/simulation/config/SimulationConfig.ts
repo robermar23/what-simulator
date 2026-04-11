@@ -271,4 +271,43 @@ export const Presets = {
       neighbourhoodMode:    'moore',
     };
   },
+
+  /**
+   * Balanced ecosystem — life grows at a moderate pace, mutations produce a
+   * competing Variant B, and the obstacle parameters are tuned so nutrients,
+   * toxins, and drains all play a meaningful role.  Good starting point for
+   * exploring all obstacle types together.
+   */
+  ecosystemBalance(): SimulationConfig {
+    return {
+      ...defaultConfig(),
+      // Moderate spread — neither floods nor dies out quickly.
+      spreadRate:           0.35,
+      energyDecayRate:      0.004,
+      reproductionThreshold: 0.15,
+      initialEnergy:        0.85,
+
+      // Mutation enabled — Variant B appears after several hundred ticks.
+      mutationRate:         0.002,
+      variantSpreadRate:    0.4,
+      variantEnergyDecayRate: 0.006,
+      competitionStrength:  0.2,
+
+      // Partial toxin resistance and strong nutrient absorption create
+      // interesting hotspots on mixed terrain.
+      toxinResistance:    0.3,
+      nutrientAbsorption: 1.0,
+      gravityResponse:    0.8,
+
+      // Obstacle tuning — balanced intensity so each obstacle type is visible.
+      toxinStrength:     0.04,
+      toxinDurability:   15,
+      nutrientBoost:     0.015,
+      nutrientDecayRate: 0.0005,
+      drainRate:         0.008,
+      gravityStrength:   0.6,
+      barrierLifetime:   300,
+      fireBurnRate:      0.004,
+    };
+  },
 } as const;
