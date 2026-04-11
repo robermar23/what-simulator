@@ -48,7 +48,6 @@ function bootstrap(): void {
 
   const toolbar = new Toolbar();
   toolbar.mount(toolbarContainer);
-  toolbar.setCanvas(canvas);
 
   const controlPanel = new ControlPanel();
   controlPanel.mount(panelContainer);
@@ -69,31 +68,32 @@ function bootstrap(): void {
   // Wire step-requested from toolbar to app (the DOM event bubbles to window).
   // Already handled inside App via the window event listener.
 
+  // --- Snapshot download ----------------------------------------------------
+  // In Phase 4 the canvas is owned by the RenderWorker; snapshots come back
+  // as blob URLs via the EventBus `snapshotReady` event.
+  bus.on('snapshotReady', ({ url }) => {
+    const link    = document.createElement('a');
+    link.href     = url;
+    link.download = `what-simulator-${Date.now()}.png`;
+    link.click();
+    // Revoke the object URL after the download is triggered to free memory.
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  });
+
   // --- Status bar updates ---------------------------------------------------
 
   if (statusBar) {
-    let currentTick    = 0;
-    let currentFps     = 0;
-    let currentLive    = 0;
-    let currentVariant = 0;
-
-    bus.on('tick', ({ tick }) => {
-      currentTick = tick;
-    });
-
-    bus.on('fpsUpdate', ({ fps, liveCells, variantCells }) => {
-      currentFps     = Math.round(fps);
-      currentLive    = liveCells;
-      currentVariant = variantCells;
-
+    // In Phase 4, all status-bar data comes from fpsUpdate (tickNum is now
+    // included in the payload — no separate 'tick' bus listener needed).
+    bus.on('fpsUpdate', ({ fps, tickNum, liveCells, variantCells }) => {
       // Show variant count only when variants actually exist, to avoid
       // cluttering the status bar during normal (no-mutation) runs.
-      const variantInfo = currentVariant > 0
-        ? `  |  Variant B: ${currentVariant.toLocaleString()}`
+      const variantInfo = variantCells > 0
+        ? `  |  Variant B: ${variantCells.toLocaleString()}`
         : '';
 
       statusBar.textContent =
-        `Tick: ${currentTick}  |  FPS: ${currentFps}  |  Live: ${currentLive.toLocaleString()}${variantInfo}`;
+        `Tick: ${tickNum}  |  FPS: ${Math.round(fps)}  |  Live: ${liveCells.toLocaleString()}${variantInfo}`;
     });
   }
 }
