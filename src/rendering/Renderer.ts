@@ -36,11 +36,20 @@ export type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
  * The subset of the Canvas 2D rendering context actually used by the Renderer.
  * Both `CanvasRenderingContext2D` and `OffscreenCanvasRenderingContext2D`
  * satisfy this shape, so we can write to either without type gymnastics.
+ *
+ * Phase 6: added stroke methods for grid-line overlay.
  */
 interface Canvas2DCtx {
   imageSmoothingEnabled: boolean;
   createImageData(sw: number, sh: number): ImageData;
   putImageData(imagedata: ImageData, dx: number, dy: number): void;
+  // Grid-line drawing (Phase 6)
+  strokeStyle: string | CanvasGradient | CanvasPattern;
+  lineWidth: number;
+  beginPath(): void;
+  moveTo(x: number, y: number): void;
+  lineTo(x: number, y: number): void;
+  stroke(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +60,12 @@ interface Canvas2DCtx {
 export interface RendererOptions {
   /** Pixels per cell (1–8).  Default: 2. */
   cellSize?: number;
+  /**
+   * Whether to draw thin grid lines between cells.  Default: false.
+   * Grid lines are only visually meaningful at `cellSize` >= 2.
+   * Phase 6.
+   */
+  showGridLines?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +104,12 @@ export class Renderer {
   private _totalCells = 0;
 
   /**
+   * Whether thin grid-line borders should be drawn between cells.
+   * Only visible at `cellSize` >= 2 px.  Phase 6.
+   */
+  private _showGridLines = false;
+
+  /**
    * Pre-allocated ImageData written into each frame.
    * Re-allocated when grid dimensions or cellSize changes.
    */
@@ -115,8 +136,9 @@ export class Renderer {
    * @throws If the Canvas 2D context cannot be acquired.
    */
   constructor(canvas: AnyCanvas, options: RendererOptions = {}) {
-    this._canvas   = canvas;
-    this._cellSize = options.cellSize ?? 2;
+    this._canvas        = canvas;
+    this._cellSize      = options.cellSize      ?? 2;
+    this._showGridLines = options.showGridLines ?? false;
 
     // Both HTMLCanvasElement and OffscreenCanvas return a context that
     // implements the Canvas2DCtx interface we rely on.
@@ -149,6 +171,21 @@ export class Renderer {
     this._cellSize = size;
     // Force _resize() on the next render by invalidating the cached dimensions.
     this._gridWidth = 0;
+  }
+
+  /** Whether grid lines are currently drawn between cells. */
+  get showGridLines(): boolean {
+    return this._showGridLines;
+  }
+
+  /**
+   * Enables or disables the thin grid-line overlay.
+   * Grid lines are only visible when `cellSize` >= 2.
+   *
+   * @param show - True to draw grid lines; false to hide them.
+   */
+  set showGridLines(show: boolean) {
+    this._showGridLines = show;
   }
 
   /**
@@ -224,6 +261,12 @@ export class Renderer {
 
     // Flush the entire pixel buffer to the canvas in one DMA-like call.
     this._ctx.putImageData(this._imageData, 0, 0);
+
+    // Phase 6: draw thin grid lines over the cells if enabled.
+    // Only drawn at cellSize >= 2 — at 1 px per cell the lines would cover cells.
+    if (this._showGridLines && cellSize >= 2) {
+      this._drawGridLines();
+    }
   }
 
   /**
@@ -244,6 +287,42 @@ export class Renderer {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Draws thin lines along every cell boundary using the Canvas 2D stroke API.
+   *
+   * Called after `putImageData` so lines appear on top of cell colours.
+   * Uses a very low-opacity white so the grid hint is subtle on all backgrounds.
+   * Each line is 1 physical pixel regardless of `cellSize`.
+   */
+  private _drawGridLines(): void {
+    const ctx        = this._ctx;
+    const cellSize   = this._cellSize;
+    const canvasW    = this._canvas.width;
+    const canvasH    = this._canvas.height;
+    const gridWidth  = this._gridWidth;
+    const gridHeight = this._gridHeight;
+
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth   = 1;
+
+    // Vertical lines — one per column boundary.
+    for (let cx = 0; cx <= gridWidth; cx++) {
+      const x = cx * cellSize;
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, canvasH);
+    }
+
+    // Horizontal lines — one per row boundary.
+    for (let cy = 0; cy <= gridHeight; cy++) {
+      const y = cy * cellSize;
+      ctx.moveTo(0,      y + 0.5);
+      ctx.lineTo(canvasW, y + 0.5);
+    }
+
+    ctx.stroke();
+  }
 
   /**
    * Allocates (or re-allocates) the `ImageData` and helper buffers to match

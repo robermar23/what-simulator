@@ -167,6 +167,14 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       renderer.invalidate();
       break;
 
+    // --- gridLinesChange (Phase 6) -----------------------------------------
+    case 'gridLinesChange':
+      // Toggle the thin cell-boundary grid-line overlay.
+      renderer.showGridLines = msg.show;
+      // No invalidate needed — grid lines are drawn after putImageData each
+      // frame and the change takes effect immediately on the next rAF tick.
+      break;
+
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {
       // `convertToBlob` is available on OffscreenCanvas (not HTMLCanvasElement).
