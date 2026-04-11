@@ -57,9 +57,15 @@ interface ColorEntry {
 /**
  * Colour table indexed by {@link CellType} ordinal value.
  * Must have exactly `CELL_TYPE_COUNT` entries in the same order as the enum.
+ *
+ * Phase 5 additions:
+ *   - Barrier (7): energy-modulated so it visually fades to transparent as it
+ *     approaches the end of its lifetime.  minBrightness = 0 lets it vanish.
+ *   - Fire (8): energy-modulated — bright orange-red when fully fuelled, dims
+ *     to a dark ember colour just before burning out.
  */
 const COLOR_ENTRIES: readonly ColorEntry[] = [
-  // 0 — Empty
+  // 0 — Empty — near-black void
   { hex: '#0a0a12', minBrightness: 1, energyModulated: false },
   // 1 — Life (A) — bright green, dims with low energy
   { hex: '#00ff88', minBrightness: 0.15, energyModulated: true },
@@ -71,13 +77,15 @@ const COLOR_ENTRIES: readonly ColorEntry[] = [
   { hex: '#00cc44', minBrightness: 1, energyModulated: false },
   // 5 — Drain — deep blue
   { hex: '#0044cc', minBrightness: 1, energyModulated: false },
-  // 6 — GravityWell — warm orange
+  // 6 — GravityWell — warm orange glow
   { hex: '#ff8800', minBrightness: 1, energyModulated: false },
-  // 7 — Barrier — bright yellow
-  { hex: '#ffee00', minBrightness: 1, energyModulated: false },
-  // 8 — Fire — red-orange
-  { hex: '#ff4400', minBrightness: 1, energyModulated: false },
-  // 9 — Ice — pale blue-white
+  // 7 — Barrier — bright yellow fading to invisible as lifetime runs out.
+  //     minBrightness=0 so the colour fully dims when energy → 0.
+  { hex: '#ffee00', minBrightness: 0, energyModulated: true },
+  // 8 — Fire — red-orange ember; dims from bright flame to dark ash.
+  //     minBrightness=0.1 gives a visible dark-red glow just before burnout.
+  { hex: '#ff4400', minBrightness: 0.1, energyModulated: true },
+  // 9 — Ice — pale blue-white, static
   { hex: '#aaddff', minBrightness: 1, energyModulated: false },
   // 10 — LifeVariant (B) — bright yellow, dims with low energy
   { hex: '#ffdd00', minBrightness: 0.15, energyModulated: true },
