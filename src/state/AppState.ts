@@ -87,6 +87,14 @@ export class AppState {
    */
   private _initialDensity = 0.3;
 
+  /**
+   * Whether the grid-line overlay is currently visible.
+   * Grid lines are thin cell-boundary lines drawn over the simulation canvas.
+   * Only meaningful when `cellSize` >= 2 (at 1 px per cell the lines obscure cells).
+   * Phase 6.
+   */
+  private _showGridLines = false;
+
   // -------------------------------------------------------------------------
   // Getters
   // -------------------------------------------------------------------------
@@ -120,6 +128,12 @@ export class AppState {
    * Read by {@link App} each time the grid is re-seeded.
    */
   get initialDensity(): number { return this._initialDensity; }
+
+  /**
+   * Whether the grid-line overlay is currently visible.
+   * Phase 6.
+   */
+  get showGridLines(): boolean { return this._showGridLines; }
 
   // -------------------------------------------------------------------------
   // Setters (fire events)
@@ -211,6 +225,18 @@ export class AppState {
    */
   set initialDensity(value: number) {
     this._initialDensity = Math.max(0, Math.min(1, value));
+  }
+
+  /**
+   * Toggles the grid-line overlay and notifies subscribers.
+   * Grid lines are only visually meaningful when `cellSize` >= 2.
+   *
+   * @param value - True to show grid lines; false to hide.
+   */
+  set showGridLines(value: boolean) {
+    if (this._showGridLines === value) return;
+    this._showGridLines = value;
+    bus.emit('gridLinesChange', { show: value });
   }
 }
 

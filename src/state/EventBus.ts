@@ -83,6 +83,27 @@ export interface EventMap {
     /** Object URL pointing to the PNG blob — revoke after use. */
     url: string;
   };
+
+  /**
+   * Fired when the grid-line overlay is toggled on or off.
+   * Phase 6: thin cell-boundary lines drawn over the simulation canvas.
+   */
+  gridLinesChange: {
+    /** True when grid lines should be rendered. */
+    show: boolean;
+  };
+
+  /**
+   * Fired when the cursor hovers over a cell on the simulation canvas.
+   * Phase 6: used to populate the hover tooltip.
+   * Not fired while a paint gesture is in progress.
+   */
+  cellHover: {
+    /** Grid column index (0-based), or -1 when leaving the canvas. */
+    cellX: number;
+    /** Grid row index (0-based), or -1 when leaving the canvas. */
+    cellY: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
