@@ -416,6 +416,86 @@ body {
 }
 
 /* --------------------------------------------------------------------------
+   Life Variant B collapsible section (Phase 3)
+   -------------------------------------------------------------------------- */
+
+/**
+ * The <details> wrapper for the Variant B section inherits .panel-section
+ * layout but needs a few overrides so <summary> renders as the heading.
+ */
+details.variant-section {
+  /* Remove default browser disclosure triangle — we rely on the heading
+     text alone to indicate expand/collapse. */
+  list-style: none;
+}
+
+details.variant-section > summary {
+  list-style: none;
+  cursor: pointer;
+  /* Make the summary act like a .panel-heading visually. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  user-select: none;
+}
+
+details.variant-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The "▶ / ▼" chevron is provided purely via CSS so it doesn't need extra
+   DOM markup. */
+details.variant-section > summary::after {
+  content: '▶';
+  font-size: 9px;
+  color: var(--color-text-muted);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+details.variant-section[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+/**
+ * Variant heading uses --color-warning (yellow) to match the LifeVariant
+ * cell colour, so the user can visually associate panel and canvas.
+ */
+.variant-heading {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 40%, transparent);
+}
+
+/**
+ * Small pill badge showing the live Variant B count.
+ * Positioned inline at the end of the heading row.
+ */
+.variant-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background-color: color-mix(in srgb, var(--color-warning) 20%, transparent);
+  color: var(--color-warning);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 50%, transparent);
+  border-radius: 10px;
+  padding: 0 var(--space-sm);
+  min-width: 36px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/**
+ * Short description paragraph shown below the summary in the Variant B
+ * section to help users understand what they are tuning.
+ */
+.variant-blurb {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+  padding-block: var(--space-xs);
+}
+
+/* --------------------------------------------------------------------------
    Scrollbar styling (Chromium/Firefox)
    -------------------------------------------------------------------------- */
 
