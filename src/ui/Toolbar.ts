@@ -28,7 +28,6 @@ export class Toolbar {
   private _speedSlider!: HTMLInputElement;
   private _speedLabel!: HTMLSpanElement;
   private _snapshotBtn!: HTMLButtonElement;
-  private _canvas: HTMLCanvasElement | null = null;
 
   /**
    * Builds and inserts the toolbar DOM into `container`.
@@ -124,15 +123,6 @@ export class Toolbar {
     window.addEventListener('keydown', this._onKeyDown.bind(this));
   }
 
-  /**
-   * Registers the canvas reference so the snapshot button can export it.
-   *
-   * @param canvas - The simulation canvas element.
-   */
-  setCanvas(canvas: HTMLCanvasElement): void {
-    this._canvas = canvas;
-  }
-
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
@@ -185,14 +175,15 @@ export class Toolbar {
   }
 
   /**
-   * Exports the current canvas frame as a PNG download.
+   * Requests a PNG snapshot by emitting `snapshotRequested` on the EventBus.
+   *
+   * In Phase 4 the canvas has been transferred to the RenderWorker via
+   * `transferControlToOffscreen()`, so the main thread can no longer call
+   * `canvas.toDataURL()`.  Instead, the App relays the request to the
+   * RenderWorker, which responds with a blob URL via `snapshotReady`.
+   * The main thread then triggers the download inside `main.ts`.
    */
   private _takeSnapshot(): void {
-    if (!this._canvas) return;
-    const dataUrl = this._canvas.toDataURL('image/png');
-    const link    = document.createElement('a');
-    link.href     = dataUrl;
-    link.download = `what-simulator-${Date.now()}.png`;
-    link.click();
+    bus.emit('snapshotRequested', {});
   }
 }
