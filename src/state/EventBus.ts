@@ -65,12 +65,23 @@ export interface EventMap {
 
   /** Fired when the rendered FPS counter updates. */
   fpsUpdate: {
-    /** Current FPS. */
+    /** Current FPS (or sim ticks/sec in Phase 4). */
     fps: number;
+    /** Monotonic simulation tick number at time of emission. */
+    tickNum: number;
     /** Total live cells (Life + LifeVariant combined). */
     liveCells: number;
     /** Number of LifeVariant (Variant B) cells currently alive. */
     variantCells: number;
+  };
+
+  /** Fired when the user requests a PNG snapshot of the canvas. */
+  snapshotRequested: Record<string, never>;
+
+  /** Fired when the render worker has produced a snapshot blob URL. */
+  snapshotReady: {
+    /** Object URL pointing to the PNG blob — revoke after use. */
+    url: string;
   };
 }
 
