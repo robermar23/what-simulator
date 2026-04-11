@@ -26,8 +26,7 @@
 
 import { appState, type DrawingTool } from '../state/AppState.js';
 import { bus } from '../state/EventBus.js';
-import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
-import { Presets } from '../simulation/config/SimulationConfig.js';
+import { type SimulationConfig, Presets } from '../simulation/config/SimulationConfig.js';
 
 // ---------------------------------------------------------------------------
 // Slider descriptor type
@@ -733,6 +732,10 @@ export class ControlPanel {
   /**
    * Builds the viewport / cell-size section.
    *
+   * Phase 6 additions:
+   *   - Grid lines toggle checkbox (only meaningful at cellSize >= 2).
+   *   - Cell-size slider already syncs with scroll-wheel zoom via EventBus.
+   *
    * @returns The viewport section element.
    */
   private _buildViewportSection(): HTMLElement {
@@ -744,10 +747,10 @@ export class ControlPanel {
     heading.textContent = 'Viewport';
     section.append(heading);
 
-    // Build a custom non-config slider for cellSize.
+    // --- Cell size slider ----------------------------------------------------
     const row  = document.createElement('div');
     row.className = 'slider-row';
-    row.title     = 'Canvas pixels per cell (zoom level).';
+    row.title     = 'Canvas pixels per cell (zoom level). Scroll wheel on canvas also zooms.';
 
     const label = document.createElement('label');
     label.htmlFor     = 'cell-size-slider';
@@ -773,8 +776,47 @@ export class ControlPanel {
       readout.textContent = `${v}px`;
     });
 
+    // Keep slider in sync when cell size is changed via scroll wheel / keyboard.
+    bus.on('cellSizeChange', ({ cellSize }) => {
+      input.value         = String(cellSize);
+      readout.textContent = `${cellSize}px`;
+    });
+
     row.append(label, input, readout);
     section.append(row);
+
+    // --- Grid lines toggle (Phase 6) -----------------------------------------
+    const gridRow = document.createElement('div');
+    gridRow.className = 'toggle-row';
+    gridRow.title     = 'Show thin grid lines between cells (visible at cell size ≥ 2). Shortcut: G';
+
+    const gridCheckbox = document.createElement('input');
+    gridCheckbox.type    = 'checkbox';
+    gridCheckbox.id      = 'grid-lines-toggle';
+    gridCheckbox.checked = appState.showGridLines;
+    gridCheckbox.setAttribute('aria-label', 'Toggle grid lines');
+
+    const gridLabel = document.createElement('label');
+    gridLabel.htmlFor     = 'grid-lines-toggle';
+    gridLabel.textContent = 'Grid Lines';
+    gridLabel.className   = 'toggle-label';
+
+    const gridShortcut = document.createElement('span');
+    gridShortcut.className   = 'toggle-shortcut';
+    gridShortcut.textContent = 'G';
+
+    gridCheckbox.addEventListener('change', () => {
+      appState.showGridLines = gridCheckbox.checked;
+    });
+
+    // Keep checkbox in sync when toggled via keyboard shortcut.
+    bus.on('gridLinesChange', ({ show }) => {
+      gridCheckbox.checked = show;
+    });
+
+    gridRow.append(gridCheckbox, gridLabel, gridShortcut);
+    section.append(gridRow);
+
     return section;
   }
 
@@ -793,10 +835,11 @@ export class ControlPanel {
     section.append(heading);
 
     const presetDefs: Array<{ label: string; fn: () => SimulationConfig }> = [
-      { label: 'Default',             fn: () => ({ ...appState.config }) },
-      { label: 'Slow Burn',           fn: Presets.slowBurn },
-      { label: 'Plague',              fn: Presets.plague },
+      { label: 'Default',              fn: () => ({ ...appState.config }) },
+      { label: 'Slow Burn',            fn: Presets.slowBurn },
+      { label: 'Plague',               fn: Presets.plague },
       { label: 'Classic Game of Life', fn: Presets.classicGameOfLife },
+      { label: 'Ecosystem Balance',    fn: Presets.ecosystemBalance },
     ];
 
     const select = document.createElement('select');

@@ -171,6 +171,19 @@ export class Toolbar {
           this._stepBtn.dispatchEvent(new CustomEvent('step-requested', { bubbles: true }));
         }
         break;
+      // Phase 6 — grid lines toggle.
+      case 'g':
+      case 'G':
+        appState.showGridLines = !appState.showGridLines;
+        break;
+      // Phase 6 — zoom in/out via keyboard (+/=  and  -).
+      case '+':
+      case '=':
+        appState.cellSize = appState.cellSize + 1;
+        break;
+      case '-':
+        appState.cellSize = appState.cellSize - 1;
+        break;
     }
   }
 

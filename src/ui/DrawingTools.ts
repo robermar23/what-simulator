@@ -7,9 +7,12 @@
  * caller-supplied callback.
  *
  * Pointer interaction contract:
- *   - Left-click + drag  → paint with the active tool
- *   - Right-click + drag → erase (paint CellType.Empty)
- *   - Context menu       → suppressed on the canvas (enables right-drag erase)
+ *   - Left-click + drag    → paint with the active tool
+ *   - Right-click + drag   → erase (paint CellType.Empty)
+ *   - Middle-click + drag  → pan the canvas-container (Phase 6)
+ *   - Scroll wheel         → zoom in/out (Phase 6)
+ *   - Hover (no button)    → fire `onHover` callback for the tooltip (Phase 6)
+ *   - Context menu         → suppressed on the canvas (enables right-drag erase)
  *
  * Architecture: DrawingTools owns ONLY input mapping.  It never touches the
  * grid or renderer directly — the `paintCell` callback is the sole output.
@@ -18,6 +21,7 @@
 
 import { appState, type DrawingTool } from '../state/AppState.js';
 import { CellType } from '../simulation/GridState.js';
+import { bus } from '../state/EventBus.js';
 
 // ---------------------------------------------------------------------------
 // Tool → CellType mapping
@@ -87,6 +91,36 @@ export class DrawingTools {
   /** Reference to the canvas element for coordinate math and cleanup. */
   private _canvas: HTMLCanvasElement | null = null;
 
+  // --- Phase 6: pan state ---------------------------------------------------
+
+  /** Whether a middle-button pan gesture is in progress. */
+  private _isPanning = false;
+
+  /**
+   * Client-coordinate snapshot taken at the start of a pan gesture.
+   * The delta from this point is applied to the container's scroll position.
+   */
+  private _panStartX = 0;
+  private _panStartY = 0;
+
+  /** Scroll-position snapshot taken at the start of a pan gesture. */
+  private _scrollStartX = 0;
+  private _scrollStartY = 0;
+
+  /**
+   * The scrollable container wrapping the canvas.
+   * Populated in {@link mount}; used by middle-drag pan.
+   */
+  private _container: HTMLElement | null = null;
+
+  /**
+   * Most recently hovered cell coordinates.
+   * Used to avoid firing redundant `cellHover` events when the pointer moves
+   * within the same cell.
+   */
+  private _lastHoverX = -1;
+  private _lastHoverY = -1;
+
   // -------------------------------------------------------------------------
   // Public API
   // -------------------------------------------------------------------------
@@ -95,6 +129,9 @@ export class DrawingTools {
    * Attaches pointer event listeners to `canvas` and stores the paint
    * callback.  Call {@link unmount} to remove listeners when done.
    *
+   * Phase 6: also attaches wheel (zoom) listener to `canvas` and resolves
+   * the scrollable container from the canvas's parent for middle-drag pan.
+   *
    * @param canvas    - The simulation `<canvas>` element.
    * @param paintCell - Callback invoked for every painted cell.
    */
@@ -102,11 +139,18 @@ export class DrawingTools {
     this._canvas    = canvas;
     this._paintCell = paintCell;
 
+    // Resolve the scrollable container for middle-drag pan (Phase 6).
+    // The canvas lives inside #canvas-container which has overflow: auto.
+    this._container = canvas.parentElement;
+
     canvas.addEventListener('pointerdown',   this._onPointerDown);
     canvas.addEventListener('pointermove',   this._onPointerMove);
     canvas.addEventListener('pointerup',     this._onPointerUp);
     canvas.addEventListener('pointercancel', this._onPointerCancel);
     canvas.addEventListener('contextmenu',   this._onContextMenu);
+    canvas.addEventListener('mouseleave',    this._onMouseLeave);
+    // Wheel zoom — must be non-passive to call preventDefault.
+    canvas.addEventListener('wheel', this._onWheel, { passive: false });
   }
 
   /**
@@ -121,10 +165,14 @@ export class DrawingTools {
     this._canvas.removeEventListener('pointerup',     this._onPointerUp);
     this._canvas.removeEventListener('pointercancel', this._onPointerCancel);
     this._canvas.removeEventListener('contextmenu',   this._onContextMenu);
+    this._canvas.removeEventListener('mouseleave',    this._onMouseLeave);
+    this._canvas.removeEventListener('wheel',         this._onWheel);
 
-    this._canvas    = null;
-    this._paintCell = null;
+    this._canvas     = null;
+    this._paintCell  = null;
+    this._container  = null;
     this._isPainting = false;
+    this._isPanning  = false;
   }
 
   // -------------------------------------------------------------------------
@@ -134,22 +182,31 @@ export class DrawingTools {
   // -------------------------------------------------------------------------
 
   /**
-   * Handles `pointerdown`: starts a paint gesture.
-   * Only left (button 0) and right (button 2) buttons are handled.
-   * Captures the pointer so drag-out-of-canvas still fires pointermove.
+   * Handles `pointerdown`.
+   *
+   * - Left (button 0) or Right (button 2) → start painting/erasing.
+   * - Middle (button 1) → start a pan gesture (Phase 6).
    *
    * @param e - Pointer event.
    */
   private readonly _onPointerDown = (e: PointerEvent): void => {
-    // Ignore middle-click (button 1) and any other buttons.
-    if (e.button !== 0 && e.button !== 2) return;
     e.preventDefault();
-
-    // Capture so pointermove fires even when the cursor leaves the canvas.
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 
-    this._isPainting = true;
+    if (e.button === 1) {
+      // Middle-click: begin pan gesture.
+      this._isPanning    = true;
+      this._panStartX    = e.clientX;
+      this._panStartY    = e.clientY;
+      this._scrollStartX = this._container?.scrollLeft ?? 0;
+      this._scrollStartY = this._container?.scrollTop  ?? 0;
+      return;
+    }
 
+    // Ignore any other buttons besides left (0) and right (2).
+    if (e.button !== 0 && e.button !== 2) return;
+
+    this._isPainting = true;
     // Right-click always erases, regardless of the active tool.
     this._paintType = (e.button === 2)
       ? CellType.Empty
@@ -159,34 +216,53 @@ export class DrawingTools {
   };
 
   /**
-   * Handles `pointermove`: continues painting while a button is held.
+   * Handles `pointermove`.
+   *
+   * While painting: continues brush strokes.
+   * While panning:  scrolls the canvas container (Phase 6).
+   * Otherwise:      emits `cellHover` for the tooltip (Phase 6).
    *
    * @param e - Pointer event.
    */
   private readonly _onPointerMove = (e: PointerEvent): void => {
-    if (!this._isPainting) return;
-    e.preventDefault();
-    this._paintAt(e);
+    if (this._isPainting) {
+      e.preventDefault();
+      this._paintAt(e);
+      return;
+    }
+
+    if (this._isPanning && this._container) {
+      e.preventDefault();
+      this._container.scrollLeft = this._scrollStartX + (this._panStartX - e.clientX);
+      this._container.scrollTop  = this._scrollStartY + (this._panStartY - e.clientY);
+      return;
+    }
+
+    // No button held — emit hover coordinates for the tooltip.
+    this._emitHover(e);
   };
 
   /**
-   * Handles `pointerup`: ends the paint gesture.
+   * Handles `pointerup`: ends the paint or pan gesture.
    *
    * @param e - Pointer event.
    */
   private readonly _onPointerUp = (e: PointerEvent): void => {
+    if (e.button === 1) {
+      this._isPanning = false;
+      return;
+    }
     if (!this._isPainting) return;
     e.preventDefault();
     this._isPainting = false;
   };
 
   /**
-   * Handles `pointercancel` (e.g. system interruption): aborts painting.
-   *
-   * @param e - Pointer event.
+   * Handles `pointercancel` (e.g. system interruption): aborts all gestures.
    */
   private readonly _onPointerCancel = (_e: PointerEvent): void => {
     this._isPainting = false;
+    this._isPanning  = false;
   };
 
   /**
@@ -197,6 +273,58 @@ export class DrawingTools {
   private readonly _onContextMenu = (e: MouseEvent): void => {
     e.preventDefault();
   };
+
+  /**
+   * Fires a `cellHover` event with `(-1, -1)` when the pointer leaves the
+   * canvas, so the tooltip is hidden.  Phase 6.
+   */
+  private readonly _onMouseLeave = (): void => {
+    this._lastHoverX = -1;
+    this._lastHoverY = -1;
+    bus.emit('cellHover', { cellX: -1, cellY: -1 });
+  };
+
+  /**
+   * Handles the scroll-wheel event for zoom.
+   *
+   * Scrolling up → zoom in (increase cellSize); scrolling down → zoom out.
+   * `cellSize` is clamped to [1, 8] by `AppState.cellSize` setter.
+   * Phase 6.
+   *
+   * @param e - WheelEvent.
+   */
+  private readonly _onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    appState.cellSize = appState.cellSize + delta;
+  };
+
+  /**
+   * Converts pointer coordinates to cell coordinates and emits `cellHover`
+   * only when the hovered cell has actually changed.  This avoids flooding
+   * the EventBus when the pointer moves within the same cell.
+   * Phase 6.
+   *
+   * @param e - The pointer event carrying `clientX` / `clientY`.
+   */
+  private _emitHover(e: PointerEvent): void {
+    if (!this._canvas) return;
+
+    const rect     = this._canvas.getBoundingClientRect();
+    const cellSize = appState.cellSize;
+    const scaleX   = this._canvas.width  / rect.width;
+    const scaleY   = this._canvas.height / rect.height;
+
+    const cellX = Math.floor((e.clientX - rect.left) * scaleX / cellSize);
+    const cellY = Math.floor((e.clientY - rect.top)  * scaleY / cellSize);
+
+    // Skip if same cell as last tick.
+    if (cellX === this._lastHoverX && cellY === this._lastHoverY) return;
+    this._lastHoverX = cellX;
+    this._lastHoverY = cellY;
+
+    bus.emit('cellHover', { cellX, cellY });
+  }
 
   // -------------------------------------------------------------------------
   // Coordinate translation and brush application
