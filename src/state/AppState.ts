@@ -79,6 +79,14 @@ export class AppState {
   /** Brush size in cells (1–20). */
   private _brushSize = 1;
 
+  /**
+   * Fraction of cells seeded as Life on Reset.
+   * Range: [0, 1].  Default: 0.3 (30%).
+   * Changing this has no immediate effect — it is read the next time
+   * {@link App.reset} is called.
+   */
+  private _initialDensity = 0.3;
+
   // -------------------------------------------------------------------------
   // Getters
   // -------------------------------------------------------------------------
@@ -106,6 +114,12 @@ export class AppState {
 
   /** Brush radius in cells. */
   get brushSize(): number { return this._brushSize; }
+
+  /**
+   * Fraction of cells seeded as Life on Reset [0, 1].
+   * Read by {@link App} each time the grid is re-seeded.
+   */
+  get initialDensity(): number { return this._initialDensity; }
 
   // -------------------------------------------------------------------------
   // Setters (fire events)
@@ -187,6 +201,16 @@ export class AppState {
    */
   set brushSize(size: number) {
     this._brushSize = Math.max(1, Math.min(20, size));
+  }
+
+  /**
+   * Sets the initial seed density for the next Reset.
+   * Clamped to [0, 1].
+   *
+   * @param value - Density fraction (0 = empty board, 1 = fully seeded).
+   */
+  set initialDensity(value: number) {
+    this._initialDensity = Math.max(0, Math.min(1, value));
   }
 }
 
