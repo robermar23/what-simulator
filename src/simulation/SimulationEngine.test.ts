@@ -25,6 +25,22 @@
  *   - Nutrient cells deplete over time and become Empty when exhausted.
  *   - Nutrient cell claimed by spread is not overwritten by its own decay.
  *
+ * Scenarios covered (Phase 5 — full obstacle catalog):
+ *   - Drain: adjacent Life loses drainRate energy per tick.
+ *   - Drain: Life spread rate is halved when adjacent to Drain.
+ *   - Ice: adjacent Life cells become dormant (no decay, no death).
+ *   - Ice: dormant Life cells do not spread.
+ *   - Ice: DORMANT flag is set on frozen cells.
+ *   - Fire: adjacent Life cells are instantly killed.
+ *   - Fire: Fire cell converts adjacent Life to Fire (spread).
+ *   - Fire: Fire cell burns down by fireBurnRate each tick.
+ *   - Fire: Fire becomes Empty when energy reaches 0.
+ *   - Barrier: stays impassable while age < barrierLifetime.
+ *   - Barrier: becomes Empty when age >= barrierLifetime.
+ *   - Barrier: energy fades linearly toward 0 over its lifetime.
+ *   - GravityWell: Life cannot spread INTO a GravityWell cell.
+ *   - GravityWell: well biases spread probability toward itself.
+ *
  * @vitest-environment node
  */
 
@@ -912,5 +928,431 @@ describe('SimulationEngine — CellFlags static helpers', () => {
     SimulationEngine.clearFlag(flags, 1, CellFlags.MUTATED);
     expect(SimulationEngine.hasFlag(flags, 1, CellFlags.MUTATED)).toBe(false);
     expect(SimulationEngine.hasFlag(flags, 1, CellFlags.DORMANT)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Phase 5 — full obstacle catalog
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Drain
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 5 Drain', () => {
+  it('Drain reduces adjacent Life energy by drainRate each tick', () => {
+    // Layout on 5×5:  Life at centre (2,2), Drain to the right (3,2)
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.8;
+    grid.front.cellType[right]  = CellType.Drain;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,   // isolate drain damage
+      underpopulationLimit: 0,
+      drainRate:            0.05,
+    });
+
+    // energy should be 0.8 - 0.05 = 0.75
+    expect(front.energy[centre]).toBeCloseTo(0.75, 5);
+    expect(front.cellType[centre]).toBe(CellType.Life);
+  });
+
+  it('Life dies when Drain drains all energy', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.03; // very low
+    grid.front.cellType[right]  = CellType.Drain;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      drainRate:            0.05,
+    });
+
+    expect(front.cellType[centre]).toBe(CellType.Empty);
+  });
+
+  it('Life adjacent to Drain cannot spread into Drain cell', () => {
+    // Drain is impassable — Life should never enter it.
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 1.0;
+    grid.front.cellType[right]  = CellType.Drain;
+
+    // Run many ticks with maximal spread rate — Life must not convert Drain.
+    for (let tick = 0; tick < 20; tick++) {
+      runOneTick(grid, engine, {
+        spreadRate:           1.0,
+        energyDecayRate:      0.0,
+        underpopulationLimit: 0,
+        drainRate:            0.0, // disable damage so Life survives
+      });
+    }
+
+    expect(grid.front.cellType[right]).toBe(CellType.Drain);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ice
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 5 Ice', () => {
+  it('Life adjacent to Ice does not lose energy (dormant)', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.5;
+    grid.front.cellType[right]  = CellType.Ice;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.05, // would normally drain 0.05
+      underpopulationLimit: 0,
+    });
+
+    // Frozen — energy unchanged
+    expect(front.energy[centre]).toBeCloseTo(0.5, 5);
+    expect(front.cellType[centre]).toBe(CellType.Life);
+  });
+
+  it('frozen Life cell has DORMANT flag set', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.5;
+    grid.front.cellType[right]  = CellType.Ice;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+    });
+
+    expect(SimulationEngine.hasFlag(front.flags, centre, CellFlags.DORMANT)).toBe(true);
+  });
+
+  it('frozen Life does not spread', () => {
+    const centre = 2 * W + 2;
+    const left   = 2 * W + 1; // empty neighbour
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 1.0;
+    grid.front.cellType[right]  = CellType.Ice;
+    // left stays Empty
+
+    // Run many ticks — Life must not spread while frozen.
+    for (let tick = 0; tick < 20; tick++) {
+      runOneTick(grid, engine, {
+        spreadRate:           1.0,
+        energyDecayRate:      0.0,
+        underpopulationLimit: 0,
+      });
+    }
+
+    // The left cell must remain Empty — Life cannot spread while adjacent to Ice.
+    expect(grid.front.cellType[left]).toBe(CellType.Empty);
+  });
+
+  it('Life cannot spread INTO an Ice cell', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 1.0;
+    grid.front.cellType[right]  = CellType.Ice;
+
+    for (let tick = 0; tick < 20; tick++) {
+      runOneTick(grid, engine, {
+        spreadRate:           1.0,
+        energyDecayRate:      0.0,
+        underpopulationLimit: 0,
+      });
+    }
+
+    expect(grid.front.cellType[right]).toBe(CellType.Ice);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fire
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 5 Fire', () => {
+  it('Life adjacent to Fire is consumed and becomes Fire (instant spread)', () => {
+    // Per the plan interaction matrix: "Life meets Fire → Instant death; fire spreads".
+    // The life cell is consumed by fire and becomes a new Fire cell (full fuel).
+    const centre    = 2 * W + 2;
+    const fireRight = 2 * W + 3;
+
+    grid.front.cellType[centre]    = CellType.Life;
+    grid.front.energy[centre]      = 1.0; // full energy — irrelevant, fire wins
+    grid.front.cellType[fireRight] = CellType.Fire;
+    grid.front.energy[fireRight]   = 1.0;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      fireBurnRate:         0.0, // prevent burnout so fire stays for this tick
+    });
+
+    // Life cell becomes Fire (consumed as fuel), not Empty.
+    expect(front.cellType[centre]).toBe(CellType.Fire);
+    expect(front.energy[centre]).toBe(1.0);
+  });
+
+  it('Fire converts adjacent Life to Fire (spread)', () => {
+    const fireCell  = 2 * W + 2;
+    const lifeRight = 2 * W + 3;
+
+    grid.front.cellType[fireCell]  = CellType.Fire;
+    grid.front.energy[fireCell]    = 1.0;
+    grid.front.cellType[lifeRight] = CellType.Life;
+    grid.front.energy[lifeRight]   = 1.0;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      fireBurnRate:         0.0,
+    });
+
+    // The Life cell at lifeRight should now be Fire.
+    expect(front.cellType[lifeRight]).toBe(CellType.Fire);
+    expect(front.energy[lifeRight]).toBe(1.0);
+  });
+
+  it('Fire burns down by fireBurnRate each tick', () => {
+    const fireCell = 2 * W + 2;
+
+    grid.front.cellType[fireCell] = CellType.Fire;
+    grid.front.energy[fireCell]   = 1.0;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      fireBurnRate:         0.1,
+    });
+
+    expect(front.energy[fireCell]).toBeCloseTo(0.9, 5);
+    expect(front.cellType[fireCell]).toBe(CellType.Fire);
+  });
+
+  it('Fire becomes Empty when energy reaches 0', () => {
+    const fireCell = 2 * W + 2;
+
+    grid.front.cellType[fireCell] = CellType.Fire;
+    grid.front.energy[fireCell]   = 0.05; // very low fuel
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      fireBurnRate:         0.1,
+    });
+
+    expect(front.cellType[fireCell]).toBe(CellType.Empty);
+  });
+
+  it('Fire spreads to adjacent Nutrient', () => {
+    const fireCell      = 2 * W + 2;
+    const nutrientRight = 2 * W + 3;
+
+    grid.front.cellType[fireCell]       = CellType.Fire;
+    grid.front.energy[fireCell]         = 1.0;
+    grid.front.cellType[nutrientRight]  = CellType.Nutrient;
+    grid.front.energy[nutrientRight]    = 1.0;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      fireBurnRate:         0.0,
+    });
+
+    expect(front.cellType[nutrientRight]).toBe(CellType.Fire);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Barrier
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 5 Barrier', () => {
+  it('Barrier stays intact while age < barrierLifetime', () => {
+    const barrierCell = 2 * W + 2;
+
+    grid.front.cellType[barrierCell] = CellType.Barrier;
+    grid.front.energy[barrierCell]   = 1.0;
+    grid.front.age[barrierCell]      = 0;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:       0.0,
+      energyDecayRate:  0.0,
+      barrierLifetime:  100,
+    });
+
+    expect(front.cellType[barrierCell]).toBe(CellType.Barrier);
+  });
+
+  it('Barrier becomes Empty when age reaches barrierLifetime', () => {
+    const barrierCell = 2 * W + 2;
+    const lifetime    = 10;
+
+    grid.front.cellType[barrierCell] = CellType.Barrier;
+    grid.front.energy[barrierCell]   = 1.0;
+    // Pre-age to one tick before expiry.
+    grid.front.age[barrierCell]      = lifetime - 1;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:       0.0,
+      energyDecayRate:  0.0,
+      barrierLifetime:  lifetime,
+    });
+
+    expect(front.cellType[barrierCell]).toBe(CellType.Empty);
+  });
+
+  it('Barrier energy fades linearly toward 0 over its lifetime', () => {
+    const barrierCell = 2 * W + 2;
+    const lifetime    = 100;
+
+    grid.front.cellType[barrierCell] = CellType.Barrier;
+    grid.front.energy[barrierCell]   = 1.0;
+    grid.front.age[barrierCell]      = 0;
+
+    // After one tick: age = 1, energy should be 1 - 1/100 = 0.99
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:       0.0,
+      energyDecayRate:  0.0,
+      barrierLifetime:  lifetime,
+    });
+
+    expect(front.energy[barrierCell]).toBeCloseTo(0.99, 5);
+  });
+
+  it('Life cannot spread INTO a Barrier cell', () => {
+    const centre       = 2 * W + 2;
+    const barrierRight = 2 * W + 3;
+
+    grid.front.cellType[centre]       = CellType.Life;
+    grid.front.energy[centre]         = 1.0;
+    grid.front.cellType[barrierRight] = CellType.Barrier;
+    grid.front.energy[barrierRight]   = 1.0;
+
+    for (let tick = 0; tick < 20; tick++) {
+      runOneTick(grid, engine, {
+        spreadRate:       1.0,
+        energyDecayRate:  0.0,
+        underpopulationLimit: 0,
+        barrierLifetime:  10000, // won't expire during test
+      });
+    }
+
+    expect(grid.front.cellType[barrierRight]).toBe(CellType.Barrier);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GravityWell
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 5 GravityWell', () => {
+  it('Life cannot spread INTO a GravityWell cell', () => {
+    // GravityWell is impassable — Life must never convert it.
+    const centre   = 2 * W + 2;
+    const wellRight = 2 * W + 3;
+
+    grid.front.cellType[centre]    = CellType.Life;
+    grid.front.energy[centre]      = 1.0;
+    grid.front.cellType[wellRight] = CellType.GravityWell;
+
+    for (let tick = 0; tick < 20; tick++) {
+      runOneTick(grid, engine, {
+        spreadRate:           1.0,
+        energyDecayRate:      0.0,
+        underpopulationLimit: 0,
+        gravityStrength:      0.5,
+        gravityResponse:      1.0,
+      });
+    }
+
+    expect(grid.front.cellType[wellRight]).toBe(CellType.GravityWell);
+  });
+
+  it('GravityWell itself does not change type or energy each tick', () => {
+    const wellCell = 2 * W + 2;
+
+    grid.front.cellType[wellCell] = CellType.GravityWell;
+    grid.front.energy[wellCell]   = 0; // wells have no energy
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:      0.0,
+      energyDecayRate: 0.0,
+      gravityStrength: 0.5,
+      gravityResponse: 1.0,
+    });
+
+    expect(front.cellType[wellCell]).toBe(CellType.GravityWell);
+    expect(front.energy[wellCell]).toBe(0);
+  });
+
+  it('GravityWell biases spread toward itself (spread toward well > away)', () => {
+    // Grid layout (Von Neumann for simplicity):
+    //  col:  0   1   2   3   4
+    //  row2: E   E  Life  E  Well
+    //
+    // With gravityStrength=1.0 the well is only 2 cells from Life.
+    // We run many ticks and check that the cell BETWEEN Life and Well (col 3)
+    // gets filled more often than the cell on the opposite side (col 1).
+    // We repeat the experiment 20 times and count successes.
+    const REPEATS = 40;
+    let towardWellCount = 0;
+    let awayFromWellCount = 0;
+
+    for (let rep = 0; rep < REPEATS; rep++) {
+      const g      = new GridState(W, H);
+      const eng    = new SimulationEngine(W, H);
+      const life   = 2 * W + 2; // (2,2)
+      const toward = 2 * W + 3; // (3,2) — between life and well
+      const away   = 2 * W + 1; // (1,2) — opposite side
+      const well   = 2 * W + 4; // (4,2)
+
+      g.front.cellType[life] = CellType.Life;
+      g.front.energy[life]   = 1.0;
+      g.front.cellType[well] = CellType.GravityWell;
+
+      // One tick with maximal spread + gravity bias.
+      runOneTick(g, eng, {
+        spreadRate:           0.3,   // base 30% — gravity will push "toward" higher
+        energyDecayRate:      0.0,
+        underpopulationLimit: 0,
+        neighbourhoodMode:    'vonNeumann',
+        gravityStrength:      2.0,   // strong pull for reliable test signal
+        gravityResponse:      1.0,
+      });
+
+      if (g.front.cellType[toward] === CellType.Life) towardWellCount++;
+      if (g.front.cellType[away]   === CellType.Life) awayFromWellCount++;
+    }
+
+    // With strong gravity, the "toward" cell should be colonised MORE often
+    // than the "away" cell over many trials.  A 3:2 ratio is a conservatively
+    // detectable signal at 40 repeats.
+    expect(towardWellCount).toBeGreaterThan(awayFromWellCount);
   });
 });
