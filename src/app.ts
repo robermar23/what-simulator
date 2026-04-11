@@ -13,9 +13,13 @@
  * Phase 1 runs everything on the main thread.  Phase 4 will move the
  * simulation into a Web Worker; only this file and `workerBridge.ts` will
  * need significant changes.
+ *
+ * Phase 2 addition: `paintCell(x, y, type)` exposes a grid-write API so that
+ * {@link DrawingTools} can directly modify cells in response to canvas pointer
+ * events.  In Phase 4 this call will become a postMessage to the Worker.
  */
 
-import { GridState } from './simulation/GridState.js';
+import { GridState, CellType } from './simulation/GridState.js';
 import { SimulationEngine, type TickStats } from './simulation/SimulationEngine.js';
 import { Renderer } from './rendering/Renderer.js';
 import { appState } from './state/AppState.js';
@@ -106,6 +110,32 @@ export class App {
    */
   stepOnce(): void {
     this._tick();
+  }
+
+  /**
+   * Writes a single cell at grid coordinates `(cellX, cellY)` into the front
+   * buffer.  Called by {@link DrawingTools} in response to canvas pointer events.
+   *
+   * The change is immediately visible on the next render frame — no explicit
+   * invalidation is needed because the renderer compares previous vs current
+   * colours for every cell on each frame.
+   *
+   * In Phase 4 this method will become a postMessage to the SimulationWorker.
+   *
+   * @param cellX - Column index (0-based, clamped to grid bounds internally).
+   * @param cellY - Row index (0-based, clamped to grid bounds internally).
+   * @param type  - The {@link CellType} to place at that coordinate.
+   */
+  paintCell(cellX: number, cellY: number, type: CellType): void {
+    const idx = cellX + cellY * appState.gridWidth;
+
+    // For Life cells use the configured initial energy; Nutrient / Toxin
+    // energy is handled inside GridState.paintCell (Nutrient → 1.0, others → 0).
+    const energy = (type === CellType.Life || type === CellType.LifeVariant)
+      ? appState.config.initialEnergy
+      : 1.0;
+
+    this._grid.paintCell(idx, type, energy);
   }
 
   // -------------------------------------------------------------------------

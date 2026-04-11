@@ -14,6 +14,7 @@
 import { App } from './app.js';
 import { Toolbar } from './ui/Toolbar.js';
 import { ControlPanel } from './ui/ControlPanel.js';
+import { DrawingTools } from './ui/DrawingTools.js';
 import { bus } from './state/EventBus.js';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,14 @@ function bootstrap(): void {
 
   const app = new App(canvas);
   app.start();
+
+  // --- Mount drawing tools on the canvas -----------------------------------
+  // DrawingTools translates pointer events into paintCell calls on the App.
+  // Right-click is suppressed from the browser context menu (erase mode).
+  const drawingTools = new DrawingTools();
+  drawingTools.mount(canvas, (cellX, cellY, type) => {
+    app.paintCell(cellX, cellY, type);
+  });
 
   // Wire step-requested from toolbar to app (the DOM event bubbles to window).
   // Already handled inside App via the window event listener.
