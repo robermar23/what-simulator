@@ -15,12 +15,21 @@
  *   - Energy decay and death when energy ≤ 0.
  *   - Overpopulation / underpopulation culling.
  *   - Moore and Von Neumann neighbour modes.
- *   - No obstacle types yet (Phase 2+).
+ *
+ * Phase 2 additions:
+ *   - Wall cells block spread entirely.
+ *   - Toxin cells damage adjacent Life cells each tick; Life CAN spread into
+ *     Toxin cells (consuming them) but spawns with reduced initial energy.
+ *   - Nutrient cells boost adjacent Life energy each tick; they deplete over
+ *     time and are consumed when Life spreads into them.
+ *   - A single neighbour scan per Life cell now serves triple duty:
+ *     live-neighbour counting, toxin/nutrient detection, and spread targeting.
  */
 
 import { CellType, CellFlags, type GridBuffers } from './GridState.js';
 import { type SimulationConfig } from './config/SimulationConfig.js';
 import { mooreNeighbors, vonNeumannNeighbors } from '../utils/math.js';
+import { isEnterable, calcSpreadEnergy } from './rules/obstacleRules.js';
 
 // ---------------------------------------------------------------------------
 // Tick statistics
@@ -87,6 +96,9 @@ export class SimulationEngine {
    * Reads from `front`, writes to `back`.  The caller must swap the buffers
    * after this call (see {@link GridState.swap}).
    *
+   * The caller must also call {@link GridState.copyFrontToBack} before this
+   * function so that back starts as a faithful copy of the current world state.
+   *
    * @param front - Source buffers for this tick (read-only by convention).
    * @param back  - Destination buffers for this tick (written).
    * @param config - Current simulation parameters.
@@ -106,7 +118,7 @@ export class SimulationEngine {
       cellType:  ftType,  energy:  ftEnergy,  age:  ftAge,
     } = front;
     const {
-      cellType:  bkType,  energy:  bkEnergy,  age:  bkAge,  flags: _bkFlags,
+      cellType:  bkType,  energy:  bkEnergy,  age:  bkAge,
     } = back;
 
     const {
@@ -117,6 +129,11 @@ export class SimulationEngine {
       overpopulationLimit,
       underpopulationLimit,
       neighbourhoodMode,
+      toxinStrength,
+      toxinResistance,
+      nutrientBoost,
+      nutrientAbsorption,
+      nutrientDecayRate,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -127,18 +144,61 @@ export class SimulationEngine {
     for (let i = 0; i < total; i++) {
       const type = ftType[i];
 
-      if (type === CellType.Empty) {
-        // Empty cells: carry forward unchanged (back was pre-copied from front
-        // before this loop, so we only need to act when state changes).
-        continue;
-      }
+      // ------------------------------------------------------------------
+      // Empty and Wall cells: completely static — no updates ever.
+      // (back was already pre-copied from front before this loop)
+      // ------------------------------------------------------------------
+      if (type === CellType.Empty || type === CellType.Wall) continue;
 
+      // ------------------------------------------------------------------
+      // Life cells (both variants)
+      // ------------------------------------------------------------------
       if (type === CellType.Life || type === CellType.LifeVariant) {
-        // --- Energy decay -------------------------------------------------
-        const newEnergy = ftEnergy[i] - energyDecayRate;
 
+        // Fill the neighbour buffer ONCE and use it for:
+        //   1) live-neighbour counting (over/underpop)
+        //   2) obstacle adjacency detection (toxin damage, nutrient boost)
+        //   3) spread targeting
+        const nLen = this._fillNeighbors(i, width, height, useMoore);
+
+        // Single-pass neighbour scan — counts live neighbours AND checks for
+        // adjacent obstacle types without a second loop.
+        let liveNeighbours   = 0;
+        let adjacentToxin    = false;
+        let adjacentNutrient = false;
+
+        for (let n = 0; n < nLen; n++) {
+          const nType = ftType[this._neighborBuf[n]];
+          if (nType === CellType.Life || nType === CellType.LifeVariant) {
+            liveNeighbours++;
+          } else if (nType === CellType.Toxin) {
+            // Only record first toxin found (Phase 2: no stacking).
+            if (!adjacentToxin) adjacentToxin = true;
+          } else if (nType === CellType.Nutrient) {
+            // Only record first nutrient found (Phase 2: no stacking).
+            if (!adjacentNutrient) adjacentNutrient = true;
+          }
+        }
+
+        // --- Energy budget: decay, toxin damage, nutrient boost ----------
+        let newEnergy = ftEnergy[i] - energyDecayRate;
+
+        if (adjacentToxin) {
+          // Damage scaled by toxin strength, reduced by life's resistance.
+          newEnergy -= toxinStrength * (1 - toxinResistance);
+        }
+        if (adjacentNutrient) {
+          // Boost scaled by nutrient strength and life's absorption rate.
+          newEnergy += nutrientBoost * nutrientAbsorption;
+        }
+
+        // Cap energy at 1.0 (nutrient cannot over-fill a cell).
+        if (newEnergy > 1.0) newEnergy = 1.0;
+
+        // --- Death checks ------------------------------------------------
+
+        // Starvation / toxin overload.
         if (newEnergy <= 0) {
-          // Cell starves — kill it.
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
           bkAge[i]    = 0;
@@ -146,18 +206,7 @@ export class SimulationEngine {
           continue;
         }
 
-        // --- Neighbour count (for over/underpopulation) -------------------
-        const neighbourCount = this._fillNeighbors(i, width, height, useMoore);
-        let liveNeighbours = 0;
-        const nLen = neighbourCount;
-        for (let n = 0; n < nLen; n++) {
-          const nType = ftType[this._neighborBuf[n]];
-          if (nType === CellType.Life || nType === CellType.LifeVariant) {
-            liveNeighbours++;
-          }
-        }
-
-        // --- Overpopulation death -----------------------------------------
+        // Overpopulation: too many live neighbours.
         if (liveNeighbours > overpopulationLimit) {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
@@ -166,7 +215,7 @@ export class SimulationEngine {
           continue;
         }
 
-        // --- Underpopulation death ----------------------------------------
+        // Underpopulation: too few live neighbours.
         if (liveNeighbours < underpopulationLimit) {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
@@ -179,18 +228,48 @@ export class SimulationEngine {
         bkEnergy[i] = newEnergy;
         // Age increments, capped at Uint16 max (65 535).
         bkAge[i] = ftAge[i] < 65535 ? ftAge[i] + 1 : 65535;
-
         this._stats.liveCells++;
 
         // --- Spread (reproduction) ----------------------------------------
         if (newEnergy >= reproductionThreshold) {
           this._trySpread(
-            i, nLen, ftType, bkType, bkEnergy, bkAge,
+            nLen, ftType, bkType, bkEnergy, bkAge,
             type, spreadRate, initialEnergy,
+            toxinStrength, toxinResistance,
+            nutrientBoost, nutrientAbsorption,
           );
         }
+
+        continue;
       }
-      // Phase 2+ will handle Toxin, Wall, Nutrient, etc. here.
+
+      // ------------------------------------------------------------------
+      // Nutrient cells — deplete over time (Phase 2).
+      //
+      // A Nutrient cell's energy represents its remaining potency (starts
+      // at 1.0 when painted).  It decays by `nutrientDecayRate` each tick.
+      // When depleted it becomes Empty.
+      //
+      // Guard: if a Life cell spread INTO this Nutrient cell earlier this
+      // same tick, `bkType[i]` will already be a Life type — skip the decay
+      // update so the spread result wins without being overwritten.
+      // ------------------------------------------------------------------
+      if (type === CellType.Nutrient) {
+        // Check if a Life cell claimed this cell via spread this tick.
+        if (bkType[i] !== CellType.Nutrient) continue;
+
+        const newEn = ftEnergy[i] - nutrientDecayRate;
+        if (newEn <= 0) {
+          bkType[i]   = CellType.Empty;
+          bkEnergy[i] = 0;
+        } else {
+          bkEnergy[i] = newEn;
+        }
+        continue;
+      }
+
+      // Toxin: static in Phase 2 — no per-tick update.
+      // (Phase 5 adds toxin durability / diffusion.)
     }
 
     return this._stats;
@@ -234,25 +313,34 @@ export class SimulationEngine {
   }
 
   /**
-   * Attempts to spread the life cell at index `i` into each empty neighbour.
+   * Attempts to spread the life cell at index `i` into eligible neighbours.
    *
-   * Each empty neighbour slot is tried independently at probability
-   * `spreadRate`.  A successful spread writes the new cell into the back
-   * buffer only — reading always uses the front buffer so spread order doesn't
-   * create bias.
+   * Phase 2 spread targets:
+   *   - Empty cells:    Life spawns at full `initialEnergy`.
+   *   - Toxin cells:    Life spawns with reduced energy (entry damage).
+   *                     Toxin is consumed (overwritten by Life type).
+   *   - Nutrient cells: Life spawns with boosted energy.
+   *                     Nutrient is consumed (overwritten by Life type).
+   *   - Wall cells:     Impassable — spread never succeeds.
+   *   - Life/LifeVariant: Already occupied — skipped.
    *
-   * @param i - Flat index of the spreading cell.
+   * Each eligible slot is tried independently at probability `spreadRate`.
+   * Reads always use the front buffer so spread order doesn't create bias.
+   *
    * @param nLen - Number of valid entries in `_neighborBuf`.
    * @param ftType - Front cell type array (read-only).
    * @param bkType - Back cell type array (write).
    * @param bkEnergy - Back energy array (write).
    * @param bkAge - Back age array (write).
    * @param lifeType - The specific life type to propagate (Life or LifeVariant).
-   * @param spreadRate - Per-neighbour spread probability.
-   * @param initialEnergy - Energy assigned to newly born cells.
+   * @param spreadRate - Per-neighbour spread probability [0, 1].
+   * @param initialEnergy - Base energy assigned to newly born cells.
+   * @param toxinStrength - Toxin entry damage parameter.
+   * @param toxinResistance - Toxin resistance multiplier.
+   * @param nutrientBoost - Nutrient entry boost parameter.
+   * @param nutrientAbsorption - Nutrient absorption multiplier.
    */
   private _trySpread(
-    _i: number,
     nLen: number,
     ftType: Uint8Array,
     bkType: Uint8Array,
@@ -261,14 +349,32 @@ export class SimulationEngine {
     lifeType: CellType,
     spreadRate: number,
     initialEnergy: number,
+    toxinStrength: number,
+    toxinResistance: number,
+    nutrientBoost: number,
+    nutrientAbsorption: number,
   ): void {
     for (let k = 0; k < nLen; k++) {
-      const ni = this._neighborBuf[k];
-      // Only spread into Empty cells — the FRONT buffer is authoritative for
-      // what was there at the start of this tick.
-      if (ftType[ni] === CellType.Empty && Math.random() < spreadRate) {
+      const ni     = this._neighborBuf[k];
+      const nType  = ftType[ni];
+
+      // Phase 2: isEnterable returns true for Empty, Toxin, and Nutrient.
+      // Wall and Life/LifeVariant cells are skipped.
+      if (!isEnterable(nType)) continue;
+
+      if (Math.random() < spreadRate) {
+        // Compute spawn energy based on the target cell's type.
+        const spawnEnergy = calcSpreadEnergy(
+          nType,
+          initialEnergy,
+          toxinStrength,
+          toxinResistance,
+          nutrientBoost,
+          nutrientAbsorption,
+        );
+
         bkType[ni]   = lifeType;
-        bkEnergy[ni] = initialEnergy;
+        bkEnergy[ni] = spawnEnergy;
         bkAge[ni]    = 0;
         this._stats.births++;
         this._stats.liveCells++;
@@ -277,12 +383,11 @@ export class SimulationEngine {
   }
 
   // -------------------------------------------------------------------------
-  // Unused flag helper — kept for Phase 2 when flags become meaningful
+  // Cell flag static helpers — used by tests and future phases
   // -------------------------------------------------------------------------
 
   /**
-   * Checks whether a specific bitmask flag is set for cell `i` in the given
-   * flags buffer.
+   * Checks whether a specific bitmask flag is set for cell `i`.
    *
    * @param flags - Flags buffer.
    * @param i - Cell index.
@@ -294,7 +399,7 @@ export class SimulationEngine {
   }
 
   /**
-   * Sets a specific bitmask flag for cell `i` in the given flags buffer.
+   * Sets a specific bitmask flag for cell `i`.
    *
    * @param flags - Flags buffer.
    * @param i - Cell index.
@@ -305,7 +410,7 @@ export class SimulationEngine {
   }
 
   /**
-   * Clears a specific bitmask flag for cell `i` in the given flags buffer.
+   * Clears a specific bitmask flag for cell `i`.
    *
    * @param flags - Flags buffer.
    * @param i - Cell index.
