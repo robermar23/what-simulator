@@ -1,0 +1,751 @@
+/**
+ * @fileoverview WebGL 2 renderer for the What Simulator — Phase 7.
+ *
+ * Drop-in replacement for {@link Renderer} (Canvas 2D) that targets a
+ * WebGL 2 context on an `OffscreenCanvas` (or `HTMLCanvasElement`).
+ *
+ * ## Why WebGL?
+ *
+ * The Canvas 2D `ImageData` path is CPU-bound: it writes every cell pixel
+ * into a Uint8ClampedArray before flushing.  For a 512×512 grid at 2 px/cell
+ * that is ~1 MB per frame at 60 fps.  At 1024×1024 (Phase 7) it is ~4 MB and
+ * the dirty-region optimisation no longer helps because the spread touches most
+ * of the grid.
+ *
+ * WebGL uploads the raw TypedArray buffers directly as GPU textures (~1 MB
+ * for 1024×1024 cellType + energy) and the colour-mapping logic runs in a
+ * fragment shader — zero CPU work per pixel.
+ *
+ * ## Design
+ *
+ * - Two GPU textures:
+ *     - `u_cellType` → `R8UI`   (unsigned byte, integer sampler)
+ *     - `u_energy`  → `R32F`    (32-bit float, requires EXT_color_buffer_float
+ *                                 for rendering; we only sample, so it is fine)
+ * - A fullscreen quad (two triangles) covers the entire canvas.
+ * - The fragment shader maps `cellType + energy → RGBA` exactly matching
+ *   the {@link ColorMap} colour table used by the Canvas 2D renderer.
+ * - `cellSize` and `showGridLines` are passed as uniforms so the shader
+ *   can replicate the multi-pixel-per-cell rendering and grid-line overlay.
+ *
+ * ## Interface Compatibility
+ *
+ * The public API mirrors `Renderer` exactly so `RenderWorker.ts` can swap
+ * between the two with a single type union:
+ *
+ * ```ts
+ * let renderer: Renderer | WebGLRenderer;
+ * renderer = useWebGL ? new WebGLRenderer(canvas) : new Renderer(canvas);
+ * renderer.render(buffers, w, h);
+ * renderer.invalidate();
+ * renderer.cellSize = 2;
+ * renderer.showGridLines = false;
+ * ```
+ *
+ * @module WebGLRenderer
+ */
+
+import { type GridBuffers } from '../simulation/GridState.js';
+import { type AnyCanvas, type RendererOptions } from './Renderer.js';
+
+// ---------------------------------------------------------------------------
+// GLSL source strings
+// ---------------------------------------------------------------------------
+
+/**
+ * Vertex shader: draws a fullscreen quad by positioning two triangles that
+ * cover clip space [-1, 1]×[-1, 1].
+ *
+ * The `a_position` attribute drives a unit quad via a hardcoded triangle-strip
+ * (`TRIANGLE_STRIP` with 4 vertices). The varying `v_position` carries the
+ * normalised device coordinate into the fragment shader so the fragment shader
+ * can derive pixel position from `gl_FragCoord`.
+ */
+const VERT_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+// XY clip-space position in [-1, 1]^2.
+in vec2 a_position;
+
+void main() {
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}
+`;
+
+/**
+ * Fragment shader: maps (cellType, energy) → RGBA.
+ *
+ * Colour logic mirrors the {@link ColorMap} table exactly:
+ *   - Each cell type has a base RGB.
+ *   - "Energy-modulated" types (Life, LifeVariant, Barrier, Fire) blend from
+ *     `minBrightness × base` at energy=0 to `1×base` at energy=1.
+ *   - All other types are drawn at full brightness regardless of energy.
+ *
+ * `cellSize` is used to convert `gl_FragCoord.xy` to a cell column/row,
+ * implementing the same multi-pixel-per-cell rendering as the Canvas 2D path.
+ *
+ * When `u_showGridLines` is true a subtle white line is composited at cell
+ * boundaries — one physical pixel wide regardless of cellSize.
+ */
+const FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+precision highp usampler2D;
+
+// --- Uniforms ---------------------------------------------------------------
+
+/** Integer (R8UI) texture holding the CellType for every cell. */
+uniform usampler2D u_cellType;
+
+/** Float (R32F) texture holding the energy [0..1] for every cell. */
+uniform sampler2D  u_energy;
+
+/** Pixels per cell (matches AppState.cellSize). */
+uniform float u_cellSize;
+
+/** Grid width in cells. */
+uniform int u_gridWidth;
+
+/** Grid height in cells. */
+uniform int u_gridHeight;
+
+/** Whether to composite a 1-px grid-line overlay at cell boundaries. */
+uniform bool u_showGridLines;
+
+// --- Output -----------------------------------------------------------------
+out vec4 outColor;
+
+// ---------------------------------------------------------------------------
+// Colour table — must stay in sync with ColorMap.ts / COLOR_ENTRIES
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the base RGB colour for a given cell type ordinal.
+ * Hex values are taken verbatim from ColorMap.ts's COLOR_ENTRIES array.
+ *
+ * @param t - Cell type ordinal [0, 10].
+ * @returns Linear RGB in [0, 1]^3.
+ */
+vec3 baseColor(uint t) {
+  // 0  Empty        #0a0a12
+  if (t ==  0u) return vec3(0.0392, 0.0392, 0.0706);
+  // 1  Life A       #00ff88
+  if (t ==  1u) return vec3(0.0,    1.0,    0.5333);
+  // 2  Wall         #3a3a3a
+  if (t ==  2u) return vec3(0.2275, 0.2275, 0.2275);
+  // 3  Toxin        #cc00ff
+  if (t ==  3u) return vec3(0.8,    0.0,    1.0);
+  // 4  Nutrient     #00cc44
+  if (t ==  4u) return vec3(0.0,    0.8,    0.2667);
+  // 5  Drain        #0044cc
+  if (t ==  5u) return vec3(0.0,    0.2667, 0.8);
+  // 6  GravityWell  #ff8800
+  if (t ==  6u) return vec3(1.0,    0.5333, 0.0);
+  // 7  Barrier      #ffee00
+  if (t ==  7u) return vec3(1.0,    0.9333, 0.0);
+  // 8  Fire         #ff4400
+  if (t ==  8u) return vec3(1.0,    0.2667, 0.0);
+  // 9  Ice          #aaddff
+  if (t ==  9u) return vec3(0.6667, 0.8667, 1.0);
+  // 10 LifeVariant  #ffdd00
+  if (t == 10u) return vec3(1.0,    0.8667, 0.0);
+  return vec3(0.0);
+}
+
+/**
+ * Returns the minimum brightness factor for energy-modulated cell types.
+ * Non-modulated types return 1.0 so the formula is always valid.
+ *
+ * Matches the minBrightness field in ColorMap.ts COLOR_ENTRIES.
+ *
+ * @param t - Cell type ordinal.
+ * @returns Minimum brightness in [0, 1].
+ */
+float minBrightness(uint t) {
+  if (t ==  1u) return 0.15;   // Life A
+  if (t ==  7u) return 0.0;    // Barrier (fades to invisible)
+  if (t ==  8u) return 0.1;    // Fire
+  if (t == 10u) return 0.15;   // Life Variant B
+  return 1.0;                  // all others: not modulated
+}
+
+/**
+ * Returns true for cell types whose brightness is scaled by the energy value.
+ *
+ * @param t - Cell type ordinal.
+ * @returns True if the colour should dim at low energy.
+ */
+bool isEnergyModulated(uint t) {
+  return t == 1u || t == 7u || t == 8u || t == 10u;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+void main() {
+  // ---- Map fragment pixel → cell coordinate --------------------------------
+  //
+  // gl_FragCoord.xy is the centre of the current fragment in window space,
+  // with (0.5, 0.5) at the bottom-left pixel.  We divide by cellSize to find
+  // which cell this fragment belongs to, then flip Y because the WebGL
+  // framebuffer has Y=0 at the bottom while our grid has row 0 at the top.
+
+  ivec2 cellCoord = ivec2(gl_FragCoord.xy / u_cellSize);
+  // Flip Y so row 0 is at the top of the canvas.
+  cellCoord.y = u_gridHeight - 1 - cellCoord.y;
+
+  // Clamp to grid bounds to avoid out-of-range texture reads.
+  cellCoord = clamp(cellCoord, ivec2(0), ivec2(u_gridWidth - 1, u_gridHeight - 1));
+
+  // ---- Sample simulation textures ------------------------------------------
+
+  // texelFetch reads a single texel by integer pixel coordinates, bypassing
+  // all filtering.  This ensures pixel-perfect cell colours with no blending.
+  uint  cellType = texelFetch(u_cellType, cellCoord, 0).r;
+  float energy   = texelFetch(u_energy,   cellCoord, 0).r;
+
+  // ---- Colour mapping -------------------------------------------------------
+
+  vec3 base = baseColor(cellType);
+
+  float brightness;
+  if (isEnergyModulated(cellType)) {
+    // Blend from minBrightness (at energy=0) to full brightness (at energy=1).
+    float minB = minBrightness(cellType);
+    brightness = minB + (1.0 - minB) * clamp(energy, 0.0, 1.0);
+  } else {
+    brightness = 1.0;
+  }
+
+  vec3 cellRGB = base * brightness;
+
+  // ---- Grid-line overlay (Phase 6 feature, replicated in WebGL) -------------
+  //
+  // Draw a subtle white overlay at cell boundaries.  The boundary is defined
+  // as the first pixel of each cell (sub-pixel fraction < 1/cellSize).
+
+  if (u_showGridLines && u_cellSize >= 2.0) {
+    vec2 inCell = fract(gl_FragCoord.xy / u_cellSize);
+    float gridAlpha = 0.08;
+    // A fragment is on a grid line if it is within the first physical pixel of
+    // a cell — i.e. its in-cell fraction < 1/cellSize.
+    if (inCell.x < (1.0 / u_cellSize) || inCell.y < (1.0 / u_cellSize)) {
+      // Composite white on top at low opacity, just like the Canvas 2D overlay.
+      cellRGB = cellRGB + vec3(gridAlpha);
+    }
+  }
+
+  outColor = vec4(clamp(cellRGB, 0.0, 1.0), 1.0);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Fullscreen quad geometry
+// ---------------------------------------------------------------------------
+
+/**
+ * Triangle-strip vertices for a fullscreen quad in clip space.
+ * Order: top-left, bottom-left, top-right, bottom-right.
+ * Two triangles cover the entire [-1, 1]×[-1, 1] clip-space square.
+ */
+const QUAD_VERTS = new Float32Array([
+  -1,  1,   // top-left
+  -1, -1,   // bottom-left
+   1,  1,   // top-right
+   1, -1,   // bottom-right
+]);
+
+// ---------------------------------------------------------------------------
+// WebGLRenderer class
+// ---------------------------------------------------------------------------
+
+/**
+ * WebGL 2–based renderer for the What Simulator.
+ *
+ * Matches the public API of {@link Renderer} so `RenderWorker` can treat both
+ * interchangeably via the union type `Renderer | WebGLRenderer`.
+ *
+ * @example
+ * ```ts
+ * // In a Web Worker with an OffscreenCanvas:
+ * const renderer = new WebGLRenderer(offscreenCanvas, { cellSize: 2 });
+ * renderer.render(sabViews[frontIdx], gridWidth, gridHeight);
+ * ```
+ */
+export class WebGLRenderer {
+  /** Target canvas (`HTMLCanvasElement` or `OffscreenCanvas`). */
+  private readonly _canvas: AnyCanvas;
+
+  /** WebGL 2 rendering context. */
+  private readonly _gl: WebGL2RenderingContext;
+
+  /** Compiled + linked GLSL programme. */
+  private readonly _program: WebGLProgram;
+
+  /** Vertex buffer object holding the fullscreen quad. */
+  private readonly _vbo: WebGLBuffer;
+
+  /** Vertex array object. */
+  private readonly _vao: WebGLVertexArrayObject;
+
+  // --- GPU textures ----------------------------------------------------------
+
+  /** `R8UI` texture — one byte per cell, holds the CellType ordinal. */
+  private readonly _cellTypeTex: WebGLTexture;
+
+  /** `R32F` texture — one float per cell, holds the energy value. */
+  private readonly _energyTex: WebGLTexture;
+
+  // --- Uniform locations (cached once after compile) -------------------------
+
+  private readonly _uCellType!: WebGLUniformLocation;
+  private readonly _uEnergy!: WebGLUniformLocation;
+  private readonly _uCellSize!: WebGLUniformLocation;
+  private readonly _uGridWidth!: WebGLUniformLocation;
+  private readonly _uGridHeight!: WebGLUniformLocation;
+  private readonly _uShowGridLines!: WebGLUniformLocation;
+
+  // --- State -----------------------------------------------------------------
+
+  /** Pixels per cell. */
+  private _cellSize: number;
+
+  /** Whether to composite the 1-px grid-line overlay. */
+  private _showGridLines: boolean;
+
+  /** Grid width in cells — tracked to detect resize. */
+  private _gridWidth  = 0;
+
+  /** Grid height in cells — tracked to detect resize. */
+  private _gridHeight = 0;
+
+  // ---------------------------------------------------------------------------
+  // Constructor
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Constructs a WebGL 2 renderer targeting `canvas`.
+   *
+   * @param canvas  - `HTMLCanvasElement` or `OffscreenCanvas` to render into.
+   * @param options - Optional rendering configuration (cellSize, showGridLines).
+   * @throws If the browser does not support WebGL 2.
+   */
+  constructor(canvas: AnyCanvas, options: RendererOptions = {}) {
+    this._canvas        = canvas;
+    this._cellSize      = options.cellSize      ?? 2;
+    this._showGridLines = options.showGridLines ?? false;
+
+    // Acquire a WebGL 2 context.  WebGL 2 is required for:
+    //   - R8UI (unsigned integer texture format)
+    //   - R32F  (32-bit float texture without extension)
+    //   - texelFetch in GLSL 3.00 es
+    //   - Vertex Array Objects (core, not extension)
+    const gl = canvas.getContext('webgl2') as WebGL2RenderingContext | null;
+    if (gl === null) {
+      throw new Error(
+        'WebGLRenderer: WebGL 2 is not available in this environment. ' +
+        'Fall back to Canvas 2D renderer.',
+      );
+    }
+    this._gl = gl;
+
+    // Disable premultiplied alpha — our colours are already straight RGBA.
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+
+    // --- Compile shaders and link programme -----------------------------------
+    this._program = this._createProgram(VERT_SRC, FRAG_SRC);
+
+    // Cache all uniform locations once (avoids a string lookup per frame).
+    this._uCellType     = this._requireUniform('u_cellType');
+    this._uEnergy       = this._requireUniform('u_energy');
+    this._uCellSize     = this._requireUniform('u_cellSize');
+    this._uGridWidth    = this._requireUniform('u_gridWidth');
+    this._uGridHeight   = this._requireUniform('u_gridHeight');
+    this._uShowGridLines = this._requireUniform('u_showGridLines');
+
+    // --- Fullscreen quad geometry ---------------------------------------------
+    this._vbo = this._createQuadBuffer();
+    this._vao = this._createVAO(this._vbo);
+
+    // --- Textures (allocated empty; resized on first render) -----------------
+    this._cellTypeTex = this._createTexture();
+    this._energyTex   = this._createTexture();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API (mirrors Renderer exactly)
+  // ---------------------------------------------------------------------------
+
+  /** Current pixels-per-cell setting. */
+  get cellSize(): number {
+    return this._cellSize;
+  }
+
+  /**
+   * Changes the cell size and queues a canvas resize on the next render call.
+   *
+   * @param size - New cell size in pixels (1–8).
+   */
+  set cellSize(size: number) {
+    this._cellSize = size;
+    // Force canvas + viewport resize on next render by resetting tracked dims.
+    this._gridWidth = 0;
+  }
+
+  /** Whether the grid-line overlay is active. */
+  get showGridLines(): boolean {
+    return this._showGridLines;
+  }
+
+  /**
+   * Enables or disables the 1-px grid-line overlay.
+   *
+   * @param show - True to draw grid lines; false to hide.
+   */
+  set showGridLines(show: boolean) {
+    this._showGridLines = show;
+  }
+
+  /**
+   * Renders the simulation state onto the canvas using WebGL.
+   *
+   * Steps:
+   * 1. Resize canvas + WebGL viewport if grid dimensions or cellSize changed.
+   * 2. Upload `cellType` and `energy` arrays as GPU textures (sub-image update).
+   * 3. Set uniforms and draw the fullscreen quad.
+   *
+   * @param buffers - Grid front buffers (read-only by convention).
+   * @param width   - Grid width in cells.
+   * @param height  - Grid height in cells.
+   */
+  render(buffers: GridBuffers, width: number, height: number): void {
+    const gl = this._gl;
+
+    // Resize canvas and WebGL viewport when dimensions or cellSize change.
+    if (width !== this._gridWidth || height !== this._gridHeight) {
+      this._resize(width, height);
+    }
+
+    // --- Upload cellType texture (R8UI) ---------------------------------------
+    //
+    // `texSubImage2D` writes into an existing texture object without
+    // reallocating GPU memory — much cheaper than `texImage2D` every frame.
+    gl.bindTexture(gl.TEXTURE_2D, this._cellTypeTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,              // mip level
+      0, 0,           // xoffset, yoffset
+      width, height,  // width, height
+      gl.RED_INTEGER, // format matching R8UI internal format
+      gl.UNSIGNED_BYTE,
+      buffers.cellType,
+    );
+
+    // --- Upload energy texture (R32F) -----------------------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._energyTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED,         // format matching R32F internal format
+      gl.FLOAT,
+      buffers.energy,
+    );
+
+    // --- Draw -----------------------------------------------------------------
+
+    gl.useProgram(this._program);
+
+    // Bind cellType texture to texture unit 0.
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._cellTypeTex);
+    gl.uniform1i(this._uCellType, 0);
+
+    // Bind energy texture to texture unit 1.
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this._energyTex);
+    gl.uniform1i(this._uEnergy, 1);
+
+    // Per-frame uniforms.
+    gl.uniform1f(this._uCellSize,      this._cellSize);
+    gl.uniform1i(this._uGridWidth,     width);
+    gl.uniform1i(this._uGridHeight,    height);
+    gl.uniform1i(this._uShowGridLines, this._showGridLines ? 1 : 0);
+
+    gl.bindVertexArray(this._vao);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * No-op on the WebGL renderer — texture uploads replace all cell data on
+   * every frame so there is no stale pixel cache to invalidate.
+   *
+   * The method exists so `RenderWorker.ts` can call it uniformly on both
+   * `Renderer` and `WebGLRenderer` without type checking.
+   */
+  invalidate(): void {
+    // Intentional no-op: WebGL redraws from textures every frame.
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Resizes the canvas and WebGL viewport to match `width * cellSize × height * cellSize`.
+   * Also re-allocates the two GPU textures at the new grid dimensions.
+   *
+   * @param width  - Grid width in cells.
+   * @param height - Grid height in cells.
+   */
+  private _resize(width: number, height: number): void {
+    this._gridWidth  = width;
+    this._gridHeight = height;
+
+    const gl       = this._gl;
+    const canvasW  = width  * this._cellSize;
+    const canvasH  = height * this._cellSize;
+
+    // Resize the canvas (both HTMLCanvasElement and OffscreenCanvas have these
+    // writable properties).
+    this._canvas.width  = canvasW;
+    this._canvas.height = canvasH;
+
+    // Match the WebGL viewport to the canvas pixel dimensions.
+    gl.viewport(0, 0, canvasW, canvasH);
+
+    // (Re-)allocate both textures at the new grid size.
+    // We call texImage2D with null data so the texture is allocated on GPU
+    // without copying — texSubImage2D fills it on the first real render.
+    this._allocateTexture(this._cellTypeTex, width, height, gl.R8UI,  gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._energyTex,   width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+  }
+
+  /**
+   * Allocates (or re-allocates) a 2D texture at the given dimensions.
+   * Existing GPU memory is freed and a new allocation is created.
+   *
+   * Uses nearest-neighbour filtering and clamp-to-edge wrapping, which is
+   * required for non-power-of-two textures in WebGL 2.
+   *
+   * @param tex            - Texture object to configure.
+   * @param width          - Texture width in texels.
+   * @param height         - Texture height in texels.
+   * @param internalFormat - WebGL internal format (e.g. `gl.R8UI`, `gl.R32F`).
+   * @param format         - Pixel data format (e.g. `gl.RED_INTEGER`, `gl.RED`).
+   * @param type           - Data type (e.g. `gl.UNSIGNED_BYTE`, `gl.FLOAT`).
+   */
+  private _allocateTexture(
+    tex: WebGLTexture,
+    width: number,
+    height: number,
+    internalFormat: number,
+    format: number,
+    type: number,
+  ): void {
+    const gl = this._gl;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    // Allocate GPU storage without uploading data yet.
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,              // mip level
+      internalFormat,
+      width,
+      height,
+      0,              // border (must be 0 in WebGL)
+      format,
+      type,
+      null,           // no data — filled by texSubImage2D on first render
+    );
+
+    // Nearest-neighbour filtering keeps cell boundaries pixel-sharp.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    // Clamp-to-edge is required for non-power-of-two textures in WebGL.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  /**
+   * Compiles and links the vertex + fragment shaders into a GLSL programme.
+   *
+   * @param vertSrc - GLSL vertex shader source.
+   * @param fragSrc - GLSL fragment shader source.
+   * @returns Linked `WebGLProgram`.
+   * @throws If either shader fails to compile or linking fails.
+   */
+  private _createProgram(vertSrc: string, fragSrc: string): WebGLProgram {
+    const gl   = this._gl;
+    const vert = this._compileShader(gl.VERTEX_SHADER,   vertSrc);
+    const frag = this._compileShader(gl.FRAGMENT_SHADER, fragSrc);
+
+    const prog = gl.createProgram();
+    if (prog === null) throw new Error('WebGLRenderer: gl.createProgram() returned null.');
+
+    gl.attachShader(prog, vert);
+    gl.attachShader(prog, frag);
+    gl.linkProgram(prog);
+
+    // Shaders are consumed by the programme — detach and delete to free GPU mem.
+    gl.detachShader(prog, vert);
+    gl.detachShader(prog, frag);
+    gl.deleteShader(vert);
+    gl.deleteShader(frag);
+
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(prog) ?? 'unknown error';
+      gl.deleteProgram(prog);
+      throw new Error(`WebGLRenderer: programme link failed:\n${log}`);
+    }
+
+    return prog;
+  }
+
+  /**
+   * Compiles one GLSL shader stage.
+   *
+   * @param type   - `gl.VERTEX_SHADER` or `gl.FRAGMENT_SHADER`.
+   * @param source - GLSL source text.
+   * @returns Compiled `WebGLShader`.
+   * @throws If compilation fails.
+   */
+  private _compileShader(type: number, source: string): WebGLShader {
+    const gl     = this._gl;
+    const shader = gl.createShader(type);
+    if (shader === null) throw new Error('WebGLRenderer: gl.createShader() returned null.');
+
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(shader) ?? 'unknown error';
+      gl.deleteShader(shader);
+      const typeName = type === gl.VERTEX_SHADER ? 'vertex' : 'fragment';
+      throw new Error(`WebGLRenderer: ${typeName} shader compile failed:\n${log}`);
+    }
+
+    return shader;
+  }
+
+  /**
+   * Uploads the fullscreen quad vertices into a `WebGLBuffer`.
+   *
+   * The buffer is bound to `ARRAY_BUFFER` and filled with {@link QUAD_VERTS}.
+   * It is never modified after construction.
+   *
+   * @returns The created and populated `WebGLBuffer`.
+   * @throws If buffer creation fails.
+   */
+  private _createQuadBuffer(): WebGLBuffer {
+    const gl  = this._gl;
+    const buf = gl.createBuffer();
+    if (buf === null) throw new Error('WebGLRenderer: gl.createBuffer() returned null.');
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, QUAD_VERTS, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    return buf;
+  }
+
+  /**
+   * Creates a VAO that binds the `a_position` attribute to the quad buffer.
+   *
+   * Using a VAO means the attribute binding state is saved once and replayed
+   * on each draw call without re-specifying the layout.
+   *
+   * @param vbo - The quad vertex buffer.
+   * @returns The created `WebGLVertexArrayObject`.
+   * @throws If VAO or attribute location lookup fails.
+   */
+  private _createVAO(vbo: WebGLBuffer): WebGLVertexArrayObject {
+    const gl  = this._gl;
+    const vao = gl.createVertexArray();
+    if (vao === null) throw new Error('WebGLRenderer: gl.createVertexArray() returned null.');
+
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+
+    const loc = gl.getAttribLocation(this._program, 'a_position');
+    if (loc === -1) {
+      throw new Error('WebGLRenderer: attribute "a_position" not found in programme.');
+    }
+
+    // Two floats (x, y) per vertex, no stride padding, starting at offset 0.
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+    return vao;
+  }
+
+  /**
+   * Creates an empty, unbound `WebGLTexture` object.
+   * The texture is configured and sized lazily on first use in `_allocateTexture`.
+   *
+   * @returns A new `WebGLTexture`.
+   * @throws If texture creation fails.
+   */
+  private _createTexture(): WebGLTexture {
+    const tex = this._gl.createTexture();
+    if (tex === null) throw new Error('WebGLRenderer: gl.createTexture() returned null.');
+    return tex;
+  }
+
+  /**
+   * Returns the `WebGLUniformLocation` for the named uniform, throwing if it
+   * does not exist in the compiled programme.
+   *
+   * All uniforms referenced in the shaders must be successfully resolved here
+   * to catch typos at construction time rather than silently at render time.
+   *
+   * @param name - Uniform variable name in the GLSL source.
+   * @returns The `WebGLUniformLocation`.
+   * @throws If the uniform is not found.
+   */
+  private _requireUniform(name: string): WebGLUniformLocation {
+    const loc = this._gl.getUniformLocation(this._program, name);
+    if (loc === null) {
+      throw new Error(`WebGLRenderer: uniform "${name}" not found in programme.`);
+    }
+    return loc;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Static capability check
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns `true` if the current environment supports WebGL 2.
+ *
+ * Call this before constructing a `WebGLRenderer` to give the application a
+ * chance to fall back to the Canvas 2D renderer gracefully.
+ *
+ * Detection uses a temporary `OffscreenCanvas` (1×1) so it works in Web
+ * Workers as well as on the main thread.  The probe context is explicitly
+ * released via `WEBGL_lose_context` to avoid the browser warning
+ * "Too many active WebGL contexts" caused by accumulated unreleased probes.
+ *
+ * @returns `true` if `WebGL2RenderingContext` is available and functional.
+ */
+export function isWebGL2Available(): boolean {
+  try {
+    const probe = new OffscreenCanvas(1, 1);
+    const gl    = probe.getContext('webgl2') as WebGL2RenderingContext | null;
+    if (gl === null) return false;
+
+    // Release the probe context immediately so the browser does not keep it
+    // alive as an "active" WebGL context.  WEBGL_lose_context is universally
+    // supported in any browser that implements WebGL 2.
+    const ext = gl.getExtension('WEBGL_lose_context');
+    ext?.loseContext();
+
+    return true;
+  } catch {
+    return false;
+  }
+}
