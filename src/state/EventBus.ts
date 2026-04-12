@@ -18,6 +18,7 @@
 
 import { type TickStats } from '../simulation/SimulationEngine.js';
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
+import { type RenderMode } from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Event map
@@ -103,6 +104,15 @@ export interface EventMap {
     cellX: number;
     /** Grid row index (0-based), or -1 when leaving the canvas. */
     cellY: number;
+  };
+
+  /**
+   * Fired when the active render mode changes (Phase 10).
+   * Consumed by the App layer, which forwards it to the RenderWorker.
+   */
+  renderModeChange: {
+    /** The newly selected render mode. */
+    mode: RenderMode;
   };
 
 }

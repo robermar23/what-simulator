@@ -14,7 +14,7 @@ import {
   defaultConfig,
   type SimulationConfig,
 } from '../simulation/config/SimulationConfig.js';
-import { type RendererType } from '../workers/workerBridge.js';
+import { type RendererType, type RenderMode } from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Drawing tool enum
@@ -155,6 +155,13 @@ export class AppState {
   private _showGridLines = false;
 
   /**
+   * Active render mode for the simulation canvas (Phase 10).
+   * Default: `'variantId'` (standard cell-type + energy colouring until Phase 11
+   * adds true variant palette; behaves identically to Phase 9 default mode).
+   */
+  private _renderMode: RenderMode = 'variantId';
+
+  /**
    * Which rendering backend is active.
    * - `'canvas2d'` — CPU `ImageData` pixel write (default, always available).
    * - `'webgl2'`   — GPU WebGL 2 fragment shader (Phase 7, requires WebGL 2).
@@ -214,6 +221,26 @@ export class AppState {
    * Phase 7.
    */
   get rendererType(): RendererType { return this._rendererType; }
+
+  /**
+   * Active render mode for the simulation canvas.
+   * Phase 10: only `'lifecycle'` and the default `'variantId'` are wired;
+   * additional modes (`'genome'`, `'generation'`, `'fitness'`, `'signal'`)
+   * are added in Phase 14 with the full render-mode dropdown.
+   */
+  get renderMode(): RenderMode { return this._renderMode; }
+
+  /**
+   * Changes the render mode and fires `renderModeChange` so the render worker
+   * updates its renderer on the next frame.
+   *
+   * @param mode - New render mode.
+   */
+  set renderMode(mode: RenderMode) {
+    if (this._renderMode === mode) return;
+    this._renderMode = mode;
+    bus.emit('renderModeChange', { mode });
+  }
 
   // -------------------------------------------------------------------------
   // Setters (fire events)

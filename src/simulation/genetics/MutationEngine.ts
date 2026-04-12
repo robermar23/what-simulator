@@ -37,10 +37,6 @@
 
 import {
   GENOME_LUT,
-  TIER_COUNT,
-  TRAIT_SPREAD,
-  TRAIT_TOXIN,
-  TRAIT_NUTRIENT,
   getToxinResist,
   getNutrientAbs,
   getSpreadBonus,

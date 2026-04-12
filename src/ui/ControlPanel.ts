@@ -234,6 +234,51 @@ const LIFE_SLIDERS: readonly SliderSpec[] = [
 ];
 
 /**
+ * Phase 10 — Lifecycle Stage slider specs.
+ * Controls the age thresholds that govern juvenile / mature / senescent
+ * transitions and the energy bonus distributed to neighbours when a
+ * senescent cell undergoes planned apoptosis.
+ *
+ * Also exposes the Round-2 point-mutation rate here because it interacts
+ * closely with lifecycle: juveniles never mutate, senescents mutate at 2×.
+ */
+const LIFECYCLE_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Juvenile Threshold',
+    key:   'juvenileThreshold',
+    min: 1, max: 200, step: 1,
+    title:
+      'Age (in ticks) below which a Life cell is considered juvenile. ' +
+      'Juveniles spread at 40% of the normal rate and never mutate.',
+  },
+  {
+    label: 'Senescent Threshold',
+    key:   'senescentThreshold',
+    min: 50, max: 2000, step: 10,
+    title:
+      'Age (in ticks) above which a Life cell enters senescence. ' +
+      'Senescent cells spread at 10% of the normal rate, decay 1.5× faster, ' +
+      'and mutate at twice the base rate.',
+  },
+  {
+    label: 'Apoptosis Boost',
+    key:   'apoptosisBoost',
+    min: 0, max: 0.1, step: 0.001,
+    title:
+      'Energy bonus added to each live neighbour when a senescent cell dies ' +
+      'via apoptosis (planned cell death). Higher = more recycling to offspring.',
+  },
+  {
+    label: 'Point Mutation Rate',
+    key:   'pointMutationRate',
+    min: 0, max: 0.05, step: 0.0005,
+    title:
+      'Per-spread probability that a single genome bit is flipped (Round 2 ' +
+      'evolution). 0.002 = ~0.2% chance per reproduction event.',
+  },
+];
+
+/**
  * Phase 3 — Life Variant B slider specs.
  * These control the independent parameters for mutated (LifeVariant) cells.
  */
@@ -330,6 +375,9 @@ export class ControlPanel {
 
     // --- Life parameters section -------------------------------------------
     panel.append(this._buildSection('Life Parameters', LIFE_SLIDERS));
+
+    // --- Lifecycle Stages section (Phase 10) ------------------------------
+    panel.append(this._buildCollapsibleSection('Lifecycle Stages', LIFECYCLE_SLIDERS));
 
     // --- Obstacle Parameters section (Phase 5) ----------------------------
     panel.append(this._buildCollapsibleSection('Obstacle Parameters', OBSTACLE_SLIDERS));
@@ -924,6 +972,41 @@ export class ControlPanel {
     rendererRow.append(rendererCheckbox, rendererLabel, rendererBadge);
     section.append(rendererRow);
 
+    // --- Render mode toggle (Phase 10) ----------------------------------------
+    // Toggles the simulation canvas between default cell-type colouring and
+    // the lifecycle-stage overlay (juvenile = lime, mature = green, senescent =
+    // purple-pink).  Uses `appState.renderMode` which fires `renderModeChange`
+    // on the EventBus — forwarded by App to the RenderWorker.
+    const renderModeRow = document.createElement('div');
+    renderModeRow.className = 'toggle-row';
+    renderModeRow.title =
+      'Lifecycle view colours cells by age stage: ' +
+      'lime = juvenile, green = mature, purple = senescent. ' +
+      'Default view colours by cell type and energy.';
+
+    const renderModeCheckbox = document.createElement('input');
+    renderModeCheckbox.type    = 'checkbox';
+    renderModeCheckbox.id      = 'lifecycle-view-toggle';
+    renderModeCheckbox.checked = appState.renderMode === 'lifecycle';
+    renderModeCheckbox.setAttribute('aria-label', 'Toggle lifecycle stage view');
+
+    const renderModeLabel = document.createElement('label');
+    renderModeLabel.htmlFor     = 'lifecycle-view-toggle';
+    renderModeLabel.textContent = 'Lifecycle View';
+    renderModeLabel.className   = 'toggle-label';
+
+    renderModeCheckbox.addEventListener('change', () => {
+      appState.renderMode = renderModeCheckbox.checked ? 'lifecycle' : 'variantId';
+    });
+
+    // Keep checkbox in sync if renderMode is changed from outside the panel.
+    bus.on('renderModeChange', ({ mode }) => {
+      renderModeCheckbox.checked = mode === 'lifecycle';
+    });
+
+    renderModeRow.append(renderModeCheckbox, renderModeLabel);
+    section.append(renderModeRow);
+
     return section;
   }
 
@@ -997,6 +1080,16 @@ export class ControlPanel {
       const val = Number(appState.config[spec.key]);
       this._inputs.get(spec.key)!.value = String(val);
       this._readouts.get(spec.key)!.textContent = this._format(val, spec.step);
+    }
+    // Sync Lifecycle Stage sliders (Phase 10).
+    for (const spec of LIFECYCLE_SLIDERS) {
+      const input   = this._inputs.get(spec.key);
+      const readout = this._readouts.get(spec.key);
+      if (input && readout) {
+        const val = Number(appState.config[spec.key]);
+        input.value         = String(val);
+        readout.textContent = this._format(val, spec.step);
+      }
     }
     // Sync Variant B sliders.
     for (const spec of VARIANT_SLIDERS) {
