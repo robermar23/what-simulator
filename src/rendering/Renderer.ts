@@ -18,8 +18,8 @@
  * without DOM access.
  */
 
-import { type GridBuffers } from '../simulation/GridState.js';
-import { COLOR_LUT, ENERGY_STEPS } from './ColorMap.js';
+import { type GridBuffers, CellType } from '../simulation/GridState.js';
+import { COLOR_LUT, ENERGY_STEPS, lifecycleColorFor } from './ColorMap.js';
 
 // ---------------------------------------------------------------------------
 // Canvas type alias
@@ -110,6 +110,14 @@ export class Renderer {
   private _showGridLines = false;
 
   /**
+   * Current render mode (Phase 10).
+   * - `'default'`   — colour from the pre-built LUT (cellType + energy).
+   * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags; all
+   *                   other cell types rendered as in default mode.
+   */
+  private _renderMode: 'default' | 'lifecycle' = 'default';
+
+  /**
    * Pre-allocated ImageData written into each frame.
    * Re-allocated when grid dimensions or cellSize changes.
    */
@@ -189,6 +197,27 @@ export class Renderer {
   }
 
   /**
+   * Current render mode (Phase 10).
+   * - `'default'`   — standard colour LUT (cellType + energy).
+   * - `'lifecycle'` — Life cells coloured by JUVENILE / SENESCENT flags.
+   */
+  get renderMode(): 'default' | 'lifecycle' {
+    return this._renderMode;
+  }
+
+  /**
+   * Changes the render mode and forces a full redraw on the next render call.
+   *
+   * @param mode - New render mode.
+   */
+  set renderMode(mode: 'default' | 'lifecycle') {
+    if (this._renderMode !== mode) {
+      this._renderMode = mode;
+      this.invalidate(); // stale LUT colours must be discarded when mode changes
+    }
+  }
+
+  /**
    * Renders the current simulation state onto the canvas.
    *
    * Designed to be called inside a `requestAnimationFrame` callback.
@@ -209,19 +238,29 @@ export class Renderer {
       this._resize(width, height);
     }
 
-    const lut      = COLOR_LUT;
-    const cellSize = this._cellSize;
-    const pixelBuf = this._pixelBuf;
-    const prev     = this._prevColors;
-    const { cellType, energy } = buffers;
+    const lut        = COLOR_LUT;
+    const cellSize   = this._cellSize;
+    const pixelBuf   = this._pixelBuf;
+    const prev       = this._prevColors;
+    const isLifecycle = this._renderMode === 'lifecycle';
+    const { cellType, energy, flags } = buffers;
 
     const canvasWidth = this._canvas.width; // pixels
 
     if (cellSize === 1) {
       // Fast path: 1-pixel cells — every cell maps to one pixel.
       for (let i = 0; i < this._totalCells; i++) {
-        const e      = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
-        const packed = lut[cellType[i] * ENERGY_STEPS + e];
+        const ct = cellType[i];
+        let packed: number;
+
+        if (isLifecycle && (ct === CellType.Life || ct === CellType.LifeVariant)) {
+          // Phase 10: lifecycle mode — colour Life cells by stage flags.
+          packed = lifecycleColorFor(flags[i], energy[i]);
+        } else {
+          const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
+          packed  = lut[ct * ENERGY_STEPS + e];
+        }
+
         if (packed !== prev[i]) {
           prev[i]     = packed;
           pixelBuf[i] = packed;
@@ -234,12 +273,20 @@ export class Renderer {
 
       for (let cy = 0; cy < gridHeight; cy++) {
         for (let cx = 0; cx < gridWidth; cx++) {
-          const ci     = cy * gridWidth + cx;
-          const e      = Math.min(
-            ENERGY_STEPS - 1,
-            Math.floor(energy[ci] * (ENERGY_STEPS - 1)),
-          );
-          const packed = lut[cellType[ci] * ENERGY_STEPS + e];
+          const ci = cy * gridWidth + cx;
+          const ct = cellType[ci];
+          let packed: number;
+
+          if (isLifecycle && (ct === CellType.Life || ct === CellType.LifeVariant)) {
+            // Phase 10: lifecycle mode — colour Life cells by stage flags.
+            packed = lifecycleColorFor(flags[ci], energy[ci]);
+          } else {
+            const e = Math.min(
+              ENERGY_STEPS - 1,
+              Math.floor(energy[ci] * (ENERGY_STEPS - 1)),
+            );
+            packed = lut[ct * ENERGY_STEPS + e];
+          }
 
           // Skip unchanged cells — no pixel writes needed.
           if (packed === prev[ci]) continue;
