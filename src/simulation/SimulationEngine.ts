@@ -48,6 +48,19 @@
  *     `fireBurnRate` per tick, becoming Empty when fuel runs out.
  *   - **Ice**: Impassable; adjacent Life cells become dormant — no energy
  *     decay, no spread, no death checks — until the Ice cell is removed.
+ *
+ * ## Phase 9 additions (Round 2)
+ *   - Per-cell phenotype buffers (`toxinResist`, `nutrientAbs`, `spreadBonus`)
+ *     are now read from the front buffer instead of global config, giving each
+ *     cell its own evolved trait values.
+ *   - Genome inheritance: when a cell spreads, the child receives the parent's
+ *     16-bit genome plus a stochastic point mutation (see {@link MutationEngine}).
+ *   - Per-cell phenotype (`toxinResist`, `nutrientAbs`, `heatResist`,
+ *     `spreadBonus`) is derived from the child's genome via {@link GENOME_LUT}
+ *     and written to the back buffer.
+ *   - Effective spread rate = `config.spreadRate + front.spreadBonus[i]`.
+ *   - Effective toxin resist = `front.toxinResist[i]` (per-cell).
+ *   - Effective nutrient absorption = `front.nutrientAbs[i]` (per-cell).
  */
 
 import { CellType, CellFlags, type GridBuffers } from './GridState.js';
@@ -67,6 +80,12 @@ import {
   calcFireBurndown,
   spreadFire,
 } from './rules/environmentRules.js';
+import {
+  computeChildGenome,
+  applyPhenotypeFromGenome,
+  getToxinResist,
+  getNutrientAbs,
+} from './genetics/MutationEngine.js';
 
 // ---------------------------------------------------------------------------
 // Tick statistics
@@ -162,8 +181,20 @@ export class SimulationEngine {
    * The caller must also call {@link GridState.copyFrontToBack} before this
    * function so that back starts as a faithful copy of the current world state.
    *
-   * @param front - Source buffers for this tick (read-only by convention).
-   * @param back  - Destination buffers for this tick (written).
+   * ## Phase 9 changes
+   *
+   * For Life / LifeVariant cells, per-cell phenotype buffers now take
+   * precedence over the global config:
+   *   - `toxinResist[i]`  replaces `config.toxinResistance`
+   *   - `nutrientAbs[i]`  replaces `config.nutrientAbsorption`
+   *   - `spreadBonus[i]`  is added to `config.spreadRate` (delta)
+   *
+   * Cells seeded via {@link GridState.seed} or painted via
+   * {@link GridState.paintCell} start with phenotype derived from the neutral
+   * genome (0x7777), which preserves Round 1 behaviour for unmodified grids.
+   *
+   * @param front  - Source buffers for this tick (read-only by convention).
+   * @param back   - Destination buffers for this tick (written).
    * @param config - Current simulation parameters.
    * @returns Tick statistics (same object reference each call).
    */
@@ -178,11 +209,34 @@ export class SimulationEngine {
     this._stats.births       = 0;
     this._stats.deaths       = 0;
 
+    // --- Round 1 buffer destructuring ---
     const {
-      cellType:  ftType,  energy:  ftEnergy,  age:  ftAge, flags: ftFlags,
+      cellType:  ftType,
+      energy:    ftEnergy,
+      age:       ftAge,
+      flags:     ftFlags,
+      // --- Round 2 genome buffers (Phase 9) ---
+      genome:         ftGenome,
+      variantId:      ftVariantId,
+      generation:     ftGeneration,
+      toxinResist:    ftToxinResist,
+      nutrientAbs:    ftNutrientAbs,
+      spreadBonus:    ftSpreadBonus,
     } = front;
+
     const {
-      cellType:  bkType,  energy:  bkEnergy,  age:  bkAge, flags: bkFlags,
+      cellType:  bkType,
+      energy:    bkEnergy,
+      age:       bkAge,
+      flags:     bkFlags,
+      // --- Round 2 genome buffers (Phase 9) ---
+      genome:         bkGenome,
+      variantId:      bkVariantId,
+      generation:     bkGeneration,
+      toxinResist:    bkToxinResist,
+      nutrientAbs:    bkNutrientAbs,
+      heatResist:     bkHeatResist,
+      spreadBonus:    bkSpreadBonus,
     } = back;
 
     const {
@@ -196,9 +250,7 @@ export class SimulationEngine {
       underpopulationLimit,
       neighbourhoodMode,
       toxinStrength,
-      toxinResistance,
       nutrientBoost,
-      nutrientAbsorption,
       nutrientDecayRate,
       drainRate,
       barrierLifetime,
@@ -211,6 +263,8 @@ export class SimulationEngine {
       variantReproductionThreshold,
       variantInitialEnergy,
       competitionStrength,
+      // Round 2 genome mutation (Phase 9)
+      pointMutationRate,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -220,10 +274,6 @@ export class SimulationEngine {
 
     // -----------------------------------------------------------------------
     // Phase 5: Pre-scan for GravityWell positions.
-    //
-    // We do one cheap O(N) scan of the entire grid to collect all well indices
-    // into `_wellBuf`.  This avoids an inner O(N) scan for every Life cell
-    // spread attempt, giving us O(N + W * L) where W = wells and L = life.
     // -----------------------------------------------------------------------
     this._wellCount = 0;
     if (gravityStrength > 0 && gravityResponse > 0) {
@@ -236,17 +286,11 @@ export class SimulationEngine {
 
     // -----------------------------------------------------------------------
     // Main cell update loop.
-    //
-    // Walk every cell index.  We copied front → back before the loop so every
-    // cell's back-buffer value starts as a faithful snapshot; we only write
-    // cells that actually change.
     // -----------------------------------------------------------------------
     for (let i = 0; i < total; i++) {
       const type = ftType[i];
 
-      // ---- Empty / Wall / GravityWell / Drain / Ice: no per-tick change ---
-      // These cell types are fully static — their state never changes unless
-      // the user paints over them.  Skip immediately for performance.
+      // ---- Static cell types — skip immediately ---------------------------
       if (
         type === CellType.Empty      ||
         type === CellType.Wall       ||
@@ -259,29 +303,18 @@ export class SimulationEngine {
 
       // ------------------------------------------------------------------
       // Barrier cells (Phase 5)
-      //
-      // A Barrier is an impassable wall that decays over time.
-      //   - Age increments each tick (from the pre-copied back buffer).
-      //   - Energy is set to the linear fade factor (1 → 0 over lifetime).
-      //   - When age ≥ barrierLifetime, the cell becomes Empty.
-      //
-      // Guard: if a non-Barrier cell overwrote this Barrier (e.g. via fire
-      // spread in the same tick), skip the barrier update.
       // ------------------------------------------------------------------
       if (type === CellType.Barrier) {
-        // Check if something already overwrote this cell this tick.
         if (bkType[i] !== CellType.Barrier) continue;
 
         const newAge = ftAge[i] + 1;
 
         if (isBarrierExpired(newAge, barrierLifetime)) {
-          // Barrier has crumbled.
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
           bkAge[i]    = 0;
           bkFlags[i]  = 0;
         } else {
-          // Still standing — update fade energy and increment age.
           bkAge[i]    = newAge < 65535 ? newAge : 65535;
           bkEnergy[i] = calcBarrierEnergy(newAge, barrierLifetime);
         }
@@ -290,26 +323,15 @@ export class SimulationEngine {
 
       // ------------------------------------------------------------------
       // Fire cells (Phase 5)
-      //
-      // Fire is a spreading, burning obstacle:
-      //   1. Spreads to adjacent Life, LifeVariant, and Nutrient cells.
-      //   2. Burns down by `fireBurnRate` each tick.
-      //   3. Becomes Empty when fuel is exhausted.
-      //
-      // Guard: if something already claimed this cell this tick (e.g. a
-      // newly-spread fire from another fire cell), skip.
       // ------------------------------------------------------------------
       if (type === CellType.Fire) {
         if (bkType[i] !== CellType.Fire) continue;
 
-        // Step 1: spread to adjacent flammable cells.
         const nLen = this._fillNeighbors(i, width, height, useMoore);
         spreadFire(nLen, this._neighborBuf, ftType, bkType, bkEnergy);
 
-        // Step 2: burn down fuel.
         const newFuel = calcFireBurndown(ftEnergy[i], fireBurnRate);
         if (newFuel <= 0) {
-          // Fire has burned out.
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
           bkAge[i]    = 0;
@@ -322,15 +344,7 @@ export class SimulationEngine {
       }
 
       // ------------------------------------------------------------------
-      // Nutrient cells — deplete over time (Phase 2).
-      //
-      // A Nutrient cell's energy represents its remaining potency (starts
-      // at 1.0 when painted).  It decays by `nutrientDecayRate` each tick.
-      // When depleted it becomes Empty.
-      //
-      // Guard: if a Life cell spread INTO this Nutrient cell (or Fire
-      // converted it) earlier this tick, `bkType[i]` will already be a
-      // different type — skip the decay update so the spread result wins.
+      // Nutrient cells — deplete over time (Phase 2)
       // ------------------------------------------------------------------
       if (type === CellType.Nutrient) {
         if (bkType[i] !== CellType.Nutrient) continue;
@@ -346,43 +360,41 @@ export class SimulationEngine {
       }
 
       // ------------------------------------------------------------------
-      // Toxin cells: static in Phase 5 (no per-tick depletion yet).
+      // Toxin cells: static per tick (damage applied via the Life branch)
       // ------------------------------------------------------------------
       if (type === CellType.Toxin) {
-        // Nothing to update — Toxin adjacency damage is applied to adjacent
-        // Life cells during the Life cell's own update, not here.
         continue;
       }
 
       // ------------------------------------------------------------------
-      // Life cells (both variants)
+      // Life cells (both variants) — Phase 9: per-cell phenotype
       //
-      // Phase 3: LifeVariant uses separate config values for decay and
-      // spread, but shares the same neighbour scanning, death checks, and
-      // obstacle interaction logic as regular Life.
+      // Per-cell phenotype buffers replace global config values for:
+      //   - toxin resist  → front.toxinResist[i]
+      //   - nutrient abs  → front.nutrientAbs[i]
+      //   - spread bonus  → added to base cellSpreadRate
       //
-      // Phase 5 additions:
-      //   - Adjacent Ice   → dormant (no decay, no spread, no death).
-      //   - Adjacent Fire  → instant death.
-      //   - Adjacent Drain → extra energy loss + halved spread rate.
-      //   - GravityWell    → spread bias toward well centres.
+      // Cells initialised by seed() or paintCell() carry phenotype values
+      // derived from GENOME_NEUTRAL so behaviour is identical to Phase 8
+      // for unmodified grids.
       // ------------------------------------------------------------------
       if (type === CellType.Life || type === CellType.LifeVariant) {
-        // Determine which set of parameters to use based on cell type.
         const isVariant = type === CellType.LifeVariant;
-        const cellDecayRate   = isVariant ? variantEnergyDecayRate        : energyDecayRate;
-        const cellSpreadRate  = isVariant ? variantSpreadRate              : spreadRate;
-        const cellReproThresh = isVariant ? variantReproductionThreshold   : reproductionThreshold;
-        const cellInitEnergy  = isVariant ? variantInitialEnergy           : initialEnergy;
+        const cellDecayRate   = isVariant ? variantEnergyDecayRate      : energyDecayRate;
+        const baseSpreadRate  = isVariant ? variantSpreadRate            : spreadRate;
+        const cellReproThresh = isVariant ? variantReproductionThreshold : reproductionThreshold;
+        const cellInitEnergy  = isVariant ? variantInitialEnergy         : initialEnergy;
 
-        // Fill the neighbour buffer ONCE and use it for:
-        //   1) live-neighbour counting (over/underpop)
-        //   2) obstacle adjacency detection (all Phase 2 + Phase 5 types)
-        //   3) spread targeting
+        // --- Phase 9: read per-cell phenotype from front buffers ----------
+        const cellToxinResist = ftToxinResist[i];
+        const cellNutrientAbs = ftNutrientAbs[i];
+        const cellSpreadBns   = ftSpreadBonus[i];
+        // Effective spread rate = base config rate + per-cell genome bonus.
+        const cellSpreadRate  = baseSpreadRate + cellSpreadBns;
+
         const nLen = this._fillNeighbors(i, width, height, useMoore);
 
-        // Single-pass neighbour scan — counts live neighbours AND checks for
-        // all adjacent obstacle types without a second loop.
+        // Single-pass neighbour scan.
         let liveNeighbours   = 0;
         let adjacentToxin    = false;
         let adjacentNutrient = false;
@@ -398,28 +410,17 @@ export class SimulationEngine {
           }
         }
 
-        // --- Phase 5: Ice check — dormancy overrides ALL other processing --
-        // A cell frozen by Ice does not decay, spread, or die.
-        // It just sits there; we copy its current state unchanged.
+        // --- Ice dormancy override ----------------------------------------
         if (hasAdjacentIce(this._neighborBuf, nLen, ftType)) {
-          // Frozen: energy and age are preserved from front → back (already
-          // pre-copied).  Set the DORMANT flag so the renderer can visually
-          // distinguish frozen cells if desired.
           bkFlags[i] = ftFlags[i] | CellFlags.DORMANT;
           if (isVariant) this._stats.variantCells++;
           else           this._stats.liveCells++;
           continue;
         }
 
-        // Clear dormant flag if no longer adjacent to Ice.
         bkFlags[i] = ftFlags[i] & ~CellFlags.DORMANT;
 
-        // --- Phase 5: Fire check — life consumed by fire ------------------
-        // A Life cell adjacent to Fire is instantly consumed and BECOMES a
-        // new Fire cell (full fuel).  "Instant death; fire spreads" per the
-        // plan interaction matrix.  We write Fire here so that if the Fire
-        // cell is processed after this Life cell in the same tick, its own
-        // spreadFire() will write the same value — no conflict.
+        // --- Fire: instant death ------------------------------------------
         if (hasAdjacentFire(this._neighborBuf, nLen, ftType)) {
           bkType[i]   = CellType.Fire;
           bkEnergy[i] = 1.0;
@@ -429,31 +430,28 @@ export class SimulationEngine {
           continue;
         }
 
-        // --- Phase 5: Drain adjacency — extra energy loss -----------------
+        // --- Drain adjacency -----------------------------------------------
         const adjacentDrain = hasAdjacentDrain(this._neighborBuf, nLen, ftType);
 
-        // --- Energy budget: decay, toxin damage, nutrient boost, drain ----
+        // --- Energy budget: per-cell resist/absorption (Phase 9) ----------
         let newEnergy = ftEnergy[i] - cellDecayRate;
 
         if (adjacentToxin) {
-          // Damage scaled by toxin strength, reduced by life's resistance.
-          newEnergy -= toxinStrength * (1 - toxinResistance);
+          // Per-cell toxin resistance (Phase 9 replaces config.toxinResistance).
+          newEnergy -= toxinStrength * (1 - cellToxinResist);
         }
         if (adjacentNutrient) {
-          // Boost scaled by nutrient strength and life's absorption rate.
-          newEnergy += nutrientBoost * nutrientAbsorption;
+          // Per-cell nutrient absorption (Phase 9 replaces config.nutrientAbsorption).
+          newEnergy += nutrientBoost * cellNutrientAbs;
         }
         if (adjacentDrain) {
-          // Drain sucks additional energy each tick.
           newEnergy -= drainRate;
         }
 
-        // Cap energy at 1.0 (nutrient cannot over-fill a cell).
         if (newEnergy > 1.0) newEnergy = 1.0;
 
         // --- Death checks ------------------------------------------------
 
-        // Starvation / toxin / drain overload.
         if (newEnergy <= 0) {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
@@ -463,7 +461,6 @@ export class SimulationEngine {
           continue;
         }
 
-        // Overpopulation: too many live neighbours.
         if (liveNeighbours > overpopulationLimit) {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
@@ -473,7 +470,6 @@ export class SimulationEngine {
           continue;
         }
 
-        // Underpopulation: too few live neighbours.
         if (liveNeighbours < underpopulationLimit) {
           bkType[i]   = CellType.Empty;
           bkEnergy[i] = 0;
@@ -483,23 +479,16 @@ export class SimulationEngine {
           continue;
         }
 
-        // --- Cell survives — update energy and age -----------------------
+        // --- Cell survives ------------------------------------------------
         bkEnergy[i] = newEnergy;
-        // Age increments, capped at Uint16 max (65 535).
         bkAge[i] = ftAge[i] < 65535 ? ftAge[i] + 1 : 65535;
 
-        // --- Mutation (Phase 3): regular Life may mutate to LifeVariant --
-        // This runs AFTER survival is confirmed so dying cells cannot
-        // mutate.  Mutation is written to the back buffer so it takes
-        // effect next tick.
+        // --- Legacy Phase 3 mutation (Life → LifeVariant) -----------------
         if (!isVariant && mutationRate > 0 && Math.random() < mutationRate) {
-          // Transform this cell into LifeVariant B.
           bkType[i]  = CellType.LifeVariant;
           bkFlags[i] = ftFlags[i] | CellFlags.MUTATED;
           this._stats.variantCells++;
         } else {
-          // Cell type and flags remain as they were (already pre-copied).
-          // Just update the stats counter.
           if (isVariant) {
             this._stats.variantCells++;
           } else {
@@ -508,28 +497,39 @@ export class SimulationEngine {
         }
 
         // --- Spread (reproduction) ----------------------------------------
-        // Phase 5: Drain halves the effective spread rate for adjacent cells.
+        // Phase 5: Drain halves the effective spread rate.
         const effectiveSpreadRate = adjacentDrain
           ? cellSpreadRate * 0.5
           : cellSpreadRate;
 
         if (newEnergy >= cellReproThresh) {
           this._trySpread(
+            i,
             nLen,
             ftType,
+            ftGenome,
+            ftVariantId,
+            ftGeneration,
             bkType,
             bkEnergy,
             bkAge,
+            bkFlags,
+            bkGenome,
+            bkVariantId,
+            bkGeneration,
+            bkToxinResist,
+            bkNutrientAbs,
+            bkHeatResist,
+            bkSpreadBonus,
             type,
             effectiveSpreadRate,
             cellInitEnergy,
             competitionStrength,
             toxinStrength,
-            toxinResistance,
             nutrientBoost,
-            nutrientAbsorption,
             gravityStrength,
             gravityResponse,
+            pointMutationRate,
           );
         }
 
@@ -548,12 +548,9 @@ export class SimulationEngine {
    * Fills `_neighborBuf` with the flat indices of cell `i`'s neighbours and
    * returns the count.  Uses Moore or Von Neumann based on `useMoore`.
    *
-   * This is the tight inner-loop function — it avoids any array allocation by
-   * writing directly into the pre-allocated `_neighborBuf`.
-   *
-   * @param i - Flat index of the source cell.
-   * @param width - Grid width.
-   * @param height - Grid height.
+   * @param i        - Flat index of the source cell.
+   * @param width    - Grid width.
+   * @param height   - Grid height.
    * @param useMoore - True for Moore (8-cell); false for Von Neumann (4-cell).
    * @returns Number of valid neighbours written into `_neighborBuf`.
    */
@@ -563,9 +560,6 @@ export class SimulationEngine {
     height: number,
     useMoore: boolean,
   ): number {
-    // Get neighbours from utils — these functions don't allocate on every call
-    // because we delegate allocation there.  For Phase 4 we can inline this
-    // loop entirely but for now clarity > micro-optimisation.
     const neighbors = useMoore
       ? mooreNeighbors(i, width, height)
       : vonNeumannNeighbors(i, width, height);
@@ -578,7 +572,22 @@ export class SimulationEngine {
   }
 
   /**
-   * Attempts to spread the life cell at index `i` into eligible neighbours.
+   * Attempts to spread the life cell at `parentIdx` into eligible neighbours.
+   *
+   * ## Phase 9 genome inheritance
+   *
+   * When a spread succeeds:
+   * 1. The child's genome = parent's genome + stochastic point mutation via
+   *    {@link computeChildGenome}.
+   * 2. The child's per-cell phenotype (`toxinResist`, `nutrientAbs`,
+   *    `heatResist`, `spreadBonus`) is derived from the child's genome
+   *    via {@link applyPhenotypeFromGenome}.
+   * 3. Spawn energy for Toxin / Nutrient targets uses the **child's** derived
+   *    resistance/absorption — the newly born cell faces the environment with
+   *    its own evolved traits, not the parent's.
+   * 4. `variantId` is inherited unchanged (Phase 11 will assign new IDs when
+   *    ≥3 bits diverge).
+   * 5. `generation` = parent generation + 1 (capped at 65 535).
    *
    * ## Spread targets (Phase 2 + Phase 5)
    *   - Empty cells:    Life spawns at full `cellInitEnergy`.
@@ -586,80 +595,98 @@ export class SimulationEngine {
    *                     Toxin is consumed (overwritten by Life type).
    *   - Nutrient cells: Life spawns with boosted energy.
    *                     Nutrient is consumed (overwritten by Life type).
-   *   - Wall / Drain / GravityWell / Barrier / Fire / Ice: Impassable — blocked.
+   *   - Wall / Drain / GravityWell / Barrier / Fire / Ice: Impassable.
    *   - Life/LifeVariant: Normally occupied — skipped.
    *
-   * ## Phase 3 addition — LifeVariant competition
+   * ## Phase 3 — LifeVariant competition
    *   - LifeVariant cells MAY spread into regular Life cells with probability
    *     `competitionStrength`.  Regular Life cannot spread into LifeVariant.
    *
-   * ## Phase 5 addition — GravityWell bias
-   *   - For each candidate target neighbour, the spread probability is boosted
-   *     by the sum of inverse-square pull from all active GravityWell cells.
-   *     This creates a directional bias toward well centres without blocking.
+   * ## Phase 5 — GravityWell bias
+   *   - Each candidate target's probability is boosted by the inverse-square
+   *     pull from all active GravityWell cells toward the target position.
    *
-   * @param nLen - Number of valid entries in `_neighborBuf`.
-   * @param ftType - Front cell type array (read-only).
-   * @param bkType - Back cell type array (write).
-   * @param bkEnergy - Back energy array (write).
-   * @param bkAge - Back age array (write).
-   * @param lifeType - The specific life type to propagate (Life or LifeVariant).
-   * @param cellSpreadRate - Per-neighbour base spread probability [0, 1].
-   * @param cellInitEnergy - Base energy assigned to newly born cells.
+   * @param parentIdx         - Flat index of the spreading parent cell.
+   * @param nLen              - Number of valid entries in `_neighborBuf`.
+   * @param ftType            - Front cell type array (read-only).
+   * @param ftGenome          - Front genome array (read-only).
+   * @param ftVariantId       - Front variant ID array (read-only).
+   * @param ftGeneration      - Front generation array (read-only).
+   * @param bkType            - Back cell type array (write).
+   * @param bkEnergy          - Back energy array (write).
+   * @param bkAge             - Back age array (write).
+   * @param bkFlags           - Back flags array (write).
+   * @param bkGenome          - Back genome array (write).
+   * @param bkVariantId       - Back variant ID array (write).
+   * @param bkGeneration      - Back generation array (write).
+   * @param bkToxinResist     - Back toxin resist array (write).
+   * @param bkNutrientAbs     - Back nutrient abs array (write).
+   * @param bkHeatResist      - Back heat resist array (write).
+   * @param bkSpreadBonus     - Back spread bonus array (write).
+   * @param lifeType          - The specific life type propagating (Life or LifeVariant).
+   * @param cellSpreadRate    - Effective per-neighbour spread probability (already includes spreadBonus).
+   * @param cellInitEnergy    - Base energy assigned to newly born cells.
    * @param competitionStrength - Probability LifeVariant captures a Life cell.
-   * @param toxinStrength - Toxin entry damage parameter.
-   * @param toxinResistance - Toxin resistance multiplier.
-   * @param nutrientBoost - Nutrient entry boost parameter.
-   * @param nutrientAbsorption - Nutrient absorption multiplier.
-   * @param gravityStrength - GravityWell pull force.
-   * @param gravityResponse - Life's sensitivity to gravity wells.
+   * @param toxinStrength     - Toxin entry damage parameter.
+   * @param nutrientBoost     - Nutrient entry boost parameter.
+   * @param gravityStrength   - GravityWell pull force.
+   * @param gravityResponse   - Life's sensitivity to gravity wells.
+   * @param pointMutationRate - Per-bit genome mutation probability per spread.
    */
   private _trySpread(
-    nLen: number,
-    ftType: Uint8Array,
-    bkType: Uint8Array,
-    bkEnergy: Float32Array,
-    bkAge: Uint16Array,
-    lifeType: CellType,
-    cellSpreadRate: number,
-    cellInitEnergy: number,
+    parentIdx:         number,
+    nLen:              number,
+    ftType:            Uint8Array,
+    ftGenome:          Uint16Array,
+    ftVariantId:       Uint8Array,
+    ftGeneration:      Uint16Array,
+    bkType:            Uint8Array,
+    bkEnergy:          Float32Array,
+    bkAge:             Uint16Array,
+    bkFlags:           Uint8Array,
+    bkGenome:          Uint16Array,
+    bkVariantId:       Uint8Array,
+    bkGeneration:      Uint16Array,
+    bkToxinResist:     Float32Array,
+    bkNutrientAbs:     Float32Array,
+    bkHeatResist:      Float32Array,
+    bkSpreadBonus:     Float32Array,
+    lifeType:          CellType,
+    cellSpreadRate:    number,
+    cellInitEnergy:    number,
     competitionStrength: number,
-    toxinStrength: number,
-    toxinResistance: number,
-    nutrientBoost: number,
-    nutrientAbsorption: number,
-    gravityStrength: number,
-    gravityResponse: number,
+    toxinStrength:     number,
+    nutrientBoost:     number,
+    gravityStrength:   number,
+    gravityResponse:   number,
+    pointMutationRate: number,
   ): void {
     const isVariant = lifeType === CellType.LifeVariant;
     const width     = this._width;
     const height    = this._height;
 
-    for (let k = 0; k < nLen; k++) {
-      const ni     = this._neighborBuf[k];
-      const nType  = ftType[ni];
+    // Read parent genome fields once — shared across all children this tick.
+    const parentGenome     = ftGenome[parentIdx];
+    const parentVariantId  = ftVariantId[parentIdx];
+    const parentGeneration = ftGeneration[parentIdx];
 
-      // Determine whether this neighbour is a valid spread target and which
-      // base probability applies.
+    for (let k = 0; k < nLen; k++) {
+      const ni    = this._neighborBuf[k];
+      const nType = ftType[ni];
+
+      // Determine whether this neighbour is a valid spread target.
       let baseProb: number;
 
       if (isEnterable(nType)) {
-        // Normal spread into Empty / Toxin / Nutrient cells.
         baseProb = cellSpreadRate;
       } else if (isVariant && nType === CellType.Life) {
-        // Phase 3: LifeVariant can compete against regular Life cells.
+        // Phase 3: LifeVariant competes against regular Life.
         baseProb = competitionStrength;
       } else {
-        // Impassable (Wall, Drain, GravityWell, Barrier, Fire, Ice) or
-        // same-type/opponent variant — cannot spread here.
-        continue;
+        continue; // impassable or same-type cell
       }
 
       // --- Phase 5: GravityWell spread bias --------------------------------
-      // For each active well, add its directional pull bonus to `prob`.
-      // The pull is computed from the well centre to the CANDIDATE TARGET
-      // (ni), not the source cell, so the bias attracts spread toward the
-      // well rather than the cell itself.
       let prob = baseProb;
 
       if (this._wellCount > 0) {
@@ -669,34 +696,61 @@ export class SimulationEngine {
           const wellIdx = this._wellBuf[w];
           const { x: wellX, y: wellY } = indexToXY(wellIdx, width, height);
           prob += calcGravityBias(
-            wellX, wellY,
-            targetX, targetY,
-            gravityStrength, gravityResponse,
+            wellX, wellY, targetX, targetY, gravityStrength, gravityResponse,
           );
         }
-        // Cap at 1.0 so we don't pass > 1 to Math.random() comparison.
         if (prob > 1.0) prob = 1.0;
       }
 
       if (Math.random() < prob) {
-        // Compute spawn energy based on the target cell's type.
-        // Competition targets are treated as Empty for energy purposes
-        // (the variant takes over at its own initial energy).
+        // -----------------------------------------------------------------
+        // Phase 9: compute child genome via point mutation.
+        // stressLevel = 0 here; stress hypermutation is added in Phase 10.
+        // -----------------------------------------------------------------
+        const childGenome = computeChildGenome(parentGenome, pointMutationRate, 0);
+
+        // Derive child's phenotype from child's genome for use in spawn
+        // energy calculation (child faces the environment with its own traits).
+        const childToxinResist = getToxinResist(childGenome);
+        const childNutrientAbs = getNutrientAbs(childGenome);
+
+        // Compute spawn energy using child's resistance/absorption.
+        // Competition targets are treated as Empty for energy purposes.
         const targetForEnergy = (nType === CellType.Life) ? CellType.Empty : nType;
         const spawnEnergy = calcSpreadEnergy(
           targetForEnergy,
           cellInitEnergy,
           toxinStrength,
-          toxinResistance,
+          childToxinResist,
           nutrientBoost,
-          nutrientAbsorption,
+          childNutrientAbs,
         );
 
+        // --- Write cell state to back buffer -------------------------------
         bkType[ni]   = lifeType;
         bkEnergy[ni] = spawnEnergy;
         bkAge[ni]    = 0;
+        bkFlags[ni]  = 0; // clear any flags from the overwritten cell
+
+        // --- Write genome inheritance to back buffer -----------------------
+        bkGenome[ni]     = childGenome;
+        // Phase 9: variantId inherited unchanged; Phase 11 will branch new IDs
+        // when countBitDifferences(parentGenome, childGenome) >= 3.
+        bkVariantId[ni]  = parentVariantId;
+        bkGeneration[ni] = parentGeneration < 65535 ? parentGeneration + 1 : 65535;
+
+        // --- Derive and write per-cell phenotype ---------------------------
+        // applyPhenotypeFromGenome writes all 4 phenotype buffers in O(1).
+        applyPhenotypeFromGenome(
+          childGenome,
+          bkToxinResist,
+          bkNutrientAbs,
+          bkHeatResist,
+          bkSpreadBonus,
+          ni,
+        );
+
         this._stats.births++;
-        // Track spread result in the right counter.
         if (isVariant) {
           this._stats.variantCells++;
         } else {
@@ -714,8 +768,8 @@ export class SimulationEngine {
    * Checks whether a specific bitmask flag is set for cell `i`.
    *
    * @param flags - Flags buffer.
-   * @param i - Cell index.
-   * @param flag - Bitmask to test (see {@link CellFlags}).
+   * @param i     - Cell index.
+   * @param flag  - Bitmask to test (see {@link CellFlags}).
    * @returns True if the flag is set.
    */
   static hasFlag(flags: Uint8Array, i: number, flag: number): boolean {
@@ -726,8 +780,8 @@ export class SimulationEngine {
    * Sets a specific bitmask flag for cell `i`.
    *
    * @param flags - Flags buffer.
-   * @param i - Cell index.
-   * @param flag - Bitmask to set (see {@link CellFlags}).
+   * @param i     - Cell index.
+   * @param flag  - Bitmask to set (see {@link CellFlags}).
    */
   static setFlag(flags: Uint8Array, i: number, flag: number): void {
     flags[i] |= flag;
@@ -737,8 +791,8 @@ export class SimulationEngine {
    * Clears a specific bitmask flag for cell `i`.
    *
    * @param flags - Flags buffer.
-   * @param i - Cell index.
-   * @param flag - Bitmask to clear (see {@link CellFlags}).
+   * @param i     - Cell index.
+   * @param flag  - Bitmask to clear (see {@link CellFlags}).
    */
   static clearFlag(flags: Uint8Array, i: number, flag: number): void {
     flags[i] &= ~flag;

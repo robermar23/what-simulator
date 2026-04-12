@@ -48,6 +48,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { SimulationEngine, CellFlags } from './SimulationEngine.js';
 import { GridState, CellType } from './GridState.js';
 import { defaultConfig } from './config/SimulationConfig.js';
+import {
+  GENOME_NEUTRAL,
+  packGenome,
+  getToxinResist,
+  getNutrientAbs,
+  getSpreadBonus,
+} from './genetics/GenomeEncoder.js';
 
 // ---------------------------------------------------------------------------
 // Helper: single-tick convenience
@@ -412,6 +419,8 @@ describe('SimulationEngine — Toxin obstacle', () => {
 
     grid.front.cellType[centre]     = CellType.Life;
     grid.front.energy[centre]       = 0.8;
+    // Phase 9: per-cell toxin resistance overrides the global config value.
+    grid.front.toxinResist[centre]  = 1.0;
     grid.front.cellType[toxinRight] = CellType.Toxin;
 
     const { front } = runOneTick(grid, engine, {
@@ -419,7 +428,7 @@ describe('SimulationEngine — Toxin obstacle', () => {
       energyDecayRate:      0.0,
       underpopulationLimit: 0,
       toxinStrength:        0.1,
-      toxinResistance:      1.0,  // immune
+      toxinResistance:      1.0,  // immune (kept for symmetry; engine uses per-cell)
     });
 
     expect(front.energy[centre]).toBeCloseTo(0.8, 5);
@@ -504,6 +513,8 @@ describe('SimulationEngine — Nutrient obstacle', () => {
 
     grid.front.cellType[centre]        = CellType.Life;
     grid.front.energy[centre]          = 0.5;
+    // Phase 9: per-cell nutrient absorption must be set (buffers default to 0).
+    grid.front.nutrientAbs[centre]     = 1.0;
     grid.front.cellType[nutrientRight] = CellType.Nutrient;
     grid.front.energy[nutrientRight]   = 1.0; // full nutrient
 
@@ -527,6 +538,8 @@ describe('SimulationEngine — Nutrient obstacle', () => {
 
     grid.front.cellType[centre]        = CellType.Life;
     grid.front.energy[centre]          = 0.99; // nearly full
+    // Phase 9: per-cell nutrient absorption must be set (buffers default to 0).
+    grid.front.nutrientAbs[centre]     = 1.0;
     grid.front.cellType[nutrientRight] = CellType.Nutrient;
     grid.front.energy[nutrientRight]   = 1.0;
 
@@ -548,6 +561,10 @@ describe('SimulationEngine — Nutrient obstacle', () => {
 
     grid.front.cellType[centre]        = CellType.Life;
     grid.front.energy[centre]          = 1.0;
+    // Phase 9: give the parent genome max nutrientTier (15) so the child's
+    // per-cell nutrientAbs = 1.0.  pointMutationRate=0 ensures the child
+    // inherits the genome unchanged, so we can predict spawn energy exactly.
+    grid.front.genome[centre]          = packGenome(7, 7, 7, 15);
     grid.front.cellType[nutrientRight] = CellType.Nutrient;
     grid.front.energy[nutrientRight]   = 1.0;
 
@@ -559,11 +576,12 @@ describe('SimulationEngine — Nutrient obstacle', () => {
       nutrientAbsorption:   1.0,
       nutrientDecayRate:    0.0,
       initialEnergy:        0.8,
+      pointMutationRate:    0.0,   // no mutation → child genome identical to parent
     });
 
     // Nutrient must be replaced by Life.
     expect(front.cellType[nutrientRight]).toBe(CellType.Life);
-    // Spawn energy = initialEnergy + nutrientBoost = 0.8 + 0.05 = 0.85.
+    // Spawn energy = initialEnergy + nutrientBoost × nutrientAbs = 0.8 + 0.05 × 1.0 = 0.85.
     expect(front.energy[nutrientRight]).toBeCloseTo(0.85, 5);
   });
 
@@ -1354,5 +1372,227 @@ describe('SimulationEngine — Phase 5 GravityWell', () => {
     // than the "away" cell over many trials.  A 3:2 ratio is a conservatively
     // detectable signal at 40 repeats.
     expect(towardWellCount).toBeGreaterThan(awayFromWellCount);
+  });
+});
+
+// ===========================================================================
+// Phase 9 — Per-Cell Phenotype and Genome Inheritance
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Genome inheritance
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 9 genome inheritance', () => {
+  it('child genome equals parent genome when pointMutationRate = 0', () => {
+    // Parent Life at centre spreads right.  With mutation off the child must
+    // carry the exact same genome as the parent.
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    const parentGenome = packGenome(3, 5, 2, 14); // arbitrary non-neutral genome
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 1.0;
+    grid.front.genome[centre]   = parentGenome;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:        1.0,
+      energyDecayRate:   0.0,
+      underpopulationLimit: 0,
+      pointMutationRate: 0.0,  // mutations disabled
+    });
+
+    expect(front.cellType[right]).toBe(CellType.Life);
+    // Child's genome must be a verbatim copy of the parent's.
+    expect(front.genome[right]).toBe(parentGenome);
+  });
+
+  it('child generation = parent generation + 1 after spread', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+    const parentGeneration = 42;
+
+    grid.front.cellType[centre]    = CellType.Life;
+    grid.front.energy[centre]      = 1.0;
+    grid.front.generation[centre]  = parentGeneration;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:        1.0,
+      energyDecayRate:   0.0,
+      underpopulationLimit: 0,
+      pointMutationRate: 0.0,
+    });
+
+    expect(front.cellType[right]).toBe(CellType.Life);
+    expect(front.generation[right]).toBe(parentGeneration + 1);
+  });
+
+  it('child variantId inherits parent variantId unchanged', () => {
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+    const parentVariantId = 7;
+
+    grid.front.cellType[centre]   = CellType.Life;
+    grid.front.energy[centre]     = 1.0;
+    grid.front.variantId[centre]  = parentVariantId;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:        1.0,
+      energyDecayRate:   0.0,
+      underpopulationLimit: 0,
+      pointMutationRate: 0.0,
+    });
+
+    expect(front.cellType[right]).toBe(CellType.Life);
+    expect(front.variantId[right]).toBe(parentVariantId);
+  });
+
+  it('phenotype buffers are written on child after spread', () => {
+    // Parent has a genome that yields distinct phenotype values.  After spread
+    // the child's phenotype buffers must match what GENOME_LUT predicts.
+    const centre = 2 * W + 2;
+    const right  = 2 * W + 3;
+
+    // High toxin tier → measurable toxinResist; max nutrient tier → nutrientAbs = 1.0.
+    const parentGenome = packGenome(7, 7, 15, 15);
+
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 1.0;
+    grid.front.genome[centre]   = parentGenome;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:        1.0,
+      energyDecayRate:   0.0,
+      underpopulationLimit: 0,
+      pointMutationRate: 0.0,  // child inherits genome exactly
+    });
+
+    expect(front.cellType[right]).toBe(CellType.Life);
+    expect(front.toxinResist[right]).toBeCloseTo(getToxinResist(parentGenome), 5);
+    expect(front.nutrientAbs[right]).toBeCloseTo(getNutrientAbs(parentGenome), 5);
+    expect(front.spreadBonus[right]).toBeCloseTo(getSpreadBonus(parentGenome), 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-cell phenotype effects
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 9 per-cell phenotype effects', () => {
+  it('per-cell toxinResist reduces toxin damage proportionally', () => {
+    // Two Life cells side-by-side, each adjacent to a Toxin.  One has
+    // toxinResist = 0.0 (full damage), the other toxinResist = 0.5 (half).
+    const fullDamageIdx  = 1 * W + 1; // (1,1)
+    const halfDamageIdx  = 3 * W + 1; // (1,3) — same column, different row
+    const toxinA = 1 * W + 2;         // toxin right of fullDamage
+    const toxinB = 3 * W + 2;         // toxin right of halfDamage
+
+    grid.front.cellType[fullDamageIdx]  = CellType.Life;
+    grid.front.energy[fullDamageIdx]    = 0.8;
+    grid.front.toxinResist[fullDamageIdx] = 0.0; // no resistance
+
+    grid.front.cellType[halfDamageIdx]  = CellType.Life;
+    grid.front.energy[halfDamageIdx]    = 0.8;
+    grid.front.toxinResist[halfDamageIdx] = 0.5; // 50% resistance
+
+    grid.front.cellType[toxinA] = CellType.Toxin;
+    grid.front.cellType[toxinB] = CellType.Toxin;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      toxinStrength:        0.1,
+    });
+
+    // fullDamage: 0.8 - 0.1 × (1 - 0.0) = 0.70
+    expect(front.energy[fullDamageIdx]).toBeCloseTo(0.70, 5);
+    // halfDamage: 0.8 - 0.1 × (1 - 0.5) = 0.75
+    expect(front.energy[halfDamageIdx]).toBeCloseTo(0.75, 5);
+  });
+
+  it('per-cell nutrientAbs scales nutrient boost proportionally', () => {
+    // Two Life cells: one with full absorption, one with half.
+    const fullAbsIdx = 1 * W + 1;
+    const halfAbsIdx = 3 * W + 1;
+    const nutA = 1 * W + 2;
+    const nutB = 3 * W + 2;
+
+    grid.front.cellType[fullAbsIdx]  = CellType.Life;
+    grid.front.energy[fullAbsIdx]    = 0.5;
+    grid.front.nutrientAbs[fullAbsIdx] = 1.0;
+
+    grid.front.cellType[halfAbsIdx]  = CellType.Life;
+    grid.front.energy[halfAbsIdx]    = 0.5;
+    grid.front.nutrientAbs[halfAbsIdx] = 0.5;
+
+    grid.front.cellType[nutA] = CellType.Nutrient;
+    grid.front.energy[nutA]   = 1.0;
+    grid.front.cellType[nutB] = CellType.Nutrient;
+    grid.front.energy[nutB]   = 1.0;
+
+    const { front } = runOneTick(grid, engine, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      nutrientBoost:        0.1,
+      nutrientDecayRate:    0.0,
+    });
+
+    // fullAbs: 0.5 + 0.1 × 1.0 = 0.60
+    expect(front.energy[fullAbsIdx]).toBeCloseTo(0.60, 5);
+    // halfAbs: 0.5 + 0.1 × 0.5 = 0.55
+    expect(front.energy[halfAbsIdx]).toBeCloseTo(0.55, 5);
+  });
+
+  it('per-cell spreadBonus increases effective spread rate', () => {
+    // A cell with spreadBonus = +0.4 should spread more reliably than one
+    // with spreadBonus = 0 at a low base spreadRate.  Run 100 repetitions and
+    // compare colonisation counts.
+    const REPEATS    = 100;
+    let bonusCount   = 0;
+    let normalCount  = 0;
+    const BASE_RATE  = 0.3;
+    const HIGH_BONUS = getSpreadBonus(packGenome(15, 7, 7, 7)); // max spread tier
+
+    for (let rep = 0; rep < REPEATS; rep++) {
+      // Test 1: cell with spreadBonus
+      const gBonus   = new GridState(W, H);
+      const eBonus   = new SimulationEngine(W, H);
+      const lifeB    = 2 * W + 2;
+      const rightB   = 2 * W + 3;
+      gBonus.front.cellType[lifeB]    = CellType.Life;
+      gBonus.front.energy[lifeB]      = 1.0;
+      gBonus.front.genome[lifeB]      = packGenome(15, 7, 7, 7);
+      gBonus.front.spreadBonus[lifeB] = HIGH_BONUS;
+      runOneTick(gBonus, eBonus, {
+        spreadRate:        BASE_RATE,
+        energyDecayRate:   0.0,
+        underpopulationLimit: 0,
+        pointMutationRate: 0.0,
+      });
+      if (gBonus.front.cellType[rightB] === CellType.Life) bonusCount++;
+
+      // Test 2: cell with no bonus (GENOME_NEUTRAL default)
+      const gNorm  = new GridState(W, H);
+      const eNorm  = new SimulationEngine(W, H);
+      const lifeN  = 2 * W + 2;
+      const rightN = 2 * W + 3;
+      gNorm.front.cellType[lifeN]    = CellType.Life;
+      gNorm.front.energy[lifeN]      = 1.0;
+      gNorm.front.genome[lifeN]      = GENOME_NEUTRAL; // spreadBonus = 0.0
+      gNorm.front.spreadBonus[lifeN] = getSpreadBonus(GENOME_NEUTRAL); // 0.0
+      runOneTick(gNorm, eNorm, {
+        spreadRate:        BASE_RATE,
+        energyDecayRate:   0.0,
+        underpopulationLimit: 0,
+        pointMutationRate: 0.0,
+      });
+      if (gNorm.front.cellType[rightN] === CellType.Life) normalCount++;
+    }
+
+    // A high spreadBonus must produce more successful spreads than no bonus.
+    expect(bonusCount).toBeGreaterThan(normalCount);
   });
 });
