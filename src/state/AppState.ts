@@ -14,6 +14,7 @@ import {
   defaultConfig,
   type SimulationConfig,
 } from '../simulation/config/SimulationConfig.js';
+import { type RendererType } from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Drawing tool enum
@@ -47,6 +48,56 @@ export type DrawingTool =
  * rather than polling this object.
  */
 export class AppState {
+  // ---------------------------------------------------------------------------
+  // Static helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reads a grid dimension from `sessionStorage`, validating it against
+   * the allowed sizes from Phase 7's grid-size selector.
+   *
+   * The ControlPanel stores the user's chosen grid size in `sessionStorage`
+   * before reloading the page.  On reload `AppState` reads this value to
+   * bootstrap the workers at the correct dimensions.
+   *
+   * Falls back to `defaultValue` if the key is absent or the stored value is
+   * not one of the allowed sizes.
+   *
+   * @param key          - `sessionStorage` key (`'gridWidth'` or `'gridHeight'`).
+   * @param defaultValue - Fallback dimension in cells.
+   * @returns Validated grid dimension in cells.
+   */
+  /**
+   * Reads the desired rendering backend from `sessionStorage.rendererType`.
+   * Written by the ControlPanel renderer toggle before a page reload.
+   * Falls back to `'canvas2d'` if absent or invalid.
+   *
+   * @returns The stored `RendererType`, or `'canvas2d'` as the safe default.
+   */
+  private static _readRendererType(): RendererType {
+    try {
+      const raw = sessionStorage.getItem('rendererType');
+      if (raw === 'webgl2' || raw === 'canvas2d') return raw;
+    } catch {
+      // sessionStorage may be unavailable in sandboxed contexts.
+    }
+    return 'canvas2d';
+  }
+
+  private static _readGridDim(key: string, defaultValue: number): number {
+    const ALLOWED = new Set([64, 128, 256, 512, 1024, 2048]);
+    try {
+      const raw = sessionStorage.getItem(key);
+      if (raw !== null) {
+        const parsed = parseInt(raw, 10);
+        if (ALLOWED.has(parsed)) return parsed;
+      }
+    } catch {
+      // sessionStorage may throw in private-browsing modes or sandboxed iframes.
+    }
+    return defaultValue;
+  }
+
   // --- Simulation control ---------------------------------------------------
 
   /** True while the simulation tick loop is active. */
@@ -57,11 +108,19 @@ export class AppState {
 
   // --- Grid settings --------------------------------------------------------
 
-  /** Grid width in cells. */
-  private _gridWidth  = 256;
+  /**
+   * Grid width in cells.
+   * Default 256; overridden by `sessionStorage.gridWidth` when the user
+   * selects a different grid size in the Viewport section (Phase 7).
+   */
+  private _gridWidth: number = AppState._readGridDim('gridWidth', 256);
 
-  /** Grid height in cells. */
-  private _gridHeight = 256;
+  /**
+   * Grid height in cells.
+   * Default 256; overridden by `sessionStorage.gridHeight` when the user
+   * selects a different grid size in the Viewport section (Phase 7).
+   */
+  private _gridHeight: number = AppState._readGridDim('gridHeight', 256);
 
   /** Canvas pixels per cell. */
   private _cellSize = 2;
@@ -94,6 +153,21 @@ export class AppState {
    * Phase 6.
    */
   private _showGridLines = false;
+
+  /**
+   * Which rendering backend is active.
+   * - `'canvas2d'` — CPU `ImageData` pixel write (default, always available).
+   * - `'webgl2'`   — GPU WebGL 2 fragment shader (Phase 7, requires WebGL 2).
+   *
+   * Read from `sessionStorage.rendererType` on startup (written by the
+   * ControlPanel renderer toggle before a page reload, the same pattern used
+   * by the grid-size selector).
+   *
+   * Runtime switching is not possible because an `OffscreenCanvas` can hold
+   * only one context type.  Changing the renderer type triggers a page reload
+   * so the RenderWorker re-initialises with the new context from scratch.
+   */
+  private _rendererType: RendererType = AppState._readRendererType();
 
   // -------------------------------------------------------------------------
   // Getters
@@ -134,6 +208,12 @@ export class AppState {
    * Phase 6.
    */
   get showGridLines(): boolean { return this._showGridLines; }
+
+  /**
+   * Which rendering backend is currently active.
+   * Phase 7.
+   */
+  get rendererType(): RendererType { return this._rendererType; }
 
   // -------------------------------------------------------------------------
   // Setters (fire events)
@@ -238,6 +318,7 @@ export class AppState {
     this._showGridLines = value;
     bus.emit('gridLinesChange', { show: value });
   }
+
 }
 
 /** Singleton app state — the whole app shares one instance. */

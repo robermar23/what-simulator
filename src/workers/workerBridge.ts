@@ -108,6 +108,17 @@ export type SimWorkerOutMsg =
 // ---------------------------------------------------------------------------
 
 /**
+ * Which rendering backend to use.
+ *
+ * - `'canvas2d'` — CPU-based `ImageData` pixel write (Phase 1–6, always works).
+ * - `'webgl2'`   — GPU-based WebGL 2 fragment shader (Phase 7, requires WebGL 2).
+ *
+ * The render worker checks WebGL 2 availability when it receives a `webgl2`
+ * request and falls back to `canvas2d` if the context cannot be acquired.
+ */
+export type RendererType = 'canvas2d' | 'webgl2';
+
+/**
  * All messages the main thread can post to the RenderWorker.
  */
 export type RenderWorkerInMsg =
@@ -117,17 +128,22 @@ export type RenderWorkerInMsg =
    * direct control of the DOM canvas element.
    */
   | {
-      type:     'init';
+      type:         'init';
       /** Transferred OffscreenCanvas — must be in the transferable list. */
-      canvas:   OffscreenCanvas;
+      canvas:       OffscreenCanvas;
       /** SharedArrayBuffer holding the double-buffered grid state. */
-      sab:      SharedArrayBuffer;
+      sab:          SharedArrayBuffer;
       /** Grid width in cells. */
-      width:    number;
+      width:        number;
       /** Grid height in cells. */
-      height:   number;
+      height:       number;
       /** Initial pixels-per-cell zoom level. */
-      cellSize: number;
+      cellSize:     number;
+      /**
+       * Which rendering backend to start with.
+       * Phase 7: defaults to `'canvas2d'` for backwards compat if omitted.
+       */
+      rendererType?: RendererType;
     }
   /** Zoom level changed — renderer resizes and invalidates the pixel cache. */
   | { type: 'cellSizeChange'; cellSize: number }
@@ -139,7 +155,8 @@ export type RenderWorkerInMsg =
    * Toggle the grid-line overlay drawn over the simulation canvas.
    * Phase 6.
    */
-  | { type: 'gridLinesChange'; show: boolean };
+  | { type: 'gridLinesChange'; show: boolean }
+  ;
 
 // ---------------------------------------------------------------------------
 // RenderWorker → main thread

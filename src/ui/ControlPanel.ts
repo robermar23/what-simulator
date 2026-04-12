@@ -736,6 +736,17 @@ export class ControlPanel {
    *   - Grid lines toggle checkbox (only meaningful at cellSize >= 2).
    *   - Cell-size slider already syncs with scroll-wheel zoom via EventBus.
    *
+   * Phase 7 additions:
+   *   - Grid Size selector (64 / 128 / 256 / 512 / 1024 / 2048).
+   *     Changing the grid size reloads the page with `?grid=N` in the URL
+   *     so the App can be re-bootstrapped at the new dimensions.  A page
+   *     reload is the simplest way to reallocate the SharedArrayBuffer and
+   *     both workers simultaneously without a complex tear-down sequence.
+   *   - Renderer toggle (Canvas 2D ↔ WebGL 2).
+   *     Fires `rendererChange` on the EventBus; App forwards it to the
+   *     RenderWorker.  The worker replies with `rendererChanged` carrying
+   *     the backend it actually activated (may differ if WebGL 2 unavailable).
+   *
    * @returns The viewport section element.
    */
   private _buildViewportSection(): HTMLElement {
@@ -746,6 +757,51 @@ export class ControlPanel {
     heading.className   = 'panel-heading';
     heading.textContent = 'Viewport';
     section.append(heading);
+
+    // --- Grid size selector (Phase 7) ----------------------------------------
+    const gridSizeRow = document.createElement('div');
+    gridSizeRow.className = 'slider-row';
+    gridSizeRow.title     =
+      'Grid dimensions in cells. Larger grids require the WebGL 2 renderer for ' +
+      'smooth 60 fps. Changing reloads the page.';
+
+    const gridSizeLabel = document.createElement('label');
+    gridSizeLabel.htmlFor     = 'grid-size-select';
+    gridSizeLabel.textContent = 'Grid Size';
+    gridSizeLabel.className   = 'slider-label';
+
+    const gridSizeSelect = document.createElement('select');
+    gridSizeSelect.id        = 'grid-size-select';
+    gridSizeSelect.className = 'preset-select';
+    gridSizeSelect.setAttribute('aria-label', 'Choose grid dimensions');
+
+    // Supported grid sizes — Phase 7 extends Phase 6's 64–512 range to 2048.
+    const GRID_SIZES = [64, 128, 256, 512, 1024, 2048] as const;
+    const currentGrid = appState.gridWidth; // width == height (square grid)
+
+    for (const size of GRID_SIZES) {
+      const opt = document.createElement('option');
+      opt.value       = String(size);
+      opt.textContent = `${size} × ${size}`;
+      if (size === currentGrid) opt.selected = true;
+      gridSizeSelect.append(opt);
+    }
+
+    gridSizeSelect.addEventListener('change', () => {
+      const newSize = Number(gridSizeSelect.value);
+      if (newSize === appState.gridWidth) return;
+
+      // Store the desired grid size in sessionStorage so the bootstrapper
+      // can read it on the next page load without a server round-trip.
+      sessionStorage.setItem('gridWidth',  String(newSize));
+      sessionStorage.setItem('gridHeight', String(newSize));
+
+      // Reload triggers a full app re-bootstrap at the new dimensions.
+      window.location.reload();
+    });
+
+    gridSizeRow.append(gridSizeLabel, gridSizeSelect);
+    section.append(gridSizeRow);
 
     // --- Cell size slider ----------------------------------------------------
     const row  = document.createElement('div');
@@ -816,6 +872,57 @@ export class ControlPanel {
 
     gridRow.append(gridCheckbox, gridLabel, gridShortcut);
     section.append(gridRow);
+
+    // --- Renderer toggle (Phase 7) -------------------------------------------
+    // Switches between Canvas 2D (CPU) and WebGL 2 (GPU).
+    //
+    // An OffscreenCanvas can only hold one context type, so switching at
+    // runtime is not possible.  Instead, the desired backend is saved to
+    // sessionStorage and the page reloads — the same approach used by the
+    // grid-size selector above.  The RenderWorker reads the stored type on
+    // init and acquires the correct context before anything else touches
+    // the canvas.
+    const rendererRow = document.createElement('div');
+    rendererRow.className = 'toggle-row';
+    rendererRow.title     =
+      'WebGL 2 offloads colour-mapping to the GPU — recommended for large grids ' +
+      '(1024×1024+). Requires a page reload to apply. Falls back to Canvas 2D ' +
+      'automatically if WebGL 2 is unavailable.';
+
+    const rendererCheckbox = document.createElement('input');
+    rendererCheckbox.type    = 'checkbox';
+    rendererCheckbox.id      = 'renderer-toggle';
+    rendererCheckbox.checked = appState.rendererType === 'webgl2';
+    rendererCheckbox.setAttribute('aria-label', 'Use WebGL 2 renderer');
+
+    const rendererLabel = document.createElement('label');
+    rendererLabel.htmlFor     = 'renderer-toggle';
+    rendererLabel.textContent = 'WebGL 2 Renderer';
+    rendererLabel.className   = 'toggle-label';
+
+    // Badge shows the currently active backend (read from AppState which
+    // was populated from sessionStorage on startup, so it reflects reality
+    // after a reload — including any WebGL 2 fallback to Canvas 2D).
+    const rendererBadge = document.createElement('span');
+    rendererBadge.className   = 'renderer-badge';
+    rendererBadge.textContent = appState.rendererType === 'webgl2' ? 'GPU' : 'CPU';
+    rendererBadge.title       = 'Currently active rendering backend';
+
+    rendererCheckbox.addEventListener('change', () => {
+      const desired = rendererCheckbox.checked ? 'webgl2' : 'canvas2d';
+      // Persist so the bootstrapper reads it after the page reloads.
+      try {
+        sessionStorage.setItem('rendererType', desired);
+      } catch {
+        // sessionStorage unavailable — restore checkbox and bail.
+        rendererCheckbox.checked = !rendererCheckbox.checked;
+        return;
+      }
+      window.location.reload();
+    });
+
+    rendererRow.append(rendererCheckbox, rendererLabel, rendererBadge);
+    section.append(rendererRow);
 
     return section;
   }

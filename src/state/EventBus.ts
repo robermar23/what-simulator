@@ -104,6 +104,7 @@ export interface EventMap {
     /** Grid row index (0-based), or -1 when leaving the canvas. */
     cellY: number;
   };
+
 }
 
 // ---------------------------------------------------------------------------
