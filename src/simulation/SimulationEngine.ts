@@ -61,6 +61,19 @@
  *   - Effective spread rate = `config.spreadRate + front.spreadBonus[i]`.
  *   - Effective toxin resist = `front.toxinResist[i]` (per-cell).
  *   - Effective nutrient absorption = `front.nutrientAbs[i]` (per-cell).
+ *
+ * ## Phase 10 additions (Lifecycle Stages and Senescence)
+ *   - Life cells age through three stages tracked in the `flags` buffer:
+ *       - **Juvenile** (`age < juvenileThreshold`): spread × 0.4, decay × 0.8,
+ *         no genome mutation.  {@link CellFlags.JUVENILE} is set.
+ *       - **Mature** (`juvenileThreshold ≤ age ≤ senescentThreshold`): full
+ *         phenotype, normal mutation.  Neither lifecycle flag is set.
+ *       - **Senescent** (`age > senescentThreshold`): spread × 0.1,
+ *         decay × 1.5, mutation rate × 2.  {@link CellFlags.SENESCENT} is set.
+ *   - **Apoptosis**: a senescent cell whose energy drops below 0.05 undergoes
+ *     planned death — it sets `signalStrength = 1.0`, boosts each live
+ *     neighbour by `apoptosisBoost` energy, and becomes Empty.  This feeds
+ *     the next generation and drives colony turnover.
  */
 
 import { CellType, CellFlags, type GridBuffers } from './GridState.js';
@@ -237,6 +250,8 @@ export class SimulationEngine {
       nutrientAbs:    bkNutrientAbs,
       heatResist:     bkHeatResist,
       spreadBonus:    bkSpreadBonus,
+      // --- Phase 10: signal used for apoptosis burst ---
+      signalStrength: bkSignalStrength,
     } = back;
 
     const {
@@ -265,6 +280,10 @@ export class SimulationEngine {
       competitionStrength,
       // Round 2 genome mutation (Phase 9)
       pointMutationRate,
+      // Phase 10: lifecycle stage parameters
+      juvenileThreshold,
+      senescentThreshold,
+      apoptosisBoost,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -389,8 +408,34 @@ export class SimulationEngine {
         const cellToxinResist = ftToxinResist[i];
         const cellNutrientAbs = ftNutrientAbs[i];
         const cellSpreadBns   = ftSpreadBonus[i];
-        // Effective spread rate = base config rate + per-cell genome bonus.
-        const cellSpreadRate  = baseSpreadRate + cellSpreadBns;
+
+        // --- Phase 10: lifecycle stage detection ---------------------------
+        // Life cells (not LifeVariant) age through three stages based on how
+        // long they have existed.  LifeVariant cells use the mature-stage
+        // modifiers unconditionally so Round 1 behaviour is preserved.
+        const cellAge = ftAge[i];
+        const isJuvenile  = !isVariant && cellAge < juvenileThreshold;
+        const isSenescent = !isVariant && cellAge > senescentThreshold;
+
+        // Stage multipliers applied to the per-cell spread and decay rates.
+        //   Juvenile  → slow spread (× 0.4), reduced metabolic cost (× 0.8)
+        //   Mature    → unmodified (× 1.0 both)
+        //   Senescent → minimal spread (× 0.1), high metabolic cost (× 1.5)
+        let stageSpreadMult = 1.0;
+        let stageDecayMult  = 1.0;
+        if (isJuvenile) {
+          stageSpreadMult = 0.4;
+          stageDecayMult  = 0.8;
+        } else if (isSenescent) {
+          stageSpreadMult = 0.1;
+          stageDecayMult  = 1.5;
+        }
+
+        // Effective spread rate = (base + genome bonus) × stage multiplier.
+        const cellSpreadRate = (baseSpreadRate + cellSpreadBns) * stageSpreadMult;
+
+        // Effective decay rate = base decay × stage multiplier.
+        const stageCellDecayRate = cellDecayRate * stageDecayMult;
 
         const nLen = this._fillNeighbors(i, width, height, useMoore);
 
@@ -418,7 +463,9 @@ export class SimulationEngine {
           continue;
         }
 
-        bkFlags[i] = ftFlags[i] & ~CellFlags.DORMANT;
+        // Clear DORMANT and old lifecycle flags; will reapply below.
+        let newFlags = ftFlags[i] & ~(CellFlags.DORMANT | CellFlags.JUVENILE | CellFlags.SENESCENT);
+        bkFlags[i] = newFlags;
 
         // --- Fire: instant death ------------------------------------------
         if (hasAdjacentFire(this._neighborBuf, nLen, ftType)) {
@@ -433,8 +480,10 @@ export class SimulationEngine {
         // --- Drain adjacency -----------------------------------------------
         const adjacentDrain = hasAdjacentDrain(this._neighborBuf, nLen, ftType);
 
-        // --- Energy budget: per-cell resist/absorption (Phase 9) ----------
-        let newEnergy = ftEnergy[i] - cellDecayRate;
+        // --- Energy budget: per-cell resist/absorption (Phase 9 + 10) ------
+        // Phase 10: use stage-aware decay rate (stageCellDecayRate) instead of
+        // the raw cellDecayRate so juvenile / senescent modifiers apply.
+        let newEnergy = ftEnergy[i] - stageCellDecayRate;
 
         if (adjacentToxin) {
           // Per-cell toxin resistance (Phase 9 replaces config.toxinResistance).
@@ -450,7 +499,39 @@ export class SimulationEngine {
 
         if (newEnergy > 1.0) newEnergy = 1.0;
 
-        // --- Death checks ------------------------------------------------
+        // --- Phase 10: Apoptosis -------------------------------------------
+        // A senescent cell that has fallen below the apoptosis energy threshold
+        // undergoes planned death: it emits a signal burst, donates a small
+        // energy bonus to each live neighbour, then becomes Empty.
+        //
+        // This is checked BEFORE the generic energy-starvation check so the
+        // apoptosis side-effects (signal + neighbour boost) are always applied
+        // to senescent cells, even those that would have died anyway.
+        if (isSenescent && newEnergy < 0.05) {
+          // Signal burst — maximum signal for exactly one tick.
+          bkSignalStrength[i] = 1.0;
+          // Feed adjacent live cells (best-effort: neighbours already processed
+          // this tick have their bkEnergy updated; those not yet processed are
+          // boosted here and their own processing overwrites from ftEnergy, so
+          // the boost is visible only in next-tick's front buffer).
+          for (let n = 0; n < nLen; n++) {
+            const ni    = this._neighborBuf[n];
+            const nType = bkType[ni];
+            if (nType === CellType.Life || nType === CellType.LifeVariant) {
+              const boosted = bkEnergy[ni] + apoptosisBoost;
+              bkEnergy[ni] = boosted > 1.0 ? 1.0 : boosted;
+            }
+          }
+          // Cell completes apoptosis — becomes Empty.
+          bkType[i]   = CellType.Empty;
+          bkEnergy[i] = 0;
+          bkAge[i]    = 0;
+          bkFlags[i]  = 0;
+          this._stats.deaths++;
+          continue;
+        }
+
+        // --- Generic death checks -----------------------------------------
 
         if (newEnergy <= 0) {
           bkType[i]   = CellType.Empty;
@@ -483,10 +564,21 @@ export class SimulationEngine {
         bkEnergy[i] = newEnergy;
         bkAge[i] = ftAge[i] < 65535 ? ftAge[i] + 1 : 65535;
 
+        // --- Phase 10: update lifecycle flags in back buffer ---------------
+        // Flags are already stripped of JUVENILE/SENESCENT above; reapply
+        // based on the updated age (ftAge[i] + 1 = bkAge[i]).
+        if (isJuvenile) {
+          newFlags |= CellFlags.JUVENILE;
+        } else if (isSenescent) {
+          newFlags |= CellFlags.SENESCENT;
+        }
+        bkFlags[i] = newFlags;
+
         // --- Legacy Phase 3 mutation (Life → LifeVariant) -----------------
-        if (!isVariant && mutationRate > 0 && Math.random() < mutationRate) {
+        // Juvenile cells cannot mutate (lifecycle spec).
+        if (!isJuvenile && !isVariant && mutationRate > 0 && Math.random() < mutationRate) {
           bkType[i]  = CellType.LifeVariant;
-          bkFlags[i] = ftFlags[i] | CellFlags.MUTATED;
+          bkFlags[i] = bkFlags[i] | CellFlags.MUTATED; // preserve lifecycle flags
           this._stats.variantCells++;
         } else {
           if (isVariant) {
@@ -498,9 +590,20 @@ export class SimulationEngine {
 
         // --- Spread (reproduction) ----------------------------------------
         // Phase 5: Drain halves the effective spread rate.
+        // Phase 10: stageSpreadMult already applied to cellSpreadRate above.
         const effectiveSpreadRate = adjacentDrain
           ? cellSpreadRate * 0.5
           : cellSpreadRate;
+
+        // Phase 10: genome point-mutation rate is stage-dependent.
+        //   Juvenile   → 0        (cannot mutate while establishing)
+        //   Mature     → pointMutationRate (normal)
+        //   Senescent  → pointMutationRate × 2 (last-ditch diversity burst)
+        const stageMutationRate = isJuvenile
+          ? 0
+          : isSenescent
+          ? Math.min(1.0, pointMutationRate * 2)
+          : pointMutationRate;
 
         if (newEnergy >= cellReproThresh) {
           this._trySpread(
@@ -529,7 +632,7 @@ export class SimulationEngine {
             nutrientBoost,
             gravityStrength,
             gravityResponse,
-            pointMutationRate,
+            stageMutationRate,
           );
         }
 
@@ -631,7 +734,10 @@ export class SimulationEngine {
    * @param nutrientBoost     - Nutrient entry boost parameter.
    * @param gravityStrength   - GravityWell pull force.
    * @param gravityResponse   - Life's sensitivity to gravity wells.
-   * @param pointMutationRate - Per-bit genome mutation probability per spread.
+   * @param pointMutationRate - Effective per-bit genome mutation probability for
+   *   this spread event.  The caller passes a stage-adjusted value:
+   *   0 for juvenile cells, `pointMutationRate × 2` for senescent cells,
+   *   and `config.pointMutationRate` for mature cells (Phase 10).
    */
   private _trySpread(
     parentIdx:         number,
