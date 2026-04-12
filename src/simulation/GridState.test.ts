@@ -133,20 +133,29 @@ describe('GridState — seed()', () => {
     }
   });
 
-  it('resets all phenotype buffers to 0 on seed', () => {
-    // Dirty phenotype buffers manually.
+  it('initialises phenotype buffers to GENOME_NEUTRAL values for Life cells on seed', () => {
+    // Phase 9: seed() initialises per-cell phenotype from GENOME_NEUTRAL so
+    // pre-existing dirty values are overwritten — no manual zeroing needed.
     grid.front.toxinResist[0]    = 0.9;
     grid.front.nutrientAbs[0]    = 0.5;
     grid.front.heatResist[0]     = 0.7;
     grid.front.spreadBonus[0]    = 0.3;
     grid.front.signalStrength[0] = 1.0;
 
+    // seed(1.0) fills the entire grid with Life cells.
     grid.seed(1.0);
 
-    expect(grid.front.toxinResist[0]).toBe(0);
-    expect(grid.front.nutrientAbs[0]).toBe(0);
-    expect(grid.front.heatResist[0]).toBe(0);
-    expect(grid.front.spreadBonus[0]).toBe(0);
+    // Life cells must carry the neutral phenotype derived from GENOME_NEUTRAL
+    // (0x7777 — all traits at tier 7 = mid-scale).
+    // toxinResist tier 7 = (7/15)×0.90 ≈ 0.42
+    // nutrientAbs tier 7 = 0.20 + (7/15)×0.80 ≈ 0.573
+    // spreadBonus tier 7 = 0.00 (exact neutral)
+    // heatResist  = toxinResist × 0.5 ≈ 0.21
+    expect(grid.front.toxinResist[0]).toBeGreaterThan(0);
+    expect(grid.front.nutrientAbs[0]).toBeGreaterThan(0);
+    expect(grid.front.heatResist[0]).toBeGreaterThan(0);
+    expect(grid.front.spreadBonus[0]).toBeCloseTo(0.0, 2); // tier 7 = neutral = ~0
+    // signalStrength is unrelated to phenotype — still zeroed.
     expect(grid.front.signalStrength[0]).toBe(0);
   });
 });

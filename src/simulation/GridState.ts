@@ -29,7 +29,12 @@
  * Total at 512×512: ~16.3 MB — well within browser constraints.
  */
 
-import { GENOME_NEUTRAL } from './genetics/GenomeEncoder.js';
+import {
+  GENOME_NEUTRAL,
+  getToxinResist,
+  getNutrientAbs,
+  getSpreadBonus,
+} from './genetics/GenomeEncoder.js';
 
 // ---------------------------------------------------------------------------
 // Cell type enum
@@ -346,30 +351,48 @@ export class GridState {
    * @param initialEnergy - Starting energy for each seeded life cell [0, 1].
    */
   seed(density: number, initialEnergy = 1.0): void {
-    const { cellType, energy, genome, variantId, generation } = this.front;
+    // Pre-compute neutral-genome phenotype values once to avoid repeated LUT
+    // lookups inside the loop (no object allocation, just scalar reads).
+    const neutralToxinResist = getToxinResist(GENOME_NEUTRAL); // ≈ 0.42
+    const neutralNutrientAbs = getNutrientAbs(GENOME_NEUTRAL); // ≈ 0.57
+    const neutralSpreadBonus = getSpreadBonus(GENOME_NEUTRAL); // = 0.00
+    const neutralHeatResist  = neutralToxinResist * 0.5;       // ≈ 0.21
+
+    const {
+      cellType, energy, genome, variantId, generation,
+      toxinResist, nutrientAbs, heatResist, spreadBonus, signalStrength,
+      age, flags,
+    } = this.front;
+
     for (let i = 0; i < this.totalCells; i++) {
       if (Math.random() < density) {
-        cellType[i]   = CellType.Life;
-        energy[i]     = initialEnergy;
-        genome[i]     = GENOME_NEUTRAL; // 0x7777 — neutral traits
-        variantId[i]  = 0;              // base lineage
-        generation[i] = 0;              // first generation
+        cellType[i]    = CellType.Life;
+        energy[i]      = initialEnergy;
+        genome[i]      = GENOME_NEUTRAL; // 0x7777 — neutral traits
+        variantId[i]   = 0;              // base lineage
+        generation[i]  = 0;              // first generation
+        // Initialise per-cell phenotype from neutral genome so the engine
+        // can read the buffer immediately without a separate derivation pass.
+        toxinResist[i]  = neutralToxinResist;
+        nutrientAbs[i]  = neutralNutrientAbs;
+        heatResist[i]   = neutralHeatResist;
+        spreadBonus[i]  = neutralSpreadBonus;
+        signalStrength[i] = 0;
       } else {
-        cellType[i]   = CellType.Empty;
-        energy[i]     = 0;
-        genome[i]     = 0;
-        variantId[i]  = 0;
-        generation[i] = 0;
+        cellType[i]      = CellType.Empty;
+        energy[i]        = 0;
+        genome[i]        = 0;
+        variantId[i]     = 0;
+        generation[i]    = 0;
+        toxinResist[i]   = 0;
+        nutrientAbs[i]   = 0;
+        heatResist[i]    = 0;
+        spreadBonus[i]   = 0;
+        signalStrength[i] = 0;
       }
+      age[i]   = 0;
+      flags[i] = 0;
     }
-    // Reset age, flags, and all phenotype buffers to zero.
-    this.front.age.fill(0);
-    this.front.flags.fill(0);
-    this.front.toxinResist.fill(0);
-    this.front.nutrientAbs.fill(0);
-    this.front.heatResist.fill(0);
-    this.front.spreadBonus.fill(0);
-    this.front.signalStrength.fill(0);
   }
 
   /**
@@ -442,23 +465,27 @@ export class GridState {
     this.front.age[index]   = 0;
     this.front.flags[index] = 0;
 
-    // Reset genome fields — Life cells painted in get the neutral genome.
+    // Reset genome fields.
     if (type === CellType.Life || type === CellType.LifeVariant) {
-      this.front.genome[index]     = GENOME_NEUTRAL; // 0x7777
-      this.front.variantId[index]  = 0;
-      this.front.generation[index] = 0;
+      // Life cells start with neutral genome and phenotype derived from it,
+      // matching seed() behaviour so painted cells are immediately usable.
+      this.front.genome[index]      = GENOME_NEUTRAL; // 0x7777
+      this.front.variantId[index]   = 0;
+      this.front.generation[index]  = 0;
+      this.front.toxinResist[index]  = getToxinResist(GENOME_NEUTRAL);
+      this.front.nutrientAbs[index]  = getNutrientAbs(GENOME_NEUTRAL);
+      this.front.heatResist[index]   = getToxinResist(GENOME_NEUTRAL) * 0.5;
+      this.front.spreadBonus[index]  = getSpreadBonus(GENOME_NEUTRAL);
     } else {
-      // Non-life cells carry no genome.
-      this.front.genome[index]     = 0;
-      this.front.variantId[index]  = 0;
-      this.front.generation[index] = 0;
+      // Non-life cells carry no genome or phenotype.
+      this.front.genome[index]      = 0;
+      this.front.variantId[index]   = 0;
+      this.front.generation[index]  = 0;
+      this.front.toxinResist[index]  = 0;
+      this.front.nutrientAbs[index]  = 0;
+      this.front.heatResist[index]   = 0;
+      this.front.spreadBonus[index]  = 0;
     }
-
-    // Clear per-cell phenotype buffers for any painted cell.
-    this.front.toxinResist[index]   = 0;
-    this.front.nutrientAbs[index]   = 0;
-    this.front.heatResist[index]    = 0;
-    this.front.spreadBonus[index]   = 0;
     this.front.signalStrength[index] = 0;
   }
 
