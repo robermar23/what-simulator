@@ -78,10 +78,20 @@ function makeCtx2DMock() {
  */
 function makeStubBuffers(cells: number): GridBuffers {
   return {
-    cellType: new Uint8Array(cells),
-    energy:   new Float32Array(cells),
-    age:      new Uint16Array(cells),
-    flags:    new Uint8Array(cells),
+    // Round 1 buffers
+    cellType:       new Uint8Array(cells),
+    energy:         new Float32Array(cells),
+    age:            new Uint16Array(cells),
+    flags:          new Uint8Array(cells),
+    // Round 2 genome buffers (required by GridBuffers interface)
+    genome:         new Uint16Array(cells),
+    variantId:      new Uint8Array(cells),
+    generation:     new Uint16Array(cells),
+    toxinResist:    new Float32Array(cells),
+    nutrientAbs:    new Float32Array(cells),
+    heatResist:     new Float32Array(cells),
+    spreadBonus:    new Float32Array(cells),
+    signalStrength: new Float32Array(cells),
   };
 }
 

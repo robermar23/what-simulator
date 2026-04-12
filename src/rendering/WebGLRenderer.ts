@@ -73,19 +73,22 @@ void main() {
 `;
 
 /**
- * Fragment shader: maps (cellType, energy) → RGBA.
+ * Fragment shader: maps (cellType, energy[, flags, renderMode]) → RGBA.
  *
- * Colour logic mirrors the {@link ColorMap} table exactly:
- *   - Each cell type has a base RGB.
- *   - "Energy-modulated" types (Life, LifeVariant, Barrier, Fire) blend from
- *     `minBrightness × base` at energy=0 to `1×base` at energy=1.
- *   - All other types are drawn at full brightness regardless of energy.
+ * ## Render modes (u_renderMode)
  *
- * `cellSize` is used to convert `gl_FragCoord.xy` to a cell column/row,
- * implementing the same multi-pixel-per-cell rendering as the Canvas 2D path.
+ *   0 — **default**: each cell type has a fixed base colour; energy-modulated
+ *       types (Life, LifeVariant, Barrier, Fire, Mutagen, Colony) blend from
+ *       `minBrightness` at energy=0 to full brightness at energy=1.
  *
- * When `u_showGridLines` is true a subtle white line is composited at cell
- * boundaries — one physical pixel wide regardless of cellSize.
+ *   1 — **lifecycle**: Life cells are coloured by their stage (Phase 10):
+ *       - JUVENILE  (flags bit 3) → bright lime  (#44ff88)
+ *       - SENESCENT (flags bit 4) → purple-pink  (#cc44bb)
+ *       - Mature (neither flag)  → energy-modulated green (#00ff88)
+ *       Non-Life cells render as in default mode.
+ *
+ * Colour values stay in sync with ColorMap.ts COLOR_ENTRIES.
+ * Round 2 cell types 11–15 are included.
  */
 const FRAG_SRC = /* glsl */ `#version 300 es
 precision highp float;
@@ -99,6 +102,12 @@ uniform usampler2D u_cellType;
 /** Float (R32F) texture holding the energy [0..1] for every cell. */
 uniform sampler2D  u_energy;
 
+/**
+ * Integer (R8UI) texture holding the flags byte for every cell (Phase 10).
+ * Bit 3 = JUVENILE, bit 4 = SENESCENT.
+ */
+uniform usampler2D u_flags;
+
 /** Pixels per cell (matches AppState.cellSize). */
 uniform float u_cellSize;
 
@@ -111,6 +120,13 @@ uniform int u_gridHeight;
 /** Whether to composite a 1-px grid-line overlay at cell boundaries. */
 uniform bool u_showGridLines;
 
+/**
+ * Active render mode:
+ *   0 = default (cellType + energy)
+ *   1 = lifecycle (Life cells coloured by JUVENILE / SENESCENT flags)
+ */
+uniform int u_renderMode;
+
 // --- Output -----------------------------------------------------------------
 out vec4 outColor;
 
@@ -120,12 +136,13 @@ out vec4 outColor;
 
 /**
  * Returns the base RGB colour for a given cell type ordinal.
- * Hex values are taken verbatim from ColorMap.ts's COLOR_ENTRIES array.
+ * Includes Round 1 types (0–10) and Round 2 types (11–15).
  *
- * @param t - Cell type ordinal [0, 10].
+ * @param t - Cell type ordinal [0, 15].
  * @returns Linear RGB in [0, 1]^3.
  */
 vec3 baseColor(uint t) {
+  // ---- Round 1 types (0–10) ------------------------------------------------
   // 0  Empty        #0a0a12
   if (t ==  0u) return vec3(0.0392, 0.0392, 0.0706);
   // 1  Life A       #00ff88
@@ -148,14 +165,25 @@ vec3 baseColor(uint t) {
   if (t ==  9u) return vec3(0.6667, 0.8667, 1.0);
   // 10 LifeVariant  #ffdd00
   if (t == 10u) return vec3(1.0,    0.8667, 0.0);
-  return vec3(0.0);
+
+  // ---- Round 2 types (11–15) -----------------------------------------------
+  // 11 Mutagen     #ff00cc — pulsing magenta
+  if (t == 11u) return vec3(1.0,    0.0,    0.8);
+  // 12 RadioWaste  #99ff00 — sickly green-yellow
+  if (t == 12u) return vec3(0.6,    1.0,    0.0);
+  // 13 Antibiotic  #f0f0f0 — white crystalline
+  if (t == 13u) return vec3(0.9412, 0.9412, 0.9412);
+  // 14 Rewinder    #4488ff — blue-silver
+  if (t == 14u) return vec3(0.2667, 0.5333, 1.0);
+  // 15 Colony      #ffaa22 — warm amber
+  if (t == 15u) return vec3(1.0,    0.6667, 0.1333);
+
+  return vec3(0.0); // unknown type — invisible black
 }
 
 /**
  * Returns the minimum brightness factor for energy-modulated cell types.
- * Non-modulated types return 1.0 so the formula is always valid.
- *
- * Matches the minBrightness field in ColorMap.ts COLOR_ENTRIES.
+ * Non-modulated types return 1.0 so the brightness formula is always valid.
  *
  * @param t - Cell type ordinal.
  * @returns Minimum brightness in [0, 1].
@@ -165,17 +193,19 @@ float minBrightness(uint t) {
   if (t ==  7u) return 0.0;    // Barrier (fades to invisible)
   if (t ==  8u) return 0.1;    // Fire
   if (t == 10u) return 0.15;   // Life Variant B
-  return 1.0;                  // all others: not modulated
+  if (t == 11u) return 0.25;   // Mutagen (dims as it depletes)
+  if (t == 15u) return 0.4;    // Colony (dims when energy is low)
+  return 1.0;                  // all others: static brightness
 }
 
 /**
- * Returns true for cell types whose brightness is scaled by the energy value.
+ * Returns true for cell types whose brightness scales with the energy value.
  *
  * @param t - Cell type ordinal.
  * @returns True if the colour should dim at low energy.
  */
 bool isEnergyModulated(uint t) {
-  return t == 1u || t == 7u || t == 8u || t == 10u;
+  return t == 1u || t == 7u || t == 8u || t == 10u || t == 11u || t == 15u;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,24 +230,50 @@ void main() {
   // ---- Sample simulation textures ------------------------------------------
 
   // texelFetch reads a single texel by integer pixel coordinates, bypassing
-  // all filtering.  This ensures pixel-perfect cell colours with no blending.
+  // all filtering.  Pixel-perfect cell colours with no blending.
   uint  cellType = texelFetch(u_cellType, cellCoord, 0).r;
   float energy   = texelFetch(u_energy,   cellCoord, 0).r;
+  uint  flags    = texelFetch(u_flags,    cellCoord, 0).r;
 
   // ---- Colour mapping -------------------------------------------------------
 
-  vec3 base = baseColor(cellType);
+  vec3 cellRGB;
 
-  float brightness;
-  if (isEnergyModulated(cellType)) {
-    // Blend from minBrightness (at energy=0) to full brightness (at energy=1).
-    float minB = minBrightness(cellType);
-    brightness = minB + (1.0 - minB) * clamp(energy, 0.0, 1.0);
+  if (u_renderMode == 1 && (cellType == 1u || cellType == 10u)) {
+    // ---- Lifecycle render mode (Phase 10) — Life/LifeVariant only -----------
+    //
+    // Colour encodes lifecycle stage derived from the flags byte:
+    //   Bit 3 (0x08) = JUVENILE  → bright lime  (#44ff88)
+    //   Bit 4 (0x10) = SENESCENT → purple-pink  (#cc44bb)
+    //   Neither flag             → mature green  (energy-modulated #00ff88)
+
+    bool isJuvenile  = (flags & 8u)  != 0u;
+    bool isSenescent = (flags & 16u) != 0u;
+
+    if (isJuvenile) {
+      // Bright lime — slightly dimmed at low energy but never fully dark.
+      float e = max(0.3, energy);
+      cellRGB = vec3(0.2667 * e, 1.0 * e, 0.5333 * e);
+    } else if (isSenescent) {
+      // Purple-pink — fixed dim tone to signal ageing.
+      cellRGB = vec3(0.8, 0.2667, 0.7333);
+    } else {
+      // Mature — same energy-modulated green as the default Life colour.
+      float brightness = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
+      cellRGB = vec3(0.0, 1.0, 0.5333) * brightness;
+    }
   } else {
-    brightness = 1.0;
+    // ---- Default render mode: cellType + energy → colour -------------------
+    vec3 base = baseColor(cellType);
+    float brightness;
+    if (isEnergyModulated(cellType)) {
+      float minB = minBrightness(cellType);
+      brightness = minB + (1.0 - minB) * clamp(energy, 0.0, 1.0);
+    } else {
+      brightness = 1.0;
+    }
+    cellRGB = base * brightness;
   }
-
-  vec3 cellRGB = base * brightness;
 
   // ---- Grid-line overlay (Phase 6 feature, replicated in WebGL) -------------
   //
@@ -227,10 +283,7 @@ void main() {
   if (u_showGridLines && u_cellSize >= 2.0) {
     vec2 inCell = fract(gl_FragCoord.xy / u_cellSize);
     float gridAlpha = 0.08;
-    // A fragment is on a grid line if it is within the first physical pixel of
-    // a cell — i.e. its in-cell fraction < 1/cellSize.
     if (inCell.x < (1.0 / u_cellSize) || inCell.y < (1.0 / u_cellSize)) {
-      // Composite white on top at low opacity, just like the Canvas 2D overlay.
       cellRGB = cellRGB + vec3(gridAlpha);
     }
   }
@@ -296,14 +349,24 @@ export class WebGLRenderer {
   /** `R32F` texture — one float per cell, holds the energy value. */
   private readonly _energyTex: WebGLTexture;
 
+  /**
+   * `R8UI` texture — one byte per cell, holds the flags bitmask (Phase 10).
+   * Used by the lifecycle render mode to detect JUVENILE / SENESCENT cells.
+   */
+  private readonly _flagsTex: WebGLTexture;
+
   // --- Uniform locations (cached once after compile) -------------------------
 
   private readonly _uCellType!: WebGLUniformLocation;
   private readonly _uEnergy!: WebGLUniformLocation;
+  /** Uniform location for the flags texture (Phase 10). */
+  private readonly _uFlags!: WebGLUniformLocation;
   private readonly _uCellSize!: WebGLUniformLocation;
   private readonly _uGridWidth!: WebGLUniformLocation;
   private readonly _uGridHeight!: WebGLUniformLocation;
   private readonly _uShowGridLines!: WebGLUniformLocation;
+  /** Uniform location for the render mode integer (Phase 10). */
+  private readonly _uRenderMode!: WebGLUniformLocation;
 
   // --- State -----------------------------------------------------------------
 
@@ -312,6 +375,15 @@ export class WebGLRenderer {
 
   /** Whether to composite the 1-px grid-line overlay. */
   private _showGridLines: boolean;
+
+  /**
+   * Current render mode.
+   *   0 = default (cellType + energy)
+   *   1 = lifecycle (Life cells coloured by JUVENILE/SENESCENT flags)
+   *
+   * Phase 10 — change via the `renderMode` setter so the uniform is updated.
+   */
+  private _renderMode = 0;
 
   /** Grid width in cells — tracked to detect resize. */
   private _gridWidth  = 0;
@@ -356,12 +428,14 @@ export class WebGLRenderer {
     this._program = this._createProgram(VERT_SRC, FRAG_SRC);
 
     // Cache all uniform locations once (avoids a string lookup per frame).
-    this._uCellType     = this._requireUniform('u_cellType');
-    this._uEnergy       = this._requireUniform('u_energy');
-    this._uCellSize     = this._requireUniform('u_cellSize');
-    this._uGridWidth    = this._requireUniform('u_gridWidth');
-    this._uGridHeight   = this._requireUniform('u_gridHeight');
+    this._uCellType      = this._requireUniform('u_cellType');
+    this._uEnergy        = this._requireUniform('u_energy');
+    this._uFlags         = this._requireUniform('u_flags');
+    this._uCellSize      = this._requireUniform('u_cellSize');
+    this._uGridWidth     = this._requireUniform('u_gridWidth');
+    this._uGridHeight    = this._requireUniform('u_gridHeight');
     this._uShowGridLines = this._requireUniform('u_showGridLines');
+    this._uRenderMode    = this._requireUniform('u_renderMode');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     this._vbo = this._createQuadBuffer();
@@ -370,6 +444,7 @@ export class WebGLRenderer {
     // --- Textures (allocated empty; resized on first render) -----------------
     this._cellTypeTex = this._createTexture();
     this._energyTex   = this._createTexture();
+    this._flagsTex    = this._createTexture();
   }
 
   // ---------------------------------------------------------------------------
@@ -404,6 +479,27 @@ export class WebGLRenderer {
    */
   set showGridLines(show: boolean) {
     this._showGridLines = show;
+  }
+
+  /**
+   * Current render mode.
+   * - `'default'`   — cell type + energy colour mapping (Phase 1–9 behaviour).
+   * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags (Phase 10).
+   *
+   * Phase 10.  More modes (variantId, genome, generation, signal) are added in
+   * Phase 14 when the full render-mode dropdown is implemented.
+   */
+  get renderMode(): 'default' | 'lifecycle' {
+    return this._renderMode === 1 ? 'lifecycle' : 'default';
+  }
+
+  /**
+   * Changes the render mode.  Takes effect on the next {@link render} call.
+   *
+   * @param mode - New render mode string.
+   */
+  set renderMode(mode: 'default' | 'lifecycle') {
+    this._renderMode = mode === 'lifecycle' ? 1 : 0;
   }
 
   /**
@@ -453,6 +549,20 @@ export class WebGLRenderer {
       buffers.energy,
     );
 
+    // --- Upload flags texture (R8UI, Phase 10) --------------------------------
+    // The flags byte holds lifecycle bits (JUVENILE, SENESCENT) used by the
+    // lifecycle render mode in the fragment shader.
+    gl.bindTexture(gl.TEXTURE_2D, this._flagsTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_BYTE,
+      buffers.flags,
+    );
+
     // --- Draw -----------------------------------------------------------------
 
     gl.useProgram(this._program);
@@ -467,11 +577,17 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this._energyTex);
     gl.uniform1i(this._uEnergy, 1);
 
+    // Bind flags texture to texture unit 2 (Phase 10: lifecycle mode).
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this._flagsTex);
+    gl.uniform1i(this._uFlags, 2);
+
     // Per-frame uniforms.
     gl.uniform1f(this._uCellSize,      this._cellSize);
     gl.uniform1i(this._uGridWidth,     width);
     gl.uniform1i(this._uGridHeight,    height);
     gl.uniform1i(this._uShowGridLines, this._showGridLines ? 1 : 0);
+    gl.uniform1i(this._uRenderMode,    this._renderMode);
 
     gl.bindVertexArray(this._vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -516,11 +632,13 @@ export class WebGLRenderer {
     // Match the WebGL viewport to the canvas pixel dimensions.
     gl.viewport(0, 0, canvasW, canvasH);
 
-    // (Re-)allocate both textures at the new grid size.
-    // We call texImage2D with null data so the texture is allocated on GPU
-    // without copying — texSubImage2D fills it on the first real render.
-    this._allocateTexture(this._cellTypeTex, width, height, gl.R8UI,  gl.RED_INTEGER, gl.UNSIGNED_BYTE);
-    this._allocateTexture(this._energyTex,   width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    // (Re-)allocate all three textures at the new grid size.
+    // texImage2D with null data allocates GPU memory without a data copy;
+    // texSubImage2D fills each texture on the first real render call.
+    this._allocateTexture(this._cellTypeTex, width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._energyTex,   width, height, gl.R32F, gl.RED,         gl.FLOAT);
+    // Phase 10: flags texture (R8UI) — holds lifecycle bitmask per cell.
+    this._allocateTexture(this._flagsTex,    width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
   }
 
   /**
