@@ -15,6 +15,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { GridState, CellType } from './GridState.js';
+import { GENOME_NEUTRAL } from './genetics/GenomeEncoder.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -40,18 +41,34 @@ describe('GridState — construction', () => {
   });
 
   it('allocates front and back buffers of the correct length', () => {
-    expect(grid.front.cellType.length).toBe(W * H);
-    expect(grid.front.energy.length).toBe(W * H);
-    expect(grid.front.age.length).toBe(W * H);
-    expect(grid.front.flags.length).toBe(W * H);
+    const n = W * H;
+    // Round 1 buffers
+    expect(grid.front.cellType.length).toBe(n);
+    expect(grid.front.energy.length).toBe(n);
+    expect(grid.front.age.length).toBe(n);
+    expect(grid.front.flags.length).toBe(n);
+    // Round 2 genome buffers
+    expect(grid.front.genome.length).toBe(n);
+    expect(grid.front.variantId.length).toBe(n);
+    expect(grid.front.generation.length).toBe(n);
+    expect(grid.front.toxinResist.length).toBe(n);
+    expect(grid.front.nutrientAbs.length).toBe(n);
+    expect(grid.front.heatResist.length).toBe(n);
+    expect(grid.front.spreadBonus.length).toBe(n);
+    expect(grid.front.signalStrength.length).toBe(n);
 
-    expect(grid.back.cellType.length).toBe(W * H);
+    expect(grid.back.cellType.length).toBe(n);
+    expect(grid.back.genome.length).toBe(n);
   });
 
   it('starts with all cells zeroed (Empty)', () => {
     for (let i = 0; i < grid.totalCells; i++) {
       expect(grid.front.cellType[i]).toBe(CellType.Empty);
       expect(grid.front.energy[i]).toBe(0);
+      // Round 2 genome buffers must also start zeroed.
+      expect(grid.front.genome[i]).toBe(0);
+      expect(grid.front.variantId[i]).toBe(0);
+      expect(grid.front.generation[i]).toBe(0);
     }
   });
 });
@@ -99,6 +116,39 @@ describe('GridState — seed()', () => {
     expect(grid.front.age[0]).toBe(0);
     expect(grid.front.flags[0]).toBe(0);
   });
+
+  it('seeds Life cells with GENOME_NEUTRAL (0x7777) and variantId=0', () => {
+    grid.seed(1.0, 1.0);
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.front.genome[i]).toBe(GENOME_NEUTRAL);
+      expect(grid.front.variantId[i]).toBe(0);
+      expect(grid.front.generation[i]).toBe(0);
+    }
+  });
+
+  it('sets genome=0 for empty cells when density=0', () => {
+    grid.seed(0);
+    for (let i = 0; i < grid.totalCells; i++) {
+      expect(grid.front.genome[i]).toBe(0);
+    }
+  });
+
+  it('resets all phenotype buffers to 0 on seed', () => {
+    // Dirty phenotype buffers manually.
+    grid.front.toxinResist[0]    = 0.9;
+    grid.front.nutrientAbs[0]    = 0.5;
+    grid.front.heatResist[0]     = 0.7;
+    grid.front.spreadBonus[0]    = 0.3;
+    grid.front.signalStrength[0] = 1.0;
+
+    grid.seed(1.0);
+
+    expect(grid.front.toxinResist[0]).toBe(0);
+    expect(grid.front.nutrientAbs[0]).toBe(0);
+    expect(grid.front.heatResist[0]).toBe(0);
+    expect(grid.front.spreadBonus[0]).toBe(0);
+    expect(grid.front.signalStrength[0]).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -122,6 +172,22 @@ describe('GridState — clear()', () => {
       expect(grid.back.energy[i]).toBe(0);
     }
   });
+
+  it('zeros all Round 2 genome buffers in both front and back', () => {
+    grid.seed(1.0, 1.0);
+    // Dirty genome fields manually.
+    grid.front.genome[0]     = 0xABCD;
+    grid.front.variantId[0]  = 42;
+    grid.back.genome[0]      = 0x1234;
+    grid.back.signalStrength[0] = 0.8;
+
+    grid.clear();
+
+    expect(grid.front.genome[0]).toBe(0);
+    expect(grid.front.variantId[0]).toBe(0);
+    expect(grid.back.genome[0]).toBe(0);
+    expect(grid.back.signalStrength[0]).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -129,10 +195,14 @@ describe('GridState — clear()', () => {
 // ---------------------------------------------------------------------------
 
 describe('GridState — copyFrontToBack()', () => {
-  it('makes back an exact copy of front', () => {
+  it('makes back an exact copy of front (Round 1 + Round 2 buffers)', () => {
     grid.seed(0.7, 0.6);
+    // Dirty a genome field in front to make the copy non-trivial.
+    grid.front.genome[0]        = 0x1234;
+    grid.front.variantId[0]     = 5;
+    grid.front.signalStrength[0] = 0.75;
 
-    // Manually differ the back buffer.
+    // Differ the back buffer first.
     grid.back.cellType[0] = CellType.Wall;
 
     grid.copyFrontToBack();
@@ -142,6 +212,10 @@ describe('GridState — copyFrontToBack()', () => {
       expect(grid.back.energy[i]).toBeCloseTo(grid.front.energy[i]);
       expect(grid.back.age[i]).toBe(grid.front.age[i]);
       expect(grid.back.flags[i]).toBe(grid.front.flags[i]);
+      // Round 2 genome buffers must also be faithfully copied.
+      expect(grid.back.genome[i]).toBe(grid.front.genome[i]);
+      expect(grid.back.variantId[i]).toBe(grid.front.variantId[i]);
+      expect(grid.back.generation[i]).toBe(grid.front.generation[i]);
     }
   });
 
