@@ -168,12 +168,16 @@ export class App {
     const offscreen = canvas.transferControlToOffscreen();
 
     const renderInit: RenderWorkerInMsg = {
-      type:     'init',
-      canvas:   offscreen,
+      type:         'init',
+      canvas:       offscreen,
       sab,
-      width:    appState.gridWidth,
-      height:   appState.gridHeight,
-      cellSize: appState.cellSize,
+      width:        appState.gridWidth,
+      height:       appState.gridHeight,
+      cellSize:     appState.cellSize,
+      // Phase 7: pass the desired backend so the worker acquires the right
+      // context type from the OffscreenCanvas before any other context is
+      // created.  An OffscreenCanvas can hold only one context type.
+      rendererType: appState.rendererType,
     };
     // `offscreen` must be listed in the transferables array — it is a
     // `Transferable` that can only live in one thread at a time.
@@ -367,6 +371,8 @@ export class App {
         // `main.ts` listens to `snapshotReady` and triggers the download link.
         bus.emit('snapshotReady', { url: msg.url });
         break;
+
+
     }
   }
 
@@ -430,6 +436,7 @@ export class App {
       const msg: RenderWorkerInMsg = { type: 'snapshot' };
       this._renderWorker.postMessage(msg);
     });
+
 
     // Step (single tick while paused) — fired via DOM custom event from
     // Toolbar's Step button.

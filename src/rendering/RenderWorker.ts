@@ -6,16 +6,29 @@
  * `requestAnimationFrame` loop that reads the simulation's latest committed
  * grid data from the SharedArrayBuffer.
  *
+ * ## Rendering backends (Phase 7)
+ *
+ * The worker supports two rendering backends selected at `init` time:
+ *   - `Renderer`      — Canvas 2D `ImageData` pixel write (Phases 1–6).
+ *   - `WebGLRenderer` — WebGL 2 fragment shader (Phase 7).
+ *
+ * The backend is chosen by the `rendererType` field in the `init` message,
+ * which is read from `sessionStorage` by `AppState` on page load.  Switching
+ * backends at runtime is not possible because an `OffscreenCanvas` can hold
+ * only one context type; the user changes the renderer via the ControlPanel
+ * toggle, which writes to `sessionStorage` and reloads the page.
+ *
  * ## Message protocol
  *
  * Receives `RenderWorkerInMsg` from the main thread:
- *   - `init`           — receive canvas + SAB, start rAF loop
- *   - `cellSizeChange` — update renderer zoom, force full redraw
- *   - `invalidate`     — force full pixel-buffer rebuild (e.g. after grid reset)
- *   - `snapshot`       — export the current frame as a PNG blob URL
+ *   - `init`            — receive canvas + SAB, start rAF loop
+ *   - `cellSizeChange`  — update renderer zoom, force full redraw
+ *   - `invalidate`      — force full pixel-buffer rebuild (e.g. after grid reset)
+ *   - `snapshot`        — export the current frame as a PNG blob URL
+ *   - `gridLinesChange` — toggle grid-line overlay
  *
  * Posts `RenderWorkerOutMsg` back to the main thread:
- *   - `snapshotBlob`   — URL to the PNG data blob
+ *   - `snapshotBlob`    — URL to the PNG data blob
  *
  * ## Seqlock read protocol
  *
@@ -26,16 +39,17 @@
  * const frontIdx = Atomics.load(ctrl, CTRL_FRONT_IDX);
  * const seq1     = Atomics.load(ctrl, CTRL_SEQ);
  * if (seq1 % 2 !== 0) return;   // write in progress — skip this frame
- * ...copy SAB front into ImageData...
+ * ...render from SAB front...
  * const seq2 = Atomics.load(ctrl, CTRL_SEQ);
  * if (seq1 !== seq2) return;    // torn read — skip this frame
- * // data is consistent, render it
+ * // data is consistent, rendered
  * ```
  *
  * Skipping a frame (a few microseconds window) is far preferable to blocking.
  */
 
 import { Renderer }                         from './Renderer.js';
+import { WebGLRenderer, isWebGL2Available } from './WebGLRenderer.js';
 import { type GridBuffers }                 from '../simulation/GridState.js';
 import {
   makeControlView,
@@ -46,14 +60,32 @@ import {
 import {
   type RenderWorkerInMsg,
   type RenderWorkerOutMsg,
+  type RendererType,
 } from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Worker state
 // ---------------------------------------------------------------------------
 
-/** Canvas 2D renderer targeting the transferred OffscreenCanvas. */
-let renderer: Renderer;
+/**
+ * The active renderer — either Canvas 2D or WebGL 2.
+ * Both expose an identical `render / invalidate / cellSize / showGridLines`
+ * interface so the render loop never needs to branch on renderer type.
+ */
+let renderer: Renderer | WebGLRenderer;
+
+/**
+ * The `OffscreenCanvas` transferred from the main thread on `init`.
+ * Kept so we can call `convertToBlob()` for snapshots and pass it to a new
+ * renderer when switching backends.
+ */
+let offscreenCanvas: OffscreenCanvas;
+
+/** Current pixels-per-cell setting (shared across renderer instances). */
+let currentCellSize = 2;
+
+/** Whether grid lines are currently shown (shared across renderer instances). */
+let currentShowGridLines = false;
 
 /** Grid width in cells. */
 let width  = 0;
@@ -94,7 +126,7 @@ function renderFrame(): void {
     return;
   }
 
-  // Render from the front buffer.
+  // Render from the front buffer using whichever backend is active.
   renderer.render(sabViews[frontIdx]!, width, height);
 
   // Seqlock guard: read seq again after we finished reading data.
@@ -121,6 +153,45 @@ function startLoop(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Backend creation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a new Canvas 2D renderer targeting `offscreenCanvas`.
+ *
+ * @returns A fresh `Renderer` instance with the current cellSize and grid-line state.
+ */
+function makeCanvas2DRenderer(): Renderer {
+  return new Renderer(offscreenCanvas, {
+    cellSize:      currentCellSize,
+    showGridLines: currentShowGridLines,
+  });
+}
+
+/**
+ * Creates the appropriate renderer for the requested type.
+ *
+ * If `'webgl2'` is requested but unavailable (no WebGL 2 support or shader
+ * compile failure), falls back to Canvas 2D transparently.
+ *
+ * @param requested - The desired `RendererType` (`'canvas2d'` or `'webgl2'`).
+ * @returns A `Renderer` or `WebGLRenderer` instance.
+ */
+function makeRenderer(requested: RendererType): Renderer | WebGLRenderer {
+  if (requested === 'webgl2' && isWebGL2Available()) {
+    try {
+      return new WebGLRenderer(offscreenCanvas, {
+        cellSize:      currentCellSize,
+        showGridLines: currentShowGridLines,
+      });
+    } catch {
+      // Shader compile/link failure — fall through to Canvas 2D.
+    }
+  }
+  return makeCanvas2DRenderer();
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -139,15 +210,21 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
 
       const totalCells = width * height;
 
+      // Store the OffscreenCanvas so we can reference it for snapshots and
+      // when switching renderer backends.
+      offscreenCanvas = msg.canvas;
+
+      // Persist initial settings so new renderer instances can inherit them.
+      currentCellSize      = msg.cellSize;
+      currentShowGridLines = false; // no showGridLines in init msg; set via gridLinesChange
+
       // Create SAB typed-array views for both buffer sets.
       ctrl        = makeControlView(msg.sab);
       sabViews[0] = makeBufferViews(msg.sab, totalCells, 0);
       sabViews[1] = makeBufferViews(msg.sab, totalCells, 1);
 
-      // Instantiate the renderer using the transferred OffscreenCanvas.
-      // The Renderer constructor accepts `HTMLCanvasElement | OffscreenCanvas`
-      // — both implement the same Canvas 2D interface.
-      renderer = new Renderer(msg.canvas, { cellSize: msg.cellSize });
+      // Instantiate the requested renderer (default: Canvas 2D for safety).
+      renderer = makeRenderer(msg.rendererType ?? 'canvas2d');
 
       // Begin the render loop.
       startLoop();
@@ -157,6 +234,7 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
     // --- cellSizeChange -----------------------------------------------------
     case 'cellSizeChange':
       // Update zoom — triggers canvas resize + full redraw on next frame.
+      currentCellSize  = msg.cellSize;
       renderer.cellSize = msg.cellSize;
       renderer.invalidate();
       break;
@@ -170,21 +248,17 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
     // --- gridLinesChange (Phase 6) -----------------------------------------
     case 'gridLinesChange':
       // Toggle the thin cell-boundary grid-line overlay.
+      currentShowGridLines = msg.show;
       renderer.showGridLines = msg.show;
-      // No invalidate needed — grid lines are drawn after putImageData each
-      // frame and the change takes effect immediately on the next rAF tick.
+      // No invalidate needed — grid lines are drawn after each render.
       break;
 
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {
-      // `convertToBlob` is available on OffscreenCanvas (not HTMLCanvasElement).
-      // The renderer's canvas was constructed with the OffscreenCanvas from init.
-      // We access it via the renderer's internal reference through a cast.
-      // Because OffscreenCanvas is the only type we ever pass to this worker,
-      // this cast is safe.
-      const offscreen = (renderer as unknown as { _canvas: OffscreenCanvas })._canvas;
-
-      const blob    = await offscreen.convertToBlob({ type: 'image/png' });
+      // `convertToBlob` is available on OffscreenCanvas.
+      // We always use the stored `offscreenCanvas` reference rather than
+      // going through the renderer so this works with both backends.
+      const blob    = await offscreenCanvas.convertToBlob({ type: 'image/png' });
       const url     = URL.createObjectURL(blob);
       const reply: RenderWorkerOutMsg = { type: 'snapshotBlob', url };
       self.postMessage(reply);
