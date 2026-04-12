@@ -64,8 +64,22 @@ export interface SimulationConfig {
   /**
    * Probability [0, 0.1] that a Life cell mutates into a LifeVariant per tick.
    * 0 disables mutation entirely.
+   *
+   * @deprecated Phase 9 onwards: Use `pointMutationRate` for per-bit genome
+   *   mutation.  This field still controls the legacy Life→LifeVariant
+   *   transformation (Round 1 behaviour, kept for backwards compat).
    */
   mutationRate: number;
+
+  /**
+   * Round 2: probability [0, 0.05] that a random bit in a child cell's
+   * genome is flipped on each reproduction event (spread).
+   *
+   * Default 0.002 — approximately 0.2% of spreads produce a one-bit
+   * genome change, giving visible evolution over ~500 ticks in a 512×512
+   * grid.  Set to 0 to disable genome mutation entirely.
+   */
+  pointMutationRate: number;
 
   /**
    * Which neighbour topology to use for spread.
@@ -190,7 +204,8 @@ export function defaultConfig(): SimulationConfig {
     energyDecayRate:      0.005,
     reproductionThreshold: 0.1,
     initialEnergy:        0.9,
-    mutationRate:         0.0,   // mutation off in Phase 1
+    mutationRate:         0.0,   // legacy Life→LifeVariant mutation off by default
+    pointMutationRate:    0.002, // Round 2: per-bit genome mutation (0.2% per spread)
     neighbourhoodMode:    'moore',
     overpopulationLimit:  8,     // disabled (value > possible neighbours)
     underpopulationLimit: 0,     // disabled
