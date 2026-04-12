@@ -1,6 +1,6 @@
 /**
  * @fileoverview SharedArrayBuffer layout, allocation, and TypedArray view
- * helpers for the What Simulator's Phase 4 Web Worker architecture.
+ * helpers for the What Simulator's Web Worker architecture.
  *
  * ## Memory Layout
  *
@@ -22,10 +22,18 @@
  *
  * ### Buffer sets
  *
- * Each set holds four parallel TypedArrays for all grid cells:
- *   cellType  (Uint8),  energy  (Float32),  age  (Uint16),  flags  (Uint8)
+ * Each set holds 12 parallel TypedArrays for all grid cells (Round 1 + Round 2):
  *
- * TypedArray alignment requirements are satisfied by padding.
+ * Round 1 (unchanged):
+ *   cellType      (Uint8),    energy   (Float32), age     (Uint16), flags (Uint8)
+ *
+ * Round 2 genome buffers (NEW):
+ *   genome        (Uint16),   variantId (Uint8),  generation (Uint16),
+ *   toxinResist   (Float32),  nutrientAbs (Float32), heatResist (Float32),
+ *   spreadBonus   (Float32),  signalStrength (Float32)
+ *
+ * TypedArray alignment requirements are satisfied by padding each field to
+ * its natural alignment boundary within the set.
  *
  * ## Concurrency Protocol (seqlock)
  *
@@ -76,7 +84,7 @@ export const CTRL_FRONT_IDX = 1;
 export const CTRL_TICK_COUNT = 2;
 
 /** Number of Int32 entries in the control section. */
-const CTRL_COUNT = 4; // 4 th entry reserved
+const CTRL_COUNT = 4; // 4th entry reserved
 
 /** Total byte size of the control section. */
 export const CTRL_BYTES = CTRL_COUNT * Int32Array.BYTES_PER_ELEMENT; // 16 bytes
@@ -88,8 +96,17 @@ export const CTRL_BYTES = CTRL_COUNT * Int32Array.BYTES_PER_ELEMENT; // 16 bytes
 /**
  * Byte offsets within a single buffer set (relative to that set's start byte).
  * All offsets satisfy the alignment requirement of their TypedArray type.
+ *
+ * Round 1 fields:
+ *   cellTypeOffset, energyOffset, ageOffset, flagsOffset
+ *
+ * Round 2 genome fields (NEW):
+ *   genomeOffset, variantIdOffset, generationOffset,
+ *   toxinResistOffset, nutrientAbsOffset, heatResistOffset,
+ *   spreadBonusOffset, signalStrengthOffset
  */
 export interface BufferSetLayout {
+  // --- Round 1 (unchanged) -------------------------------------------------
   /** Byte offset for `cellType` (Uint8Array, `totalCells` bytes). */
   cellTypeOffset: number;
   /** Byte offset for `energy` (Float32Array, `totalCells * 4` bytes). */
@@ -98,46 +115,132 @@ export interface BufferSetLayout {
   ageOffset: number;
   /** Byte offset for `flags` (Uint8Array, `totalCells` bytes). */
   flagsOffset: number;
+
+  // --- Round 2 genome fields (NEW) -----------------------------------------
+  /** Byte offset for `genome` (Uint16Array, `totalCells * 2` bytes). */
+  genomeOffset: number;
+  /** Byte offset for `variantId` (Uint8Array, `totalCells` bytes). */
+  variantIdOffset: number;
+  /** Byte offset for `generation` (Uint16Array, `totalCells * 2` bytes). */
+  generationOffset: number;
+  /** Byte offset for `toxinResist` (Float32Array, `totalCells * 4` bytes). */
+  toxinResistOffset: number;
+  /** Byte offset for `nutrientAbs` (Float32Array, `totalCells * 4` bytes). */
+  nutrientAbsOffset: number;
+  /** Byte offset for `heatResist` (Float32Array, `totalCells * 4` bytes). */
+  heatResistOffset: number;
+  /** Byte offset for `spreadBonus` (Float32Array, `totalCells * 4` bytes). */
+  spreadBonusOffset: number;
+  /** Byte offset for `signalStrength` (Float32Array, `totalCells * 4` bytes). */
+  signalStrengthOffset: number;
+
   /** Total byte size of one buffer set (padded to 8-byte boundary). */
   byteSize: number;
 }
 
 /**
+ * Advances a byte cursor to the next multiple of `alignment`.
+ *
+ * @param cursor    - Current byte position.
+ * @param alignment - Required alignment (must be power of 2).
+ * @returns Aligned cursor value ≥ `cursor`.
+ */
+function alignTo(cursor: number, alignment: number): number {
+  return Math.ceil(cursor / alignment) * alignment;
+}
+
+/**
  * Computes the byte layout for one buffer set given `totalCells`.
  *
- * Alignment rules applied:
- *   - `cellType` (Uint8): 1-byte aligned — always satisfied.
- *   - `energy` (Float32): 4-byte aligned — pad `afterCellType` up to 4.
- *   - `age` (Uint16): 2-byte aligned — pad `afterEnergy` up to 2.
- *   - `flags` (Uint8): 1-byte aligned — always satisfied.
+ * Alignment rules applied per TypedArray element size:
+ *   - Uint8  (1 byte): always satisfied — no padding needed.
+ *   - Uint16 (2 bytes): padded to 2-byte boundary.
+ *   - Float32 (4 bytes): padded to 4-byte boundary.
  *
  * The entire set is padded to an 8-byte boundary so two sets can be stacked
  * inside the SAB without violating alignment for either.
  *
  * @param totalCells - Grid cell count (`width * height`).
- * @returns Byte layout descriptor.
+ * @returns Byte layout descriptor for all 12 buffers.
  */
 export function computeBufferSetLayout(totalCells: number): BufferSetLayout {
-  // cellType: 1 byte per cell, starts at offset 0 within the set.
-  const cellTypeOffset = 0;
-  const afterCellType  = totalCells;
+  let cursor = 0;
 
-  // energy: 4 bytes per cell; round up to 4-byte alignment.
-  const energyOffset = Math.ceil(afterCellType / 4) * 4;
-  const afterEnergy  = energyOffset + totalCells * Float32Array.BYTES_PER_ELEMENT;
+  // --- Round 1 buffers ---------------------------------------------------
 
-  // age: 2 bytes per cell; round up to 2-byte alignment.
-  const ageOffset  = Math.ceil(afterEnergy / 2) * 2;
-  const afterAge   = ageOffset + totalCells * Uint16Array.BYTES_PER_ELEMENT;
+  // cellType: 1 byte per cell.
+  const cellTypeOffset = cursor;
+  cursor += totalCells * Uint8Array.BYTES_PER_ELEMENT;
 
-  // flags: 1 byte per cell; no alignment needed.
-  const flagsOffset = afterAge;
-  const afterFlags  = flagsOffset + totalCells;
+  // energy: 4 bytes per cell; requires 4-byte alignment.
+  cursor = alignTo(cursor, Float32Array.BYTES_PER_ELEMENT);
+  const energyOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
 
-  // Pad the whole set to an 8-byte boundary.
-  const byteSize = Math.ceil(afterFlags / 8) * 8;
+  // age: 2 bytes per cell; requires 2-byte alignment.
+  cursor = alignTo(cursor, Uint16Array.BYTES_PER_ELEMENT);
+  const ageOffset = cursor;
+  cursor += totalCells * Uint16Array.BYTES_PER_ELEMENT;
 
-  return { cellTypeOffset, energyOffset, ageOffset, flagsOffset, byteSize };
+  // flags: 1 byte per cell.
+  const flagsOffset = cursor;
+  cursor += totalCells * Uint8Array.BYTES_PER_ELEMENT;
+
+  // --- Round 2 genome buffers (NEW) --------------------------------------
+
+  // genome: 2 bytes per cell; requires 2-byte alignment.
+  cursor = alignTo(cursor, Uint16Array.BYTES_PER_ELEMENT);
+  const genomeOffset = cursor;
+  cursor += totalCells * Uint16Array.BYTES_PER_ELEMENT;
+
+  // variantId: 1 byte per cell.
+  const variantIdOffset = cursor;
+  cursor += totalCells * Uint8Array.BYTES_PER_ELEMENT;
+
+  // generation: 2 bytes per cell; requires 2-byte alignment.
+  cursor = alignTo(cursor, Uint16Array.BYTES_PER_ELEMENT);
+  const generationOffset = cursor;
+  cursor += totalCells * Uint16Array.BYTES_PER_ELEMENT;
+
+  // toxinResist: 4 bytes per cell; requires 4-byte alignment.
+  cursor = alignTo(cursor, Float32Array.BYTES_PER_ELEMENT);
+  const toxinResistOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // nutrientAbs: 4 bytes per cell.
+  const nutrientAbsOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // heatResist: 4 bytes per cell.
+  const heatResistOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // spreadBonus: 4 bytes per cell.
+  const spreadBonusOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // signalStrength: 4 bytes per cell.
+  const signalStrengthOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // Pad the whole set to an 8-byte boundary so two sets can be stacked.
+  const byteSize = alignTo(cursor, 8);
+
+  return {
+    cellTypeOffset,
+    energyOffset,
+    ageOffset,
+    flagsOffset,
+    genomeOffset,
+    variantIdOffset,
+    generationOffset,
+    toxinResistOffset,
+    nutrientAbsOffset,
+    heatResistOffset,
+    spreadBonusOffset,
+    signalStrengthOffset,
+    byteSize,
+  };
 }
 
 /**
@@ -196,6 +299,8 @@ export function makeControlView(sab: SharedArrayBuffer): Int32Array {
  * into the same underlying memory.  The arrays are writable — the simulation
  * worker writes them; the render worker reads them.
  *
+ * All 12 buffers (Round 1 + Round 2) are included in the returned views.
+ *
  * @param sab        - The SharedArrayBuffer.
  * @param totalCells - Grid cell count (`width * height`).
  * @param setIdx     - Which buffer set to view (0 or 1).
@@ -211,9 +316,19 @@ export function makeBufferViews(
   const base   = CTRL_BYTES + setIdx * layout.byteSize;
 
   return {
-    cellType: new Uint8Array  (sab, base + layout.cellTypeOffset, totalCells),
-    energy:   new Float32Array(sab, base + layout.energyOffset,   totalCells),
-    age:      new Uint16Array (sab, base + layout.ageOffset,      totalCells),
-    flags:    new Uint8Array  (sab, base + layout.flagsOffset,    totalCells),
+    // Round 1 buffers
+    cellType:       new Uint8Array  (sab, base + layout.cellTypeOffset,       totalCells),
+    energy:         new Float32Array(sab, base + layout.energyOffset,         totalCells),
+    age:            new Uint16Array (sab, base + layout.ageOffset,            totalCells),
+    flags:          new Uint8Array  (sab, base + layout.flagsOffset,          totalCells),
+    // Round 2 genome buffers
+    genome:         new Uint16Array (sab, base + layout.genomeOffset,         totalCells),
+    variantId:      new Uint8Array  (sab, base + layout.variantIdOffset,      totalCells),
+    generation:     new Uint16Array (sab, base + layout.generationOffset,     totalCells),
+    toxinResist:    new Float32Array(sab, base + layout.toxinResistOffset,    totalCells),
+    nutrientAbs:    new Float32Array(sab, base + layout.nutrientAbsOffset,    totalCells),
+    heatResist:     new Float32Array(sab, base + layout.heatResistOffset,     totalCells),
+    spreadBonus:    new Float32Array(sab, base + layout.spreadBonusOffset,    totalCells),
+    signalStrength: new Float32Array(sab, base + layout.signalStrengthOffset, totalCells),
   };
 }
