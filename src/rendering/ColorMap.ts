@@ -31,10 +31,10 @@ import { hexToRgb, packRgba, scaleBrightness } from '../utils/colorUtils.js';
 export const ENERGY_STEPS = 256;
 
 /**
- * Number of unique CellType values (0–10).
+ * Number of unique CellType values (0–15: Round 1 types 0–10, Round 2 types 11–15).
  * Keep in sync with the {@link CellType} enum.
  */
-const CELL_TYPE_COUNT = 11;
+const CELL_TYPE_COUNT = 16;
 
 // ---------------------------------------------------------------------------
 // Base colours (hex strings → parsed once at build time)
@@ -89,6 +89,18 @@ const COLOR_ENTRIES: readonly ColorEntry[] = [
   { hex: '#aaddff', minBrightness: 1, energyModulated: false },
   // 10 — LifeVariant (B) — bright yellow, dims with low energy
   { hex: '#ffdd00', minBrightness: 0.15, energyModulated: true },
+
+  // --- Round 2 additions (Phase 13) ---
+  // 11 — Mutagen — pulsing magenta; energy-modulated so depleting mutagen dims
+  { hex: '#ff00cc', minBrightness: 0.25, energyModulated: true },
+  // 12 — RadioWaste — sickly green-yellow; permanent, never decays
+  { hex: '#99ff00', minBrightness: 1,    energyModulated: false },
+  // 13 — Antibiotic — white crystalline; survival check each tick
+  { hex: '#f0f0f0', minBrightness: 1,    energyModulated: false },
+  // 14 — Rewinder — blue-silver; shifts genome nibbles toward neutral tier 7
+  { hex: '#4488ff', minBrightness: 1,    energyModulated: false },
+  // 15 — Colony — warm amber honeycomb; energy-modulated as it sustains itself
+  { hex: '#ffaa22', minBrightness: 0.4,  energyModulated: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -162,6 +174,72 @@ export function lookupColor(
  * Renderer.ts imports this so it never rebuilds the table per frame.
  */
 export const COLOR_LUT: Uint32Array = buildColorLUT();
+
+// ---------------------------------------------------------------------------
+// Lifecycle render mode colours (Phase 10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-packed RGBA colours for the lifecycle render mode.
+ *
+ * In lifecycle mode, Life cells are coloured by their current stage rather
+ * than the default energy-based green:
+ *   - JUVENILE  — bright lime (#44ff88, high brightness)    → frontier cells
+ *   - MATURE    — normal green (#00ff88, energy-modulated)  → main colony
+ *   - SENESCENT — muted purple-pink (#cc44bb, dim)          → ageing interior
+ *
+ * Format: little-endian RGBA packed as `(A << 24) | (B << 16) | (G << 8) | R`.
+ * Matches the format used by {@link buildColorLUT} and `Uint32Array` ImageData.
+ */
+export const LIFECYCLE_COLORS = {
+  /** Juvenile stage: bright lime green, full brightness. */
+  JUVENILE:  packRgba(0x44, 0xff, 0x88),
+  /** Mature stage (at full energy): same green as the normal Life colour. */
+  MATURE:    packRgba(0x00, 0xff, 0x88),
+  /** Senescent stage: muted purple-pink, darker to signal ageing. */
+  SENESCENT: packRgba(0xcc, 0x44, 0xbb),
+} as const;
+
+/**
+ * Returns the packed RGBA colour for a Life cell in the lifecycle render mode.
+ *
+ * The colour encodes lifecycle stage rather than cell type:
+ *   - `flags & JUVENILE`  → bright lime (young frontier cells)
+ *   - `flags & SENESCENT` → purple-pink (ageing core cells)
+ *   - otherwise           → energy-modulated green (mature colony)
+ *
+ * @param flags  - Cell flags byte from the `flags` GridBuffer.
+ * @param energy - Cell energy [0, 1]; modulates mature cell brightness.
+ * @returns Packed RGBA 32-bit colour.
+ */
+export function lifecycleColorFor(flags: number, energy: number): number {
+  if (flags & LIFECYCLE_FLAG_JUVENILE) {
+    // Juvenile: bright lime, slightly dimmed at very low energy.
+    const e   = Math.max(0.3, energy);
+    const erg = Math.round(0x44 * e);
+    const eg  = Math.round(0xff * e);
+    const eb  = Math.round(0x88 * e);
+    return packRgba(erg, eg, eb);
+  }
+  if (flags & LIFECYCLE_FLAG_SENESCENT) {
+    // Senescent: purple-pink, fixed dark tone.
+    return LIFECYCLE_COLORS.SENESCENT;
+  }
+  // Mature: energy-modulated green (matches default Life colour).
+  const brightness = 0.15 + 0.85 * energy;
+  return packRgba(
+    0,
+    Math.round(0xff * brightness),
+    Math.round(0x88 * brightness),
+  );
+}
+
+/**
+ * Bitmask values for lifecycle flags — mirrors {@link CellFlags} in GridState.
+ * Duplicated here so ColorMap has no import dependency on the simulation layer.
+ */
+export const LIFECYCLE_FLAG_JUVENILE  = 0b0000_1000; // CellFlags.JUVENILE
+export const LIFECYCLE_FLAG_SENESCENT = 0b0001_0000; // CellFlags.SENESCENT
 
 // Re-export CellType for callers that only import from this module.
 export { CellType };
