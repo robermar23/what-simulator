@@ -253,6 +253,17 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       // No invalidate needed — grid lines are drawn after each render.
       break;
 
+    // --- renderModeChange (Phase 10) ----------------------------------------
+    case 'renderModeChange': {
+      // Map the RenderMode string to the simplified 'default' | 'lifecycle'
+      // that Renderer and WebGLRenderer understand for Phase 10.
+      // Full mode support (genome, generation, signal, fitness) is added in Phase 14.
+      const rMode = msg.mode === 'lifecycle' ? 'lifecycle' : 'default';
+      renderer.renderMode = rMode;
+      renderer.invalidate();
+      break;
+    }
+
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {
       // `convertToBlob` is available on OffscreenCanvas.
