@@ -81,6 +81,48 @@ export interface SimulationConfig {
    */
   pointMutationRate: number;
 
+  // --- Phase 10: Lifecycle stages -------------------------------------------
+
+  /**
+   * Age (in ticks) below which a Life cell is in the **juvenile** stage.
+   *
+   * Juvenile behaviour modifiers:
+   *   - Effective spread rate × 0.4   (slow expansion — still establishing)
+   *   - Effective energy decay  × 0.8 (reduced metabolic cost)
+   *   - Point mutation rate     = 0   (juvenile cells cannot mutate)
+   *
+   * Range: [0, 200].  Default: 30 ticks.
+   */
+  juvenileThreshold: number;
+
+  /**
+   * Age (in ticks) above which a Life cell enters the **senescent** stage.
+   *
+   * Senescent behaviour modifiers:
+   *   - Effective spread rate × 0.1   (minimal expansion — near end of life)
+   *   - Effective energy decay  × 1.5 (elevated metabolic cost)
+   *   - Point mutation rate     × 2   (last-ditch diversity burst: SOS response)
+   *
+   * A senescent cell whose energy drops below 0.05 undergoes **apoptosis**
+   * (planned death): it emits a signal burst, feeds adjacent live cells, then
+   * becomes Empty.
+   *
+   * Range: [100, 2000].  Default: 400 ticks.
+   */
+  senescentThreshold: number;
+
+  /**
+   * Energy bonus [0, 0.1] added to every live neighbour cell when a senescent
+   * cell undergoes apoptosis.
+   *
+   * Simulates the biological recycling of cellular material — the death of an
+   * old dense cell feeds surrounding younger cells, driving the colony's
+   * expansion frontier outward after the interior collapses.
+   *
+   * Default: 0.02 (2% energy per neighbour).
+   */
+  apoptosisBoost: number;
+
   /**
    * Which neighbour topology to use for spread.
    * Changing this at runtime takes effect immediately.
@@ -206,6 +248,12 @@ export function defaultConfig(): SimulationConfig {
     initialEnergy:        0.9,
     mutationRate:         0.0,   // legacy Life→LifeVariant mutation off by default
     pointMutationRate:    0.002, // Round 2: per-bit genome mutation (0.2% per spread)
+
+    // Phase 10: lifecycle stage thresholds
+    juvenileThreshold:    30,    // ticks before a cell reaches maturity
+    senescentThreshold:   400,   // ticks before a cell enters senescence
+    apoptosisBoost:       0.02,  // energy fed to neighbours on apoptosis death
+
     neighbourhoodMode:    'moore',
     overpopulationLimit:  8,     // disabled (value > possible neighbours)
     underpopulationLimit: 0,     // disabled
