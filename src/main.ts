@@ -17,6 +17,7 @@ import { ControlPanel } from './ui/ControlPanel.js';
 import { EvolutionPanel } from './ui/EvolutionPanel.js';
 import { DrawingTools } from './ui/DrawingTools.js';
 import { OverlayRenderer } from './rendering/OverlayRenderer.js';
+import { BackgroundManager } from './rendering/BackgroundManager.js';
 import { Tooltip } from './ui/Tooltip.js';
 import { bus } from './state/EventBus.js';
 import { appState } from './state/AppState.js';
@@ -79,17 +80,50 @@ function bootstrap(): void {
     overlay.repaint();
   });
 
+  // --- Phase 14: canvas-frame wrapper (bg + sim + overlay stack) -----------
+  // All three canvases live inside #canvas-frame so they can be shaped
+  // together via CSS — e.g. `border-radius: 50%; overflow: hidden` for the
+  // petri dish environment.  The frame is display:inline-block so it
+  // shrink-wraps to the sim-canvas pixel size automatically.
+  const canvasFrame = document.createElement('div');
+  canvasFrame.id = 'canvas-frame';
+  // Move the sim-canvas (already in the DOM from HTML) into the frame.
+  canvas.parentElement?.insertBefore(canvasFrame, canvas);
+  canvasFrame.appendChild(canvas);
+
+  // Background canvas: absolutely positioned at inset 0 inside canvas-frame,
+  // drawn by BackgroundManager in its own RAF loop.
+  const bgCanvas = document.createElement('canvas');
+  bgCanvas.id    = 'bg-canvas';
+  bgCanvas.setAttribute('aria-hidden', 'true');
+  canvasFrame.prepend(bgCanvas); // prepend so it sits behind sim-canvas (z-index)
+
+  const bgManager = new BackgroundManager();
+  bgManager.mount(bgCanvas);
+
+  // Keep the env-{type} CSS class on canvas-frame in sync with the active
+  // background so per-environment shapes (circle clip, box-shadow) apply.
+  bus.on('backgroundChange', ({ type }) => {
+    for (const cls of [...canvasFrame.classList]) {
+      if (cls.startsWith('env-')) canvasFrame.classList.remove(cls);
+    }
+    if (type !== 'none') canvasFrame.classList.add(`env-${type}`);
+  });
+
+  // Restore the previously selected background (persisted in localStorage).
+  if (appState.backgroundType !== 'none') {
+    void bgManager.setBackground(appState.backgroundType);
+    // Apply CSS class immediately; also fires the App→RenderWorker path.
+    bus.emit('backgroundChange', { type: appState.backgroundType });
+  }
+
   // --- Create overlay canvas for GravityWell arrows -------------------------
-  // A transparent <canvas> is positioned directly over the simulation canvas.
+  // A transparent <canvas> above sim-canvas inside canvas-frame.
   // It never captures pointer events (pointer-events: none in CSS).
   const overlayCanvas = document.createElement('canvas');
   overlayCanvas.id    = 'overlay-canvas';
   overlayCanvas.setAttribute('aria-hidden', 'true');
-  if (canvasContainer) {
-    canvasContainer.append(overlayCanvas);
-  } else {
-    canvas.parentElement?.append(overlayCanvas);
-  }
+  canvasFrame.append(overlayCanvas); // append so it sits above sim-canvas
 
   const overlay = new OverlayRenderer();
   overlay.mount(

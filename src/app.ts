@@ -65,6 +65,7 @@ import { bus }                               from './state/EventBus.js';
 import { FpsCounter }                        from './utils/performance.js';
 import { type SimWorkerInMsg, type SimWorkerOutMsg }       from './workers/workerBridge.js';
 import { type RenderWorkerInMsg, type RenderWorkerOutMsg } from './workers/workerBridge.js';
+import { ENVIRONMENT_TINTS }                               from './rendering/BackgroundRenderer.js';
 
 // ---------------------------------------------------------------------------
 // App class
@@ -510,6 +511,17 @@ export class App {
     // switches the active visualisation mode on the next rAF frame.
     bus.on('renderModeChange', ({ mode }) => {
       const msg: RenderWorkerInMsg = { type: 'renderModeChange', mode };
+      this._renderWorker.postMessage(msg);
+    });
+
+    // Background change (Phase 14) — forward to the render worker so it
+    // toggles transparent-empty-cell rendering to show the background through.
+    bus.on('backgroundChange', ({ type }) => {
+      const msg: RenderWorkerInMsg = {
+        type: 'backgroundChange',
+        backgroundActive: type !== 'none',
+        tint: ENVIRONMENT_TINTS[type],
+      };
       this._renderWorker.postMessage(msg);
     });
   }

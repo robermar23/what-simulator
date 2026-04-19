@@ -105,14 +105,83 @@ body {
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
+  position: relative;
   background-color: var(--color-bg);
   padding: var(--space-md);
 }
 
+/* Phase 14: #canvas-frame wraps bg-canvas, sim-canvas, and overlay-canvas so
+   all three can be clipped and shaped together via per-environment CSS classes
+   (e.g. border-radius: 50% for the petri dish).  display:inline-block makes
+   the frame shrink-wrap to the sim-canvas size automatically. */
+#canvas-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0; /* collapse whitespace between inline canvases */
+  transition: border-radius 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Petri dish: clip both canvases to a circle and add a glass-rim box-shadow. */
+#canvas-frame.env-petri {
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 14px #252538,  /* dark plastic lid */
+    0 0 0 18px #1c1c2a,  /* outer rim shadow */
+    0 0 50px 10px rgba(0, 0, 0, 0.85);
+}
+
+/* Water: soft blue vignette border to suggest a water surface edge. */
+#canvas-frame.env-water {
+  box-shadow:
+    0 0 0 3px #0a2a3a,
+    0 0 30px 8px rgba(0, 80, 140, 0.5);
+}
+
+/* Leaf: subtle green border suggesting a leaf edge. */
+#canvas-frame.env-leaf {
+  box-shadow:
+    0 0 0 3px #1a2e14,
+    0 0 20px 4px rgba(30, 80, 20, 0.4);
+}
+
+/* Soil: earthy brown border. */
+#canvas-frame.env-soil {
+  box-shadow:
+    0 0 0 3px #2a1e10,
+    0 0 20px 4px rgba(60, 35, 10, 0.5);
+}
+
+/* Space: deep void glow. */
+#canvas-frame.env-space {
+  box-shadow:
+    0 0 0 2px #05050f,
+    0 0 40px 12px rgba(20, 10, 60, 0.7);
+}
+
+/* Deep sea: abyssal blue-black vignette. */
+#canvas-frame.env-deepsea {
+  box-shadow:
+    0 0 0 3px #030810,
+    0 0 40px 12px rgba(0, 20, 60, 0.8);
+}
+
+/* Background canvas: fills canvas-frame exactly, sits behind sim-canvas. */
+#bg-canvas {
+  position: absolute;
+  inset-block-start:  0;
+  inset-inline-start: 0;
+  pointer-events: none;
+  z-index: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
 #sim-canvas {
-  /* Canvas itself has no extra styling — dimensions are set by Renderer. */
   display: block;
-  image-rendering: pixelated;   /* keep cells crisp when browser scales */
+  position: relative;
+  z-index: 1; /* stacks above #bg-canvas */
+  image-rendering: pixelated;
   image-rendering: crisp-edges;
   cursor: crosshair;
 }
@@ -517,30 +586,17 @@ details.variant-section[open] > summary::after {
    -------------------------------------------------------------------------- */
 
 /**
- * The overlay canvas sits directly on top of the simulation canvas inside
- * #canvas-container.  It is transparent everywhere except where GravityWell
- * arrows are drawn.  pointer-events: none lets all mouse/touch input pass
- * through to the simulation canvas below.
- *
- * position: absolute + inset: 0 aligns it perfectly over the sim canvas
- * regardless of scroll or zoom changes (the overlay is re-sized programmatically
- * in OverlayRenderer.mount / setCellSize).
+ * The overlay canvas sits above sim-canvas inside #canvas-frame.
+ * Transparent everywhere except where GravityWell arrows are drawn.
+ * pointer-events: none lets all input pass through to sim-canvas.
  */
 #overlay-canvas {
   position: absolute;
   inset-block-start: 0;
   inset-inline-start: 0;
   pointer-events: none;
-  /* Ensure crisp pixel rendering — no anti-aliasing for arrow shapes. */
+  z-index: 2; /* above sim-canvas (z-index 1) and bg-canvas (z-index 0) */
   image-rendering: pixelated;
-}
-
-/**
- * The canvas-container must be position: relative so the overlay canvas can
- * be absolutely positioned inside it.
- */
-#canvas-container {
-  position: relative;
 }
 
 /* --------------------------------------------------------------------------
