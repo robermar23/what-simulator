@@ -120,6 +120,32 @@ const TOOL_DEFS: readonly ToolDef[] = [
     color: '#aaddff',
     title: 'Freezes adjacent life cells — no energy decay, no spread, no death.',
   },
+  // --- Phase 12: genome-aware obstacles ---
+  {
+    tool: 'mutagen',     label: 'Mutagen',
+    color: '#ff00cc',
+    title: 'Boosts mutation rate for adjacent life cells; depletes over time.',
+  },
+  {
+    tool: 'radioWaste',  label: 'Radio Waste',
+    color: '#99ff00',
+    title: 'Permanent radiation source — damages adjacent life and causes random genome bit flips.',
+  },
+  {
+    tool: 'antibiotic',  label: 'Antibiotic',
+    color: '#f0f0f0',
+    title: 'Per-tick kill chance for adjacent life cells; reduced by evolved toxin resistance.',
+  },
+  {
+    tool: 'rewinder',    label: 'Rewinder',
+    color: '#4488ff',
+    title: 'Nudges adjacent life genomes back toward the neutral baseline, eroding genetic drift.',
+  },
+  {
+    tool: 'colony',      label: 'Colony',
+    color: '#ffaa22',
+    title: 'Cooperative infrastructure — boosts adjacent life energy and emits a chemical signal.',
+  },
   // --- Erase ---
   {
     tool: 'erase',       label: 'Erase',
@@ -184,6 +210,63 @@ const OBSTACLE_SLIDERS: readonly SliderSpec[] = [
     key:   'fireBurnRate',
     min: 0.001, max: 0.05, step: 0.001,
     title: 'Fuel consumed by Fire per tick. Higher = faster burnout.',
+  },
+];
+
+/**
+ * Phase 12 — Genome-Aware Obstacle Parameter slider specs.
+ * Controls the new Round-2 obstacle types that interact with cell genomes.
+ */
+const GENOME_OBSTACLE_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Mutagen Boost',
+    key:   'mutagenBoost',
+    min: 1, max: 10, step: 0.5,
+    title:
+      'Multiplier applied to the point-mutation rate for Life cells adjacent to a Mutagen cell. ' +
+      '3× = triple the genome mutation speed near Mutagen.',
+  },
+  {
+    label: 'Mutagen Decay',
+    key:   'mutagenDecayRate',
+    min: 0, max: 0.01, step: 0.0001,
+    title: 'Energy lost per tick by Mutagen cells. Higher = faster depletion.',
+  },
+  {
+    label: 'Radio Damage',
+    key:   'radioWasteDamage',
+    min: 0, max: 0.05, step: 0.001,
+    title:
+      'Energy damage dealt per tick to Life cells adjacent to RadioWaste. ' +
+      'Also causes random genome bit flips. Partially mitigated by toxin resistance.',
+  },
+  {
+    label: 'Antibiotic Kill',
+    key:   'antibioticStrength',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Per-tick kill probability for Life cells adjacent to an Antibiotic cell. ' +
+      'Reduced by the cell\'s evolved toxin resistance phenotype.',
+  },
+  {
+    label: 'Antibiotic Decay',
+    key:   'antibioticDecayRate',
+    min: 0, max: 0.01, step: 0.0001,
+    title: 'Energy lost per tick by Antibiotic cells. Higher = faster depletion.',
+  },
+  {
+    label: 'Rewinder Strength',
+    key:   'rewinderStrength',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Probability per tick that a Rewinder cell nudges one nibble of an adjacent ' +
+      'Life cell\'s genome one step toward the neutral baseline (0x7777).',
+  },
+  {
+    label: 'Colony Boost',
+    key:   'colonyBoost',
+    min: 0, max: 0.05, step: 0.001,
+    title: 'Energy provided per tick to each Life cell adjacent to a Colony cell.',
   },
 ];
 
@@ -328,6 +411,9 @@ export class ControlPanel {
 
     // --- Obstacle Parameters section (Phase 5) ----------------------------
     panel.append(this._buildCollapsibleSection('Obstacle Parameters', OBSTACLE_SLIDERS));
+
+    // --- Genome-Aware Obstacles section (Phase 12) ------------------------
+    panel.append(this._buildCollapsibleSection('Genome Obstacles', GENOME_OBSTACLE_SLIDERS));
 
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
@@ -997,9 +1083,13 @@ export class ControlPanel {
 
     // Build select options — map 'Cell Type' display option to no-special-mode.
     const renderModeEntries: Array<{ mode: string; label: string }> = [
-      { mode: 'variantId', label: 'Variant ID' },
-      { mode: 'lifecycle', label: 'Lifecycle'  },
-      { mode: 'default',   label: 'Cell Type'  },
+      { mode: 'variantId',   label: 'Variant ID'  },
+      { mode: 'lifecycle',   label: 'Lifecycle'   },
+      { mode: 'genome',      label: 'Genome'      },
+      { mode: 'generation',  label: 'Generation'  },
+      { mode: 'fitness',     label: 'Fitness'     },
+      { mode: 'signal',      label: 'Signal'      },
+      { mode: 'default',     label: 'Cell Type'   },
     ];
 
     for (const entry of renderModeEntries) {
@@ -1013,10 +1103,10 @@ export class ControlPanel {
     renderModeSelect.value = appState.renderMode ?? 'variantId';
 
     renderModeSelect.addEventListener('change', () => {
-      // The select value matches the RenderMode union members directly.
-      // 'default' is not a RenderMode variant — treat it as 'variantId' reset.
+      // All values map directly to RenderMode union members except 'default'
+      // which falls back to 'variantId' (the standard Phase 11 view).
       const selected = renderModeSelect.value;
-      appState.renderMode = selected === 'default' ? 'variantId' : selected as typeof appState.renderMode;
+      appState.renderMode = (selected === 'default' ? 'variantId' : selected) as typeof appState.renderMode;
     });
 
     // Keep dropdown in sync when renderMode changes from outside the panel
