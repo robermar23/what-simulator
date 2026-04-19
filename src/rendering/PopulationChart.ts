@@ -68,8 +68,12 @@ export function getActiveVariants(snaps: readonly Uint32Array[]): number[] {
 
 /** Canvas width in pixels. Matches usable inner width of the 300 px panel. */
 const CHART_W = 268;
-/** Canvas height in pixels. */
-const CHART_H = 100;
+/** Canvas height in pixels (main stacked area). */
+const CHART_H = 96;
+/** Height of the tick/variant-count label row below the chart. */
+const LABEL_H = 14;
+/** Total canvas height. */
+const TOTAL_H = CHART_H + LABEL_H;
 /** Number of census snapshots retained in the rolling history. */
 const MAX_HISTORY = 268; // one snapshot maps to one pixel column
 
@@ -111,6 +115,12 @@ export class PopulationChart {
   /** Number of valid entries currently stored. */
   private _len = 0;
 
+  /** Tick number from the most recent census. Used for the label row. */
+  private _lastTick = 0;
+
+  /** Living variant count from the most recent census. */
+  private _lastLivingVariants = 0;
+
   /** Unsubscribe function returned by {@link bus.on}. Null before mount. */
   private _unsub: (() => void) | null = null;
 
@@ -126,7 +136,7 @@ export class PopulationChart {
   mount(container: HTMLElement): void {
     const canvas     = document.createElement('canvas');
     canvas.width     = CHART_W;
-    canvas.height    = CHART_H;
+    canvas.height    = TOTAL_H;
     canvas.className = 'evo-chart-canvas';
     canvas.setAttribute('aria-label', 'Population timeline — stacked variant areas');
     container.append(canvas);
@@ -136,7 +146,10 @@ export class PopulationChart {
     this._drawPlaceholder();
 
     // Subscribe to census events; unsubscribe handle saved for unmount.
-    this._unsub = bus.on('variantCensus', ({ census }) => this._onCensus(census));
+    this._unsub = bus.on('variantCensus', ({ census, livingVariants }) => {
+      this._lastLivingVariants = livingVariants;
+      this._onCensus(census);
+    });
   }
 
   /**
@@ -162,6 +175,7 @@ export class PopulationChart {
    * @param census - Population snapshot from the SimulationWorker.
    */
   private _onCensus(census: VariantCensus): void {
+    this._lastTick = census.tick;
     // Deep-copy the counts array so the census object can be GC'd freely.
     const snap = new Uint32Array(census.counts);
 
@@ -187,7 +201,7 @@ export class PopulationChart {
     const ctx = this._ctx;
     if (!ctx || !this._canvas) return;
     ctx.fillStyle = '#0a0a12';
-    ctx.fillRect(0, 0, CHART_W, CHART_H);
+    ctx.fillRect(0, 0, CHART_W, TOTAL_H);
     ctx.fillStyle = '#3a3a5a';
     ctx.font      = '10px monospace';
     ctx.textAlign = 'center';
@@ -262,5 +276,15 @@ export class PopulationChart {
     ctx.strokeStyle = '#2a2a3e';
     ctx.lineWidth   = 1;
     ctx.strokeRect(0.5, 0.5, CHART_W - 1, CHART_H - 1);
+
+    // Label row: dark strip below the chart showing tick and living variant count.
+    ctx.fillStyle = '#111120';
+    ctx.fillRect(0, CHART_H, CHART_W, LABEL_H);
+    ctx.fillStyle = '#5a6080';
+    ctx.font      = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`T:${this._lastTick}`, 4, CHART_H + LABEL_H - 3);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${this._lastLivingVariants}V`, CHART_W - 4, CHART_H + LABEL_H - 3);
   }
 }

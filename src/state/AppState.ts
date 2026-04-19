@@ -34,6 +34,12 @@ export type DrawingTool =
   | 'barrier'
   | 'fire'
   | 'ice'
+  // Phase 12: genome-aware obstacles
+  | 'mutagen'
+  | 'radioWaste'
+  | 'antibiotic'
+  | 'rewinder'
+  | 'colony'
   | 'erase';
 
 // ---------------------------------------------------------------------------

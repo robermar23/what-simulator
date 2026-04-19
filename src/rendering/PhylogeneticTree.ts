@@ -61,15 +61,17 @@ export interface TreeNode {
 }
 
 /** Horizontal pixels per depth level. */
-const DEPTH_STEP = 56;
+const DEPTH_STEP = 52;
 /** Vertical pixels per leaf node. */
-const NODE_HEIGHT = 22;
-/** Radius of the circle drawn for each node. */
-const NODE_RADIUS = 6;
+const NODE_HEIGHT = 20;
+/** Radius of the circle drawn for a regular node. */
+const NODE_RADIUS = 5;
+/** Radius of the root node circle (slightly larger to stand out). */
+const ROOT_RADIUS = 7;
 /** Canvas width in pixels (matches panel inner width). */
 const CANVAS_W = 268;
-/** Left margin before the root node. */
-const MARGIN_LEFT = 10;
+/** Left margin before the root node — large enough to show the full root circle. */
+const MARGIN_LEFT = 20;
 /** Top / bottom margin. */
 const MARGIN_V = 12;
 
@@ -288,10 +290,18 @@ export class PhylogeneticTree {
   }
 
   /**
-   * Draws edges then nodes on the canvas.
+   * Draws edges then nodes on the canvas using a rectangular cladogram style.
    *
-   * Edges are drawn first (underneath nodes) as cubic bezier curves.
-   * Extinct variant nodes are drawn with reduced opacity and grey colour.
+   * Each edge is an L-shaped path (horizontal → vertical → horizontal) rather
+   * than a bezier curve.  This makes branching structure unambiguous:
+   *
+   * ```
+   * parent ──┬── child A
+   *           └── child B
+   * ```
+   *
+   * Extinct variant edges are dashed and drawn in a muted colour.  Living
+   * variant edges are drawn in a visible blue-grey.
    *
    * @param nodes - All laid-out tree nodes in DFS pre-order.
    */
@@ -311,18 +321,26 @@ export class PhylogeneticTree {
       return;
     }
 
-    // --- Draw edges (parent → child bezier curves) -------------------------
+    // --- Draw L-shaped edges (parent → elbow → child) ----------------------
+    // elbowX is halfway between parent X and child X, creating the characteristic
+    // cladogram "step" pattern.  All edges from the same parent share the same
+    // elbowX, so the vertical segment acts as a visible trunk.
     ctx.lineWidth = 1.5;
     for (const node of nodes) {
       if (node.isRoot) continue;
-      const extinct = node.record.extinctionTick !== null;
-      ctx.strokeStyle = extinct ? '#2a2a3e' : '#3a3a5e';
+      const extinct  = node.record.extinctionTick !== null;
+      const elbowX   = node.parentX + Math.round((node.x - node.parentX) * 0.45);
+
+      ctx.strokeStyle = extinct ? '#303848' : '#5a7898';
       ctx.setLineDash(extinct ? [3, 3] : []);
       ctx.beginPath();
-      // Cubic bezier: horizontal control points at mid-X between parent and child.
-      const cpX = (node.parentX + node.x) / 2;
+      // 1. Horizontal from parent to elbow.
       ctx.moveTo(node.parentX, node.parentY);
-      ctx.bezierCurveTo(cpX, node.parentY, cpX, node.y, node.x, node.y);
+      ctx.lineTo(elbowX,       node.parentY);
+      // 2. Vertical from parent-level to child-level.
+      ctx.lineTo(elbowX,       node.y);
+      // 3. Horizontal from elbow to child node.
+      ctx.lineTo(node.x,       node.y);
       ctx.stroke();
     }
     ctx.setLineDash([]);
@@ -331,40 +349,50 @@ export class PhylogeneticTree {
     for (const node of nodes) {
       const v       = node.record.id;
       const extinct = node.record.extinctionTick !== null;
+      const isRoot  = node.isRoot;
+      const radius  = isRoot ? ROOT_RADIUS : NODE_RADIUS;
 
-      // Pick colour: living → VARIANT_PALETTE; extinct → muted grey.
+      // Pick fill colour: living → VARIANT_PALETTE; extinct → muted grey.
       let nodeColor: string;
       if (extinct) {
-        nodeColor = '#444466';
+        nodeColor = '#3a3a55';
       } else {
-        const rgba  = VARIANT_PALETTE[v & 0xFF];
-        const r     =  rgba        & 0xFF;
-        const g     = (rgba >>  8) & 0xFF;
-        const b     = (rgba >> 16) & 0xFF;
-        nodeColor   = `rgb(${r},${g},${b})`;
+        const rgba = VARIANT_PALETTE[v & 0xFF];
+        const r    =  rgba        & 0xFF;
+        const g    = (rgba >>  8) & 0xFF;
+        const b    = (rgba >> 16) & 0xFF;
+        nodeColor  = `rgb(${r},${g},${b})`;
       }
 
       // Filled circle.
       ctx.beginPath();
-      ctx.arc(node.x, node.y, NODE_RADIUS, 0, Math.PI * 2);
+      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
       ctx.fillStyle = nodeColor;
       ctx.fill();
 
-      // Stroke ring for living variants to make them stand out.
-      if (!extinct) {
-        ctx.strokeStyle = '#ffffff40';
+      // Ring: white for root (makes it unmissable); subtle white for living variants.
+      if (isRoot) {
+        ctx.strokeStyle = '#ffffffcc';
+        ctx.lineWidth   = 2;
+        ctx.stroke();
+      } else if (!extinct) {
+        ctx.strokeStyle = '#ffffff30';
         ctx.lineWidth   = 1;
         ctx.stroke();
       }
 
-      // Variant ID label to the right of the node (or left if too close to edge).
-      const labelX  = node.x + NODE_RADIUS + 3;
+      // Variant ID label to the right of the node.
+      const labelX   = node.x + radius + 3;
       const labelTxt = `V${v}`;
-      ctx.font      = '8px monospace';
-      ctx.textAlign = 'left';
-      ctx.fillStyle = extinct ? '#4a4a6a' : '#9090b0';
+      ctx.font       = '8px monospace';
+      ctx.textAlign  = 'left';
+      ctx.fillStyle  = isRoot
+        ? '#e0e0f0'
+        : extinct
+          ? '#3a3a5a'
+          : '#8090b0';
 
-      if (labelX + 20 <= W) {
+      if (labelX + 18 <= W) {
         ctx.fillText(labelTxt, labelX, node.y + 3);
       }
     }
