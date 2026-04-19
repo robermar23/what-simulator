@@ -47,6 +47,7 @@
 
 import { type GridBuffers } from '../simulation/GridState.js';
 import { type AnyCanvas, type RendererOptions } from './Renderer.js';
+import { VARIANT_PALETTE } from './ColorMap.js';
 
 // ---------------------------------------------------------------------------
 // GLSL source strings
@@ -73,7 +74,7 @@ void main() {
 `;
 
 /**
- * Fragment shader: maps (cellType, energy[, flags, renderMode]) → RGBA.
+ * Fragment shader: maps (cellType, energy[, flags, variantId, renderMode]) → RGBA.
  *
  * ## Render modes (u_renderMode)
  *
@@ -85,6 +86,11 @@ void main() {
  *       - JUVENILE  (flags bit 3) → bright lime  (#44ff88)
  *       - SENESCENT (flags bit 4) → purple-pink  (#cc44bb)
  *       - Mature (neither flag)  → energy-modulated green (#00ff88)
+ *       Non-Life cells render as in default mode.
+ *
+ *   2 — **variantId**: Life cells coloured by their lineage palette (Phase 11).
+ *       Each variant ID (0–255) maps to a unique hue from the VARIANT_PALETTE
+ *       golden-angle hue distribution.  Energy modulates brightness (min 15%).
  *       Non-Life cells render as in default mode.
  *
  * Colour values stay in sync with ColorMap.ts COLOR_ENTRIES.
@@ -108,6 +114,19 @@ uniform sampler2D  u_energy;
  */
 uniform usampler2D u_flags;
 
+/**
+ * Integer (R8UI) texture holding the variantId byte for every cell (Phase 11).
+ * Values 0–255 index into u_variantPalette for the cell's lineage colour.
+ */
+uniform usampler2D u_variantId;
+
+/**
+ * 256×1 RGBA texture — the variant colour palette (Phase 11).
+ * Each texel holds the pre-computed golden-angle hue colour for one variant ID.
+ * Sampled using nearest-neighbour filtering; texel x = variantId.
+ */
+uniform sampler2D  u_variantPalette;
+
 /** Pixels per cell (matches AppState.cellSize). */
 uniform float u_cellSize;
 
@@ -124,6 +143,7 @@ uniform bool u_showGridLines;
  * Active render mode:
  *   0 = default (cellType + energy)
  *   1 = lifecycle (Life cells coloured by JUVENILE / SENESCENT flags)
+ *   2 = variantId (Life cells coloured by lineage palette)
  */
 uniform int u_renderMode;
 
@@ -234,12 +254,15 @@ void main() {
   uint  cellType = texelFetch(u_cellType, cellCoord, 0).r;
   float energy   = texelFetch(u_energy,   cellCoord, 0).r;
   uint  flags    = texelFetch(u_flags,    cellCoord, 0).r;
+  uint  vid      = texelFetch(u_variantId, cellCoord, 0).r;
 
   // ---- Colour mapping -------------------------------------------------------
 
   vec3 cellRGB;
 
-  if (u_renderMode == 1 && (cellType == 1u || cellType == 10u)) {
+  bool isLife = (cellType == 1u || cellType == 10u);
+
+  if (u_renderMode == 1 && isLife) {
     // ---- Lifecycle render mode (Phase 10) — Life/LifeVariant only -----------
     //
     // Colour encodes lifecycle stage derived from the flags byte:
@@ -262,6 +285,18 @@ void main() {
       float brightness = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
       cellRGB = vec3(0.0, 1.0, 0.5333) * brightness;
     }
+
+  } else if (u_renderMode == 2 && isLife) {
+    // ---- VariantId render mode (Phase 11) — Life/LifeVariant only ----------
+    //
+    // Look up the pre-computed golden-angle palette colour for this variantId.
+    // The palette is a 256×1 RGBA texture; texel x coordinate = variantId/255.
+    // We use texelFetch with integer coordinates to get pixel-perfect results.
+    vec3 paletteRGB = texelFetch(u_variantPalette, ivec2(int(vid), 0), 0).rgb;
+    // Energy-modulate brightness (minimum 15% so cells are never invisible).
+    float brightness = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
+    cellRGB = paletteRGB * brightness;
+
   } else {
     // ---- Default render mode: cellType + energy → colour -------------------
     vec3 base = baseColor(cellType);
@@ -355,17 +390,34 @@ export class WebGLRenderer {
    */
   private readonly _flagsTex: WebGLTexture;
 
+  /**
+   * `R8UI` texture — one byte per cell, holds the variantId (Phase 11).
+   * Used by the variantId render mode to look up the lineage palette colour.
+   */
+  private readonly _variantIdTex: WebGLTexture;
+
+  /**
+   * `RGBA8` 256×1 texture holding the pre-computed variant colour palette.
+   * Uploaded once at construction from `VARIANT_PALETTE` (Phase 11).
+   * Never changes during a simulation run (palette is static).
+   */
+  private readonly _variantPaletteTex: WebGLTexture;
+
   // --- Uniform locations (cached once after compile) -------------------------
 
   private readonly _uCellType!: WebGLUniformLocation;
   private readonly _uEnergy!: WebGLUniformLocation;
   /** Uniform location for the flags texture (Phase 10). */
   private readonly _uFlags!: WebGLUniformLocation;
+  /** Uniform location for the variantId texture (Phase 11). */
+  private readonly _uVariantId!: WebGLUniformLocation;
+  /** Uniform location for the variant palette texture (Phase 11). */
+  private readonly _uVariantPalette!: WebGLUniformLocation;
   private readonly _uCellSize!: WebGLUniformLocation;
   private readonly _uGridWidth!: WebGLUniformLocation;
   private readonly _uGridHeight!: WebGLUniformLocation;
   private readonly _uShowGridLines!: WebGLUniformLocation;
-  /** Uniform location for the render mode integer (Phase 10). */
+  /** Uniform location for the render mode integer (Phase 10/11). */
   private readonly _uRenderMode!: WebGLUniformLocation;
 
   // --- State -----------------------------------------------------------------
@@ -428,23 +480,57 @@ export class WebGLRenderer {
     this._program = this._createProgram(VERT_SRC, FRAG_SRC);
 
     // Cache all uniform locations once (avoids a string lookup per frame).
-    this._uCellType      = this._requireUniform('u_cellType');
-    this._uEnergy        = this._requireUniform('u_energy');
-    this._uFlags         = this._requireUniform('u_flags');
-    this._uCellSize      = this._requireUniform('u_cellSize');
-    this._uGridWidth     = this._requireUniform('u_gridWidth');
-    this._uGridHeight    = this._requireUniform('u_gridHeight');
-    this._uShowGridLines = this._requireUniform('u_showGridLines');
-    this._uRenderMode    = this._requireUniform('u_renderMode');
+    this._uCellType       = this._requireUniform('u_cellType');
+    this._uEnergy         = this._requireUniform('u_energy');
+    this._uFlags          = this._requireUniform('u_flags');
+    this._uVariantId      = this._requireUniform('u_variantId');
+    this._uVariantPalette = this._requireUniform('u_variantPalette');
+    this._uCellSize       = this._requireUniform('u_cellSize');
+    this._uGridWidth      = this._requireUniform('u_gridWidth');
+    this._uGridHeight     = this._requireUniform('u_gridHeight');
+    this._uShowGridLines  = this._requireUniform('u_showGridLines');
+    this._uRenderMode     = this._requireUniform('u_renderMode');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     this._vbo = this._createQuadBuffer();
     this._vao = this._createVAO(this._vbo);
 
     // --- Textures (allocated empty; resized on first render) -----------------
-    this._cellTypeTex = this._createTexture();
-    this._energyTex   = this._createTexture();
-    this._flagsTex    = this._createTexture();
+    this._cellTypeTex  = this._createTexture();
+    this._energyTex    = this._createTexture();
+    this._flagsTex     = this._createTexture();
+    this._variantIdTex = this._createTexture();
+
+    // --- Variant palette texture (256×1, RGBA, static) ----------------------
+    // Build the palette as a flat RGBA Uint8Array (4 bytes per variant).
+    // The VARIANT_PALETTE entries are packed little-endian RGBA; we need to
+    // unpack and re-pack as big-endian RGBA for WebGL texImage2D.
+    const palBytes = new Uint8Array(256 * 4);
+    for (let v = 0; v < 256; v++) {
+      const packed = VARIANT_PALETTE[v];
+      const base   = v * 4;
+      palBytes[base]     =  packed        & 0xFF; // R
+      palBytes[base + 1] = (packed >>  8) & 0xFF; // G
+      palBytes[base + 2] = (packed >> 16) & 0xFF; // B
+      palBytes[base + 3] = 0xFF;                   // A = fully opaque
+    }
+    this._variantPaletteTex = this._createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this._variantPaletteTex);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,             // mip level
+      gl.RGBA8,      // internal format
+      256,           // width = 256 palette entries
+      1,             // height = 1 row
+      0,             // border
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      palBytes,
+    );
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   // ---------------------------------------------------------------------------
@@ -485,12 +571,12 @@ export class WebGLRenderer {
    * Current render mode.
    * - `'default'`   — cell type + energy colour mapping (Phase 1–9 behaviour).
    * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags (Phase 10).
-   *
-   * Phase 10.  More modes (variantId, genome, generation, signal) are added in
-   * Phase 14 when the full render-mode dropdown is implemented.
+   * - `'variantId'` — Life cells coloured by variant lineage palette (Phase 11).
    */
-  get renderMode(): 'default' | 'lifecycle' {
-    return this._renderMode === 1 ? 'lifecycle' : 'default';
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' {
+    if (this._renderMode === 1) return 'lifecycle';
+    if (this._renderMode === 2) return 'variantId';
+    return 'default';
   }
 
   /**
@@ -498,8 +584,14 @@ export class WebGLRenderer {
    *
    * @param mode - New render mode string.
    */
-  set renderMode(mode: 'default' | 'lifecycle') {
-    this._renderMode = mode === 'lifecycle' ? 1 : 0;
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId') {
+    if (mode === 'lifecycle') {
+      this._renderMode = 1;
+    } else if (mode === 'variantId') {
+      this._renderMode = 2;
+    } else {
+      this._renderMode = 0;
+    }
   }
 
   /**
@@ -563,6 +655,20 @@ export class WebGLRenderer {
       buffers.flags,
     );
 
+    // --- Upload variantId texture (R8UI, Phase 11) ----------------------------
+    // One byte per cell; the fragment shader indexes into u_variantPalette with
+    // this value to produce the lineage colour in variantId render mode.
+    gl.bindTexture(gl.TEXTURE_2D, this._variantIdTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_BYTE,
+      buffers.variantId,
+    );
+
     // --- Draw -----------------------------------------------------------------
 
     gl.useProgram(this._program);
@@ -581,6 +687,17 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this._flagsTex);
     gl.uniform1i(this._uFlags, 2);
+
+    // Bind variantId texture to texture unit 3 (Phase 11: variantId mode).
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this._variantIdTex);
+    gl.uniform1i(this._uVariantId, 3);
+
+    // Bind variant palette texture to texture unit 4 (Phase 11).
+    // This is a static 256×1 RGBA texture uploaded once in the constructor.
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this._variantPaletteTex);
+    gl.uniform1i(this._uVariantPalette, 4);
 
     // Per-frame uniforms.
     gl.uniform1f(this._uCellSize,      this._cellSize);
@@ -632,13 +749,16 @@ export class WebGLRenderer {
     // Match the WebGL viewport to the canvas pixel dimensions.
     gl.viewport(0, 0, canvasW, canvasH);
 
-    // (Re-)allocate all three textures at the new grid size.
+    // (Re-)allocate all per-cell textures at the new grid size.
     // texImage2D with null data allocates GPU memory without a data copy;
     // texSubImage2D fills each texture on the first real render call.
-    this._allocateTexture(this._cellTypeTex, width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
-    this._allocateTexture(this._energyTex,   width, height, gl.R32F, gl.RED,         gl.FLOAT);
+    this._allocateTexture(this._cellTypeTex,  width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._energyTex,    width, height, gl.R32F, gl.RED,         gl.FLOAT);
     // Phase 10: flags texture (R8UI) — holds lifecycle bitmask per cell.
-    this._allocateTexture(this._flagsTex,    width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._flagsTex,     width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    // Phase 11: variantId texture (R8UI) — holds lineage ID per cell.
+    this._allocateTexture(this._variantIdTex, width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    // Note: _variantPaletteTex is 256×1 and never resizes — skip here.
   }
 
   /**

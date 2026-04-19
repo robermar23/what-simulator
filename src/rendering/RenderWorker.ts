@@ -253,12 +253,21 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       // No invalidate needed — grid lines are drawn after each render.
       break;
 
-    // --- renderModeChange (Phase 10) ----------------------------------------
+    // --- renderModeChange (Phase 10/11) -------------------------------------
     case 'renderModeChange': {
-      // Map the RenderMode string to the simplified 'default' | 'lifecycle'
-      // that Renderer and WebGLRenderer understand for Phase 10.
-      // Full mode support (genome, generation, signal, fitness) is added in Phase 14.
-      const rMode = msg.mode === 'lifecycle' ? 'lifecycle' : 'default';
+      // Map the full RenderMode union to the subset supported by the renderers.
+      // - 'lifecycle'  → Phase 10 lifecycle stage colouring.
+      // - 'variantId'  → Phase 11 variant lineage palette colouring.
+      // - all others   → 'default' (cellType + energy LUT).
+      //   ('genome', 'generation', 'fitness', 'signal' added in Phase 14.)
+      let rMode: 'default' | 'lifecycle' | 'variantId';
+      if (msg.mode === 'lifecycle') {
+        rMode = 'lifecycle';
+      } else if (msg.mode === 'variantId') {
+        rMode = 'variantId';
+      } else {
+        rMode = 'default';
+      }
       renderer.renderMode = rMode;
       renderer.invalidate();
       break;

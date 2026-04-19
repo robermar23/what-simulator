@@ -19,7 +19,12 @@
  */
 
 import { type GridBuffers, CellType } from '../simulation/GridState.js';
-import { COLOR_LUT, ENERGY_STEPS, lifecycleColorFor } from './ColorMap.js';
+import {
+  COLOR_LUT,
+  ENERGY_STEPS,
+  lifecycleColorFor,
+  variantColorFor,
+} from './ColorMap.js';
 
 // ---------------------------------------------------------------------------
 // Canvas type alias
@@ -110,12 +115,14 @@ export class Renderer {
   private _showGridLines = false;
 
   /**
-   * Current render mode (Phase 10).
+   * Current render mode.
    * - `'default'`   — colour from the pre-built LUT (cellType + energy).
-   * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags; all
-   *                   other cell types rendered as in default mode.
+   * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags.
+   * - `'variantId'` — Life cells coloured by variant lineage palette (Phase 11).
+   *
+   * All modes render non-Life cells identically (via the standard LUT).
    */
-  private _renderMode: 'default' | 'lifecycle' = 'default';
+  private _renderMode: 'default' | 'lifecycle' | 'variantId' = 'default';
 
   /**
    * Pre-allocated ImageData written into each frame.
@@ -197,11 +204,12 @@ export class Renderer {
   }
 
   /**
-   * Current render mode (Phase 10).
+   * Current render mode.
    * - `'default'`   — standard colour LUT (cellType + energy).
    * - `'lifecycle'` — Life cells coloured by JUVENILE / SENESCENT flags.
+   * - `'variantId'` — Life cells coloured by variant lineage palette (Phase 11).
    */
-  get renderMode(): 'default' | 'lifecycle' {
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' {
     return this._renderMode;
   }
 
@@ -210,7 +218,7 @@ export class Renderer {
    *
    * @param mode - New render mode.
    */
-  set renderMode(mode: 'default' | 'lifecycle') {
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId') {
     if (this._renderMode !== mode) {
       this._renderMode = mode;
       this.invalidate(); // stale LUT colours must be discarded when mode changes
@@ -238,12 +246,13 @@ export class Renderer {
       this._resize(width, height);
     }
 
-    const lut        = COLOR_LUT;
-    const cellSize   = this._cellSize;
-    const pixelBuf   = this._pixelBuf;
-    const prev       = this._prevColors;
+    const lut         = COLOR_LUT;
+    const cellSize    = this._cellSize;
+    const pixelBuf    = this._pixelBuf;
+    const prev        = this._prevColors;
     const isLifecycle = this._renderMode === 'lifecycle';
-    const { cellType, energy, flags } = buffers;
+    const isVariant   = this._renderMode === 'variantId';
+    const { cellType, energy, flags, variantId } = buffers;
 
     const canvasWidth = this._canvas.width; // pixels
 
@@ -253,9 +262,17 @@ export class Renderer {
         const ct = cellType[i];
         let packed: number;
 
-        if (isLifecycle && (ct === CellType.Life || ct === CellType.LifeVariant)) {
-          // Phase 10: lifecycle mode — colour Life cells by stage flags.
-          packed = lifecycleColorFor(flags[i], energy[i]);
+        if (ct === CellType.Life || ct === CellType.LifeVariant) {
+          if (isLifecycle) {
+            // Phase 10: lifecycle mode — colour Life cells by stage flags.
+            packed = lifecycleColorFor(flags[i], energy[i]);
+          } else if (isVariant) {
+            // Phase 11: variantId mode — colour Life cells by lineage palette.
+            packed = variantColorFor(variantId[i], energy[i]);
+          } else {
+            const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
+            packed  = lut[ct * ENERGY_STEPS + e];
+          }
         } else {
           const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
           packed  = lut[ct * ENERGY_STEPS + e];
@@ -277,9 +294,17 @@ export class Renderer {
           const ct = cellType[ci];
           let packed: number;
 
-          if (isLifecycle && (ct === CellType.Life || ct === CellType.LifeVariant)) {
-            // Phase 10: lifecycle mode — colour Life cells by stage flags.
-            packed = lifecycleColorFor(flags[ci], energy[ci]);
+          if (ct === CellType.Life || ct === CellType.LifeVariant) {
+            if (isLifecycle) {
+              // Phase 10: lifecycle mode — colour Life cells by stage flags.
+              packed = lifecycleColorFor(flags[ci], energy[ci]);
+            } else if (isVariant) {
+              // Phase 11: variantId mode — colour Life cells by lineage palette.
+              packed = variantColorFor(variantId[ci], energy[ci]);
+            } else {
+              const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[ci] * (ENERGY_STEPS - 1)));
+              packed  = lut[ct * ENERGY_STEPS + e];
+            }
           } else {
             const e = Math.min(
               ENERGY_STEPS - 1,
