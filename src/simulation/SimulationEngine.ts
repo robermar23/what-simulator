@@ -98,6 +98,8 @@ import {
   applyPhenotypeFromGenome,
   getToxinResist,
   getNutrientAbs,
+  assignVariantId,
+  MAX_VARIANT_ID,
 } from './genetics/MutationEngine.js';
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,15 @@ export interface TickStats {
  * avoid per-tick heap allocation.
  */
 const MAX_WELLS = 64;
+
+/**
+ * Maximum number of new variant creation events that can be buffered per tick.
+ *
+ * In practice, very few new variants emerge each tick (requires ≥3 genome bits
+ * to diverge in a single spread event).  512 is a generous upper bound that
+ * covers even the most mutation-heavy configurations without heap allocation.
+ */
+const MAX_VARIANT_EVENTS = 512;
 
 // ---------------------------------------------------------------------------
 // SimulationEngine
@@ -171,6 +182,69 @@ export class SimulationEngine {
     liveCells: 0, variantCells: 0, births: 0, deaths: 0,
   };
 
+  // -------------------------------------------------------------------------
+  // Phase 11 — Variant event queue
+  // -------------------------------------------------------------------------
+
+  /**
+   * Maximum number of new variant lineages that can be spawned in a single
+   * simulation tick.
+   *
+   * Without this cap, a large grid (1024×1024+) with a non-zero mutation rate
+   * can generate thousands of speciation events per tick, cycling through all
+   * 256 variant IDs in one frame and rendering every cell a different colour.
+   *
+   * A cap of 2 means at most 2 new lineages emerge per tick, giving smooth
+   * visual divergence at any grid size.  The cap also acts as a global mutation
+   * pressure governor — higher values allow faster saturation.
+   */
+  private static readonly _MAX_NEW_VARIANTS_PER_TICK = 2;
+
+  /**
+   * Counter of new variants created so far this tick.
+   * Reset to 0 at the start of each {@link tick} call.
+   */
+  private _newVariantsThisTick: number = 0;
+
+  /**
+   * Next variant ID to assign when a genome diverges by ≥3 bits.
+   * Cycles from 1 to 255 (wraps on overflow).  0 is reserved for the base
+   * Life seed and is never assigned here.
+   */
+  private _nextVariantId: number = 1;
+
+  /**
+   * Reference genome for each variant lineage (indexed by variantId, 0–255).
+   *
+   * Divergence for speciation is measured against this founding genome rather
+   * than the immediate parent cell's genome.  Without this, a single spread
+   * (which flips at most 1 bit) could never reach the ≥3-bit threshold.
+   *
+   * With lineage references, a child that has inherited several point mutations
+   * will eventually differ from its lineage founder by ≥3 bits, at which point
+   * it is considered a new species and receives a fresh variant ID.
+   *
+   * Initialised to `GENOME_NEUTRAL (0x7777)` at construction and reset.
+   * Updated in `_trySpread` each time a new lineage is spawned.
+   */
+  private readonly _variantRefGenomes: Uint16Array = new Uint16Array(256).fill(0x7777);
+
+  /**
+   * Flat pre-allocated buffer for variant-creation events this tick.
+   *
+   * Layout per event (3 Int32 entries):
+   *   [k*3+0] = new childVariantId  (1–255)
+   *   [k*3+1] = parentVariantId     (0–255)
+   *   [k*3+2] = childGenome         (16-bit unsigned)
+   *
+   * Filled by `_trySpread`; drained by `drainVariantEvents` which the
+   * SimulationWorker calls once per tick.
+   */
+  private readonly _variantEventsBuf: Int32Array = new Int32Array(MAX_VARIANT_EVENTS * 3);
+
+  /** Number of valid events currently in `_variantEventsBuf`. */
+  private _variantEventCount: number = 0;
+
   /**
    * @param width - Grid width in cells.
    * @param height - Grid height in cells.
@@ -211,6 +285,42 @@ export class SimulationEngine {
    * @param config - Current simulation parameters.
    * @returns Tick statistics (same object reference each call).
    */
+  /**
+   * Returns all variant-creation events that occurred during the last tick
+   * and clears the internal buffer for the next tick.
+   *
+   * The SimulationWorker calls this once after each `tick()` to pick up any
+   * new variant IDs and post `variantCreated` messages to the main thread.
+   *
+   * Events are returned as a flat tuple array:
+   *   `[childId, parentId, genome, childId, parentId, genome, …]`
+   *
+   * The returned view is only valid until the next `tick()` call; callers
+   * must read (and copy if needed) before the next tick.
+   *
+   * @returns Read-only view of the event buffer and the event count.
+   */
+  drainVariantEvents(): { buf: Int32Array; count: number } {
+    const count = this._variantEventCount;
+    this._variantEventCount = 0;
+    return { buf: this._variantEventsBuf, count };
+  }
+
+  /**
+   * Resets the next-variant-ID counter back to 1.
+   *
+   * Called by the SimulationWorker on grid reset so the new simulation starts
+   * assigning variant IDs from 1 again, matching the freshly bootstrapped
+   * {@link VariantRegistry}.
+   */
+  resetVariantCounter(): void {
+    this._nextVariantId     = 1;
+    this._variantEventCount = 0;
+    // Reset reference genomes so divergence is measured fresh from the neutral
+    // baseline after a grid reset.
+    this._variantRefGenomes.fill(0x7777);
+  }
+
   tick(
     front: GridBuffers,
     back: GridBuffers,
@@ -221,6 +331,10 @@ export class SimulationEngine {
     this._stats.variantCells = 0;
     this._stats.births       = 0;
     this._stats.deaths       = 0;
+
+    // Reset variant event queue and per-tick creation cap for this tick.
+    this._variantEventCount    = 0;
+    this._newVariantsThisTick  = 0;
 
     // --- Round 1 buffer destructuring ---
     const {
@@ -785,11 +899,47 @@ export class SimulationEngine {
 
       if (isEnterable(nType)) {
         baseProb = cellSpreadRate;
-      } else if (isVariant && nType === CellType.Life) {
-        // Phase 3: LifeVariant competes against regular Life.
-        baseProb = competitionStrength;
+      } else if (nType === CellType.Life || nType === CellType.LifeVariant) {
+        // Phase 3 / Phase 11: inter-cell competition.
+        //
+        // When a LifeVariant cell spreads into a plain Life cell (cross-species),
+        // the original Phase 3 `competitionStrength` applies directly — these
+        // are different species so kin-selection does not reduce aggression.
+        //
+        // When two LifeVariant cells of the SAME species compete, kin-selection
+        // modulates the probability based on variant ID distance:
+        //
+        //   - Same variantId  → no competition (kin — treated as occupied).
+        //   - ΔvariantId ≤ 5  → 50% competition strength (near-kin).
+        //   - ΔvariantId > 20 → 150% competition strength (stranger aggression).
+        //   - Otherwise       → normal competition strength.
+        const targetVariantId = ftVariantId[ni];
+
+        if (lifeType === CellType.LifeVariant && nType === CellType.LifeVariant) {
+          // Intra-species competition: apply kin-selection.
+          if (targetVariantId === parentVariantId) {
+            continue; // same lineage — treated as occupied
+          }
+          const idDelta = Math.abs((targetVariantId - parentVariantId + 256) % 256);
+          let kinFactor: number;
+          if (idDelta <= 5) {
+            kinFactor = 0.5;   // near-kin: reduced aggression
+          } else if (idDelta > 20) {
+            kinFactor = 1.5;   // stranger: elevated aggression
+          } else {
+            kinFactor = 1.0;   // neutral relationship
+          }
+          baseProb = competitionStrength * kinFactor;
+        } else if (lifeType === CellType.LifeVariant && nType === CellType.Life) {
+          // Cross-species competition: LifeVariant invades base Life.
+          // Use original Phase 3 strength with no kin-selection penalty.
+          baseProb = competitionStrength;
+        } else {
+          // Base Life cannot spread into occupied cells.
+          continue;
+        }
       } else {
-        continue; // impassable or same-type cell
+        continue; // impassable cell
       }
 
       // --- Phase 5: GravityWell spread bias --------------------------------
@@ -840,9 +990,53 @@ export class SimulationEngine {
 
         // --- Write genome inheritance to back buffer -----------------------
         bkGenome[ni]     = childGenome;
-        // Phase 9: variantId inherited unchanged; Phase 11 will branch new IDs
-        // when countBitDifferences(parentGenome, childGenome) >= 3.
-        bkVariantId[ni]  = parentVariantId;
+
+        // --- Phase 11: assign variantId based on genome divergence ----------
+        // Speciation is measured against the LINEAGE REFERENCE genome
+        // (_variantRefGenomes[parentVariantId]), not the immediate parent
+        // cell's genome.  A single spread can only flip ≤1 bit, so comparing
+        // parent→child would never reach the ≥3-bit threshold.  By comparing
+        // against the lineage founder's genome, accumulated point mutations
+        // across many generations eventually trigger speciation.
+        const lineageRefGenome = this._variantRefGenomes[parentVariantId];
+        const childVariantId   = assignVariantId(
+          parentVariantId,
+          lineageRefGenome,
+          childGenome,
+          this._nextVariantId,
+        );
+        bkVariantId[ni] = childVariantId;
+
+        // When a new lineage was spawned, advance the next-ID counter,
+        // record its founding genome as the new lineage reference, and
+        // queue the creation event for the SimulationWorker.
+        if (childVariantId !== parentVariantId) {
+          // Guard: cap at _MAX_NEW_VARIANTS_PER_TICK to prevent large grids
+          // from cycling through all 256 IDs in a single tick and rendering
+          // every cell a different colour.
+          if (this._newVariantsThisTick >= SimulationEngine._MAX_NEW_VARIANTS_PER_TICK) {
+            // Cap reached — treat child as same lineage as parent this tick.
+            bkVariantId[ni] = parentVariantId;
+          } else {
+            this._newVariantsThisTick++;
+
+            // Record this genome as the reference for the newly diverged lineage.
+            this._variantRefGenomes[childVariantId] = childGenome;
+
+            // Advance counter, wrapping 255 → 1 (0 reserved for base seed).
+            this._nextVariantId = (this._nextVariantId >= MAX_VARIANT_ID) ? 1 : this._nextVariantId + 1;
+
+            // Queue the event if buffer space remains.
+            if (this._variantEventCount < MAX_VARIANT_EVENTS) {
+              const base = this._variantEventCount * 3;
+              this._variantEventsBuf[base]     = childVariantId;
+              this._variantEventsBuf[base + 1] = parentVariantId;
+              this._variantEventsBuf[base + 2] = childGenome;
+              this._variantEventCount++;
+            }
+          }
+        }
+
         bkGeneration[ni] = parentGeneration < 65535 ? parentGeneration + 1 : 65535;
 
         // --- Derive and write per-cell phenotype ---------------------------

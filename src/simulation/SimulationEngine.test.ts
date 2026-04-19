@@ -321,6 +321,7 @@ describe('SimulationEngine — TickStats', () => {
       spreadRate:           1.0,
       energyDecayRate:      0.0,
       underpopulationLimit: 0,
+      juvenileThreshold:    0, // disable juvenile spread penalty for determinism
     });
 
     // 8 Moore neighbours, all should be born.
@@ -1459,6 +1460,10 @@ describe('SimulationEngine — Phase 9 genome inheritance', () => {
     grid.front.cellType[centre]   = CellType.Life;
     grid.front.energy[centre]     = 1.0;
     grid.front.variantId[centre]  = parentVariantId;
+    // Genome must match the engine's lineage reference (0x7777 = neutral default)
+    // so that the child's genome (same, no mutation) does not spuriously diverge
+    // from the reference and trigger speciation.
+    grid.front.genome[centre]     = 0x7777;
 
     const { front } = runOneTick(grid, engine, {
       spreadRate:        1.0,
