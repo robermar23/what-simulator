@@ -239,6 +239,82 @@ export interface SimulationConfig {
    * Range: [1, 50].  Default: 10.
    */
   censusInterval: number;
+
+  // --- Phase 12: Genome-aware obstacle parameters --------------------------
+
+  /**
+   * Multiplier applied to `pointMutationRate` for Life cells adjacent to a
+   * **Mutagen** cell.  A value of 3 means adjacent cells mutate 3× faster.
+   *
+   * Mutagen cells deplete over time (`mutagenDecayRate` per tick) and become
+   * Empty when their energy reaches 0.  Life spreading into a Mutagen cell
+   * consumes it and inherits the boosted mutation pressure.
+   *
+   * Range: [1, 10].  Default: 3.
+   */
+  mutagenBoost: number;
+
+  /**
+   * Energy lost per tick by a Mutagen cell (depletion rate).
+   * Lower = longer-lasting mutagen; 0 = permanent (not recommended).
+   *
+   * Range: [0, 0.01].  Default: 0.002.
+   */
+  mutagenDecayRate: number;
+
+  /**
+   * Energy damage dealt per tick to Life cells adjacent to a **RadioWaste** cell.
+   * RadioWaste is permanent and never depletes — it acts as a constant radiation
+   * source that also applies random genome bit flips to adjacent Life cells.
+   *
+   * Cells with high `toxinResist` phenotype take proportionally less damage.
+   * Range: [0, 0.05].  Default: 0.008.
+   */
+  radioWasteDamage: number;
+
+  /**
+   * Per-tick probability [0, 1] that an **Antibiotic** cell kills each adjacent
+   * Life cell.  The kill chance is reduced by the cell's `toxinResist` phenotype:
+   *   effective = antibioticStrength × (1 − toxinResist)
+   *
+   * Antibiotic cells deplete over time (`antibioticDecayRate` per tick) and
+   * become Empty when their energy reaches 0.
+   *
+   * Range: [0, 1].  Default: 0.12.
+   */
+  antibioticStrength: number;
+
+  /**
+   * Energy lost per tick by an Antibiotic cell (depletion rate).
+   * Each successful Life-kill also accelerates depletion by 0.05.
+   *
+   * Range: [0, 0.01].  Default: 0.001.
+   */
+  antibioticDecayRate: number;
+
+  /**
+   * Rate [0, 1] at which **Rewinder** cells nudge adjacent Life cell genomes
+   * toward the neutral baseline (0x7777) per tick.
+   *
+   * Each genome nibble is shifted one step toward tier 7 (neutral) for each
+   * tick the cell is adjacent to a Rewinder.  Higher = faster genome reset.
+   * Rewinder cells are permanent and never deplete.
+   *
+   * Range: [0, 1].  Default: 0.05 (5% nudge-probability per nibble per tick).
+   */
+  rewinderStrength: number;
+
+  /**
+   * Energy provided per tick to each Life cell adjacent to a **Colony** cell.
+   *
+   * Colony cells act as cooperative infrastructure — they boost adjacent Life
+   * energy and emit a chemical signal pulse that further aids nearby cells.
+   * Colony cells have their own energy that drains slowly over time; they
+   * survive indefinitely unless they run out of energy.
+   *
+   * Range: [0, 0.05].  Default: 0.012.
+   */
+  colonyBoost: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +372,15 @@ export function defaultConfig(): SimulationConfig {
 
     // Phase 11: census broadcast interval
     censusInterval:    10,
+
+    // Phase 12: genome-aware obstacle parameters
+    mutagenBoost:        3.0,   // mutation rate multiplier near Mutagen
+    mutagenDecayRate:    0.002, // energy lost per tick by Mutagen cells
+    radioWasteDamage:    0.008, // energy damage/tick from adjacent RadioWaste
+    antibioticStrength:  0.12,  // kill probability per tick for adjacent Life
+    antibioticDecayRate: 0.001, // energy lost per tick by Antibiotic cells
+    rewinderStrength:    0.05,  // genome-nibble nudge probability per tick
+    colonyBoost:         0.012, // energy provided to adjacent Life per tick
   };
 }
 
