@@ -36,6 +36,7 @@
  */
 
 import { CellType }                           from './simulation/GridState.js';
+import { variantRegistry }                    from './simulation/genetics/VariantRegistry.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -217,6 +218,19 @@ export class App {
     // -----------------------------------------------------------------------
 
     this._subscribeToEvents();
+
+    // -----------------------------------------------------------------------
+    // 7. Push the initial render mode to the RenderWorker.
+    //    `appState._renderMode` is set in the class body (not the setter),
+    //    so no `renderModeChange` event fires at construction time.  We must
+    //    explicitly tell the RenderWorker which mode is active so it does not
+    //    silently stay in its hardcoded 'default' mode.
+    // -----------------------------------------------------------------------
+
+    this._renderWorker.postMessage({
+      type: 'renderModeChange',
+      mode: appState.renderMode,
+    } as RenderWorkerInMsg);
   }
 
   // -------------------------------------------------------------------------
@@ -329,7 +343,9 @@ export class App {
 
       case 'ready':
         // Worker has finished its `init` handler and is waiting for 'play'.
-        // Nothing to do — the render loop already started independently.
+        // Bootstrap the variant registry so variant 0 (the base Life seed)
+        // is registered and livingCount starts at 1.
+        variantRegistry.bootstrap();
         break;
 
       case 'tick': {
@@ -351,6 +367,39 @@ export class App {
         }
         break;
       }
+
+      // --- Phase 11: variant lifecycle events --------------------------------
+
+      case 'variantCreated':
+        // A new lineage has diverged ≥3 bits from its parent genome.
+        // Register it in the main-thread VariantRegistry for history tracking
+        // and phylogenetic tree display.
+        variantRegistry.registerVariant(
+          msg.variantId,
+          msg.parentId,
+          msg.tick,
+          msg.genome,
+        );
+        break;
+
+      case 'variantExtinct':
+        // A lineage's population just dropped to zero.
+        // Update the registry so it is marked as extinct and no longer
+        // counted in `livingCount`.
+        variantRegistry.markExtinct(msg.variantId, msg.tick, msg.peakPop);
+        break;
+
+      case 'variantCensus':
+        // Population snapshot broadcast every `censusInterval` ticks.
+        // Update peak populations in the registry, then re-emit on the
+        // EventBus so the ControlPanel Evolution section can display a live
+        // variant count.
+        variantRegistry.onCensus(msg.data);
+        bus.emit('variantCensus', {
+          census:         msg.data,
+          livingVariants: variantRegistry.livingCount,
+        });
+        break;
     }
   }
 
@@ -412,6 +461,10 @@ export class App {
       // Pause first so the worker isn't mid-tick during reset.
       appState.running = false;
 
+      // Re-bootstrap the variant registry so variant 0 is re-registered and
+      // all extinct lineage history is cleared for the fresh grid.
+      variantRegistry.bootstrap();
+
       const resetMsg: SimWorkerInMsg = {
         type:          'reset',
         density:       appState.initialDensity,
@@ -450,6 +503,13 @@ export class App {
     // enable/disable grid-line drawing in its rAF loop.
     bus.on('gridLinesChange', ({ show }) => {
       const msg: RenderWorkerInMsg = { type: 'gridLinesChange', show };
+      this._renderWorker.postMessage(msg);
+    });
+
+    // Render mode change (Phase 10/11) — forward to the render worker so it
+    // switches the active visualisation mode on the next rAF frame.
+    bus.on('renderModeChange', ({ mode }) => {
+      const msg: RenderWorkerInMsg = { type: 'renderModeChange', mode };
       this._renderWorker.postMessage(msg);
     });
   }
