@@ -19,6 +19,7 @@
 import { type TickStats } from '../simulation/SimulationEngine.js';
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
 import { type RenderMode, type VariantCensus } from '../workers/workerBridge.js';
+import type { BackgroundType } from '../rendering/BackgroundRenderer.js';
 
 // ---------------------------------------------------------------------------
 // Event map
@@ -125,6 +126,16 @@ export interface EventMap {
     census: VariantCensus;
     /** Number of currently distinct living variant lineages. */
     livingVariants: number;
+  };
+
+  /**
+   * Fired when the user selects a new background environment (Phase 14).
+   * Consumed by BackgroundManager to switch the procedural background and
+   * by Renderer to enable/disable transparent empty cells.
+   */
+  backgroundChange: {
+    /** The newly selected background type. */
+    type: BackgroundType;
   };
 
 }

@@ -15,6 +15,7 @@ import {
   type SimulationConfig,
 } from '../simulation/config/SimulationConfig.js';
 import { type RendererType, type RenderMode } from '../workers/workerBridge.js';
+import type { BackgroundType } from '../rendering/BackgroundRenderer.js';
 
 // ---------------------------------------------------------------------------
 // Drawing tool enum
@@ -88,6 +89,24 @@ export class AppState {
       // sessionStorage may be unavailable in sandboxed contexts.
     }
     return 'canvas2d';
+  }
+
+  /**
+   * Reads the background type from `localStorage.backgroundType`.
+   * Written by the setter each time the user selects a new background.
+   * Falls back to `'none'` if absent or invalid.
+   *
+   * @returns The stored `BackgroundType`, or `'none'` as the safe default.
+   */
+  private static _readBackgroundType(): BackgroundType {
+    const VALID = new Set<string>(['none', 'petri', 'water', 'leaf', 'soil', 'space', 'deepsea']);
+    try {
+      const raw = localStorage.getItem('backgroundType');
+      if (raw !== null && VALID.has(raw)) return raw as BackgroundType;
+    } catch {
+      // localStorage may be unavailable in sandboxed contexts.
+    }
+    return 'none';
   }
 
   private static _readGridDim(key: string, defaultValue: number): number {
@@ -182,6 +201,15 @@ export class AppState {
    */
   private _rendererType: RendererType = AppState._readRendererType();
 
+  /**
+   * Currently selected environment background (Phase 14).
+   * `'none'` means no background — empty cells render opaque near-black.
+   * Any other value enables a procedural background and causes empty cells to
+   * render as transparent so the background canvas shows through.
+   * Persisted to `localStorage` so the choice survives page reloads.
+   */
+  private _backgroundType: BackgroundType = AppState._readBackgroundType();
+
   // -------------------------------------------------------------------------
   // Getters
   // -------------------------------------------------------------------------
@@ -246,6 +274,25 @@ export class AppState {
     if (this._renderMode === mode) return;
     this._renderMode = mode;
     bus.emit('renderModeChange', { mode });
+  }
+
+  /**
+   * Currently active environment background type (Phase 14).
+   * `'none'` means no background is rendered.
+   */
+  get backgroundType(): BackgroundType { return this._backgroundType; }
+
+  /**
+   * Changes the active background and persists the choice to `localStorage`.
+   * Fires `backgroundChange` so BackgroundManager and Renderer can react.
+   *
+   * @param type - The new background type.
+   */
+  set backgroundType(type: BackgroundType) {
+    if (this._backgroundType === type) return;
+    this._backgroundType = type;
+    try { localStorage.setItem('backgroundType', type); } catch { /* sandboxed */ }
+    bus.emit('backgroundChange', { type });
   }
 
   // -------------------------------------------------------------------------
