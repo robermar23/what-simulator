@@ -10,6 +10,7 @@
 
 import { appState } from '../state/AppState.js';
 import { bus } from '../state/EventBus.js';
+import { type RenderMode } from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Toolbar class
@@ -184,7 +185,32 @@ export class Toolbar {
       case '-':
         appState.cellSize = appState.cellSize - 1;
         break;
+      // Phase 15 — cycle render mode through all available visualisation modes.
+      case 't':
+      case 'T':
+        this._cycleRenderMode();
+        break;
+      // Phase 15 — toggle variant-ID / signal render modes (quick lineage view).
+      case 'v':
+      case 'V':
+        appState.renderMode =
+          appState.renderMode === 'variantId' ? 'signal' : 'variantId';
+        break;
     }
+  }
+
+  /**
+   * Cycles `appState.renderMode` through all valid visualisation modes in order.
+   *
+   * Order: variantId → lifecycle → genome → generation → fitness → signal → variantId…
+   */
+  private _cycleRenderMode(): void {
+    const modes: RenderMode[] = [
+      'variantId', 'lifecycle', 'genome', 'generation', 'fitness', 'signal',
+    ];
+    const current = appState.renderMode;
+    const idx     = modes.indexOf(current);
+    appState.renderMode = modes[(idx + 1) % modes.length];
   }
 
   /**

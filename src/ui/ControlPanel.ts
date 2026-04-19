@@ -27,6 +27,7 @@
 import { appState, type DrawingTool } from '../state/AppState.js';
 import { bus } from '../state/EventBus.js';
 import { type SimulationConfig, Presets } from '../simulation/config/SimulationConfig.js';
+import { BACKGROUND_LABELS, type BackgroundType } from '../rendering/BackgroundRenderer.js';
 
 // ---------------------------------------------------------------------------
 // Slider descriptor type
@@ -356,6 +357,51 @@ const LIFECYCLE_SLIDERS: readonly SliderSpec[] = [
 ];
 
 
+/**
+ * Phase 15 — Evolution Behaviour slider specs.
+ * Controls signal diffusion, quorum sensing, chemotaxis, and adaptive
+ * inheritance — the parameters governing emergent colony dynamics.
+ * `adaptiveMutationBias` (boolean) is rendered as a checkbox, not a slider.
+ */
+const EVOLUTION_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Signal Diffusion',
+    key:   'signalDiffusion',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Fraction of signal retained each tick [0–1]. ' +
+      '0.85 = signal propagates ~6 cells from a source before fading. ' +
+      'Lower = short-range; higher = wide-ranging gradients.',
+  },
+  {
+    label: 'Quorum Threshold',
+    key:   'quorumThreshold',
+    min: 1, max: 8, step: 1,
+    title:
+      'Same-variant neighbours needed to enter Colony mode [1–8]. ' +
+      'Below this: Pioneer mode (faster spread, higher cost). ' +
+      'At or above: Colony mode (conserved energy, slower spread).',
+  },
+  {
+    label: 'Chemotaxis Weight',
+    key:   'chemotaxisWeight',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Gradient-following bias on spread target selection [0–1]. ' +
+      '0 = uniform spread; 1 = maximum nutrient-signal following. ' +
+      'Effective only when signalDiffusion > 0 and nutrients are present.',
+  },
+  {
+    label: 'Adaptive Inheritance',
+    key:   'adaptiveInheritanceRate',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Probability [0–1] that a stress-acquired adaptation (e.g. toxin ' +
+      'survival → higher toxinResist tier) is passed to offspring. ' +
+      '0 = pure Darwinian; 1 = full Lamarckian inheritance.',
+  },
+];
+
 // ---------------------------------------------------------------------------
 // ControlPanel class
 // ---------------------------------------------------------------------------
@@ -383,6 +429,12 @@ export class ControlPanel {
    * can be updated when `appState.activeTool` changes.
    */
   private readonly _toolButtons = new Map<DrawingTool, HTMLButtonElement>();
+
+  /**
+   * Checkbox for the boolean `adaptiveMutationBias` config field.
+   * Kept as a field so `_syncSliders()` can update it when a preset loads.
+   */
+  private _adaptiveBiasCheckbox: HTMLInputElement | null = null;
 
   /**
    * Builds and inserts the control panel DOM into `container`.
@@ -414,6 +466,9 @@ export class ControlPanel {
 
     // --- Genome-Aware Obstacles section (Phase 12) ------------------------
     panel.append(this._buildCollapsibleSection('Genome Obstacles', GENOME_OBSTACLE_SLIDERS));
+
+    // --- Evolution Behaviour section (Phase 15) ---------------------------
+    panel.append(this._buildEvolutionBehaviorSection());
 
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
@@ -680,6 +735,62 @@ export class ControlPanel {
 
     row.append(label, input, readout);
     return row;
+  }
+
+  /**
+   * Builds the collapsible "Evolution Behaviour" section (Phase 15).
+   *
+   * Contains numeric sliders for signal diffusion, quorum threshold,
+   * chemotaxis weight, and adaptive inheritance rate, plus a checkbox
+   * for the boolean `adaptiveMutationBias` config field.
+   *
+   * @returns The built `<details>` element.
+   */
+  private _buildEvolutionBehaviorSection(): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'panel-section';
+
+    const summary = document.createElement('summary');
+    summary.className   = 'panel-heading';
+    summary.textContent = 'Evolution Behaviour';
+    details.append(summary);
+
+    // Numeric sliders via the generic builder (registers in _inputs/_readouts).
+    for (const spec of EVOLUTION_SLIDERS) {
+      details.append(this._buildSlider(spec));
+    }
+
+    // Checkbox for the boolean adaptiveMutationBias field.
+    const biasRow = document.createElement('div');
+    biasRow.className = 'toggle-row';
+    biasRow.title =
+      'When enabled, genome bit-flips that improve local fitness (e.g. higher ' +
+      'toxin resistance near Toxin cells) are 3× more likely. Accelerates ' +
+      'visible evolution on short timescales (Lamarckian-lite bias).';
+
+    const biasCheckbox = document.createElement('input');
+    biasCheckbox.type      = 'checkbox';
+    biasCheckbox.id        = 'adaptive-mutation-bias-checkbox';
+    biasCheckbox.className = 'toggle-checkbox';
+    biasCheckbox.checked   = appState.config.adaptiveMutationBias;
+    biasCheckbox.setAttribute('aria-label', 'Adaptive mutation bias');
+    biasCheckbox.addEventListener('change', () => {
+      appState.updateConfig(
+        'adaptiveMutationBias',
+        biasCheckbox.checked as SimulationConfig['adaptiveMutationBias'],
+      );
+    });
+    this._adaptiveBiasCheckbox = biasCheckbox;
+
+    const biasLabel = document.createElement('label');
+    biasLabel.htmlFor     = 'adaptive-mutation-bias-checkbox';
+    biasLabel.className   = 'toggle-label';
+    biasLabel.textContent = 'Adaptive Mutation Bias';
+
+    biasRow.append(biasCheckbox, biasLabel);
+    details.append(biasRow);
+
+    return details;
   }
 
   /**
@@ -1118,6 +1229,47 @@ export class ControlPanel {
     renderModeRow.append(renderModeLabel, renderModeSelect);
     section.append(renderModeRow);
 
+    // --- Environment background selector (Phase 14) ----------------------------
+    // Lets the user choose a procedural background rendered behind the sim canvas.
+    // Selecting anything other than 'none' enables transparent empty-cell rendering
+    // so the background shows through the grid.
+    const envRow = document.createElement('div');
+    envRow.className = 'toggle-row';
+    envRow.title     =
+      'Choose a semi-realistic environment background rendered behind the simulation. ' +
+      'Empty cells become transparent so the background shows through.';
+
+    const envLabel = document.createElement('label');
+    envLabel.htmlFor     = 'bg-select';
+    envLabel.textContent = 'Environment';
+    envLabel.className   = 'toggle-label';
+
+    const envSelect = document.createElement('select');
+    envSelect.id        = 'bg-select';
+    envSelect.className = 'preset-select';
+    envSelect.setAttribute('aria-label', 'Select environment background');
+
+    // Build one <option> per BackgroundType using the human-readable labels.
+    for (const [key, label] of Object.entries(BACKGROUND_LABELS)) {
+      const opt = document.createElement('option');
+      opt.value       = key;
+      opt.textContent = label;
+      if (key === appState.backgroundType) opt.selected = true;
+      envSelect.append(opt);
+    }
+
+    envSelect.addEventListener('change', () => {
+      appState.backgroundType = envSelect.value as BackgroundType;
+    });
+
+    // Keep dropdown in sync if backgroundType is changed programmatically.
+    bus.on('backgroundChange', ({ type }) => {
+      envSelect.value = type;
+    });
+
+    envRow.append(envLabel, envSelect);
+    section.append(envRow);
+
     return section;
   }
 
@@ -1141,6 +1293,12 @@ export class ControlPanel {
       { label: 'Plague',               fn: Presets.plague },
       { label: 'Classic Game of Life', fn: Presets.classicGameOfLife },
       { label: 'Ecosystem Balance',    fn: Presets.ecosystemBalance },
+      // Phase 15: Round 2 evolution presets
+      { label: 'Natural Selection',    fn: Presets.naturalSelection },
+      { label: 'Coevolution',          fn: Presets.coevolution },
+      { label: 'Mutagenic Chaos',      fn: Presets.mutagenicChaos },
+      { label: 'Stable Colony',        fn: Presets.stableColony },
+      { label: 'Radiation Wasteland',  fn: Presets.radiationWasteland },
     ];
 
     const select = document.createElement('select');
@@ -1186,21 +1344,26 @@ export class ControlPanel {
    * Called when a preset is loaded.
    */
   private _syncSliders(): void {
-    // Sync main Life sliders.
-    for (const spec of LIFE_SLIDERS) {
-      const val = Number(appState.config[spec.key]);
-      this._inputs.get(spec.key)!.value = String(val);
-      this._readouts.get(spec.key)!.textContent = this._format(val, spec.step);
-    }
-    // Sync Lifecycle Stage sliders (Phase 10).
-    for (const spec of LIFECYCLE_SLIDERS) {
-      const input   = this._inputs.get(spec.key);
-      const readout = this._readouts.get(spec.key);
-      if (input && readout) {
-        const val = Number(appState.config[spec.key]);
-        input.value         = String(val);
-        readout.textContent = this._format(val, spec.step);
+    // Helper to sync one slider group.
+    const syncGroup = (specs: readonly SliderSpec[]): void => {
+      for (const spec of specs) {
+        const input   = this._inputs.get(spec.key);
+        const readout = this._readouts.get(spec.key);
+        if (input && readout) {
+          const val = Number(appState.config[spec.key]);
+          input.value         = String(val);
+          readout.textContent = this._format(val, spec.step);
+        }
       }
+    };
+
+    syncGroup(LIFE_SLIDERS);
+    syncGroup(LIFECYCLE_SLIDERS);
+    syncGroup(EVOLUTION_SLIDERS);
+
+    // Sync the adaptiveMutationBias checkbox (boolean field, not in slider maps).
+    if (this._adaptiveBiasCheckbox) {
+      this._adaptiveBiasCheckbox.checked = appState.config.adaptiveMutationBias;
     }
   }
 }

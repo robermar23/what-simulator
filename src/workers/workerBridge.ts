@@ -271,6 +271,17 @@ export type RenderWorkerInMsg =
    * Takes effect on the next rendered frame.
    */
   | { type: 'renderModeChange'; mode: RenderMode }
+  /**
+   * Phase 14: notify the render worker that the background type has changed.
+   * When `backgroundActive` is true, empty cells are rendered as transparent
+   * so the procedural background canvas shows through.
+   */
+  | {
+      type: 'backgroundChange';
+      backgroundActive: boolean;
+      /** Environment tint `[r, g, b, alpha]` — blended into Life cell colours. */
+      tint: readonly [number, number, number, number];
+    }
   ;
 
 // ---------------------------------------------------------------------------
