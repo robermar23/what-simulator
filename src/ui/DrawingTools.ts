@@ -41,6 +41,12 @@ const TOOL_CELL_TYPE: Readonly<Record<DrawingTool, CellType>> = {
   barrier:     CellType.Barrier,
   fire:        CellType.Fire,
   ice:         CellType.Ice,
+  // Phase 12: genome-aware obstacles
+  mutagen:     CellType.Mutagen,
+  radioWaste:  CellType.RadioWaste,
+  antibiotic:  CellType.Antibiotic,
+  rewinder:    CellType.Rewinder,
+  colony:      CellType.Colony,
   erase:       CellType.Empty,
 };
 
