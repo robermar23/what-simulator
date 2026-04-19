@@ -241,5 +241,113 @@ export function lifecycleColorFor(flags: number, energy: number): number {
 export const LIFECYCLE_FLAG_JUVENILE  = 0b0000_1000; // CellFlags.JUVENILE
 export const LIFECYCLE_FLAG_SENESCENT = 0b0001_0000; // CellFlags.SENESCENT
 
+// ---------------------------------------------------------------------------
+// Variant palette (Phase 11)
+// ---------------------------------------------------------------------------
+
+/**
+ * Number of distinct variant IDs supported (0–255 = 256 total).
+ * Matches the `Uint8Array` storage for `variantId` per cell.
+ */
+export const VARIANT_COUNT = 256;
+
+/**
+ * Pre-computed 256-entry RGBA colour palette for variant lineages.
+ *
+ * Colours are distributed using the **golden-angle hue scheme**:
+ *   - Variant 0 (base Life seed): fixed vivid green (#00ff88) — matches the
+ *     existing Life cell colour so undiverged cells look identical to Phase 9.
+ *   - Variants 1–255: hue = `(variantId * GOLDEN_ANGLE_DEG) % 360`, with
+ *     fixed saturation = 85% and lightness = 55% (HSL).  The golden-angle
+ *     step (≈ 137.508°) maximises perceptual distance between adjacent IDs,
+ *     so variants that appear close in numeric ID look visually distinct.
+ *
+ * Each entry is packed as `(0xFF << 24) | (B << 16) | (G << 8) | R`
+ * (little-endian RGBA) — the same format used by {@link buildColorLUT}.
+ * Energy modulation is applied at render time, not baked into the palette.
+ */
+export const VARIANT_PALETTE: Uint32Array = ((): Uint32Array => {
+  /**
+   * Golden angle in degrees.  Each step in variantId space advances the hue
+   * by ~137.508°, distributing 256 hues evenly around the colour wheel
+   * without clustering.
+   *
+   * Derivation: 360 × (1 − 1/φ) where φ ≈ 1.618 (golden ratio).
+   */
+  const GOLDEN_ANGLE_DEG = 137.508;
+
+  const palette = new Uint32Array(VARIANT_COUNT);
+
+  for (let v = 0; v < VARIANT_COUNT; v++) {
+    let r: number, g: number, b: number;
+
+    if (v === 0) {
+      // Variant 0 = base seed Life: vivid green #00ff88
+      r = 0x00; g = 0xff; b = 0x88;
+    } else {
+      // Golden-angle HSL distribution: S=85%, L=55%
+      const hue = (v * GOLDEN_ANGLE_DEG) % 360;
+      const s   = 0.85;
+      const l   = 0.55;
+      ({ r, g, b } = hslToRgb(hue, s, l));
+    }
+
+    palette[v] = packRgba(r, g, b);
+  }
+
+  return palette;
+})();
+
+/**
+ * Converts an HSL colour to integer RGB components [0, 255].
+ *
+ * @param h - Hue in degrees [0, 360).
+ * @param s - Saturation in [0, 1].
+ * @param l - Lightness in [0, 1].
+ * @returns Object with `r`, `g`, `b` each in [0, 255].
+ */
+function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number): number => {
+    const k = (n + h / 30) % 12;
+    return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+  };
+  return {
+    r: Math.round(f(0)  * 255),
+    g: Math.round(f(8)  * 255),
+    b: Math.round(f(4)  * 255),
+  };
+}
+
+/**
+ * Returns the packed RGBA colour for a Life cell in `variantId` render mode.
+ *
+ * Looks up the cell's `variantId` in the pre-built {@link VARIANT_PALETTE} and
+ * applies energy modulation so low-energy cells appear darker.
+ *
+ * Non-Life cells should be rendered with the standard {@link COLOR_LUT} even
+ * in `variantId` mode (only Life cells carry meaningful variant lineage data).
+ *
+ * @param variantId - Cell's variant lineage ID (0–255).
+ * @param energy    - Cell energy in [0, 1]; modulates brightness.
+ * @returns Packed RGBA 32-bit colour.
+ */
+export function variantColorFor(variantId: number, energy: number): number {
+  const base = VARIANT_PALETTE[variantId & 0xFF];
+
+  // Extract RGB components from the packed little-endian RGBA word.
+  const baseR =  base        & 0xFF;
+  const baseG = (base >>  8) & 0xFF;
+  const baseB = (base >> 16) & 0xFF;
+
+  // Energy-modulate brightness: dim at low energy (min 15% brightness).
+  const brightness = 0.15 + 0.85 * Math.max(0, Math.min(1, energy));
+  return packRgba(
+    Math.round(baseR * brightness),
+    Math.round(baseG * brightness),
+    Math.round(baseB * brightness),
+  );
+}
+
 // Re-export CellType for callers that only import from this module.
 export { CellType };
