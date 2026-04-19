@@ -349,5 +349,112 @@ export function variantColorFor(variantId: number, energy: number): number {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Phase 12 render mode colour functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the packed RGBA colour for a Life cell in `genome` render mode.
+ *
+ * Maps the 16-bit genome value to a hue in HSL space, creating a visible
+ * colour gradient that shows genetic diversity across the colony.  The neutral
+ * genome (0x7777) maps to the green midpoint; values below neutral shift toward
+ * blue, values above shift toward yellow-red.
+ *
+ * @param genome - 16-bit packed genome (0x0000–0xFFFF).
+ * @param energy - Cell energy in [0, 1]; modulates brightness (min 15%).
+ * @returns Packed RGBA 32-bit colour.
+ */
+export function genomeColorFor(genome: number, energy: number): number {
+  // Normalise genome to [0, 1]; neutral 0x7777 = 0.4668 ≈ 0.47 → maps to ~168° (aqua/green).
+  const t          = genome / 0xFFFF;
+  // Map t → hue: 0→240° (blue), 0.47→120° (green/neutral), 1→0° (red).
+  const hue        = 240 - t * 240;
+  const brightness = 0.15 + 0.85 * Math.max(0, Math.min(1, energy));
+  const { r, g, b } = hslToRgb(hue, 0.8, 0.5 * brightness + 0.3);
+  return packRgba(r, g, b);
+}
+
+/**
+ * Returns the packed RGBA colour for a Life cell in `generation` render mode.
+ *
+ * Young lineages (low generation count) appear cool cyan-blue; old lineages
+ * (high generation count) appear warm amber-orange.  Brightness is modulated
+ * by energy so dying cells are darker.
+ *
+ * The colour saturates at `GEN_MAX` ticks; cells older than this share the
+ * same warm amber colour.
+ *
+ * @param generation - Cell generation count (0–65535).
+ * @param energy     - Cell energy in [0, 1]; modulates brightness.
+ * @returns Packed RGBA 32-bit colour.
+ */
+export function generationColorFor(generation: number, energy: number): number {
+  // Normalise generation to [0, 1]; saturate at 500 ticks for visible range.
+  const GEN_MAX = 500;
+  const t       = Math.min(1, generation / GEN_MAX);
+  // Lerp: young → cyan (#00ccff), old → amber (#ffaa22).
+  const brightness = 0.2 + 0.8 * Math.max(0, Math.min(1, energy));
+  return packRgba(
+    Math.round((0x00 + t * 0xFF) * brightness),
+    Math.round((0xCC + t * (0xAA - 0xCC)) * brightness),
+    Math.round((0xFF + t * (0x22 - 0xFF)) * brightness),
+  );
+}
+
+/**
+ * Returns the packed RGBA colour for a Life cell in `fitness` render mode.
+ *
+ * Fitness is approximated as `energy × (1 + spreadBonus)`.  High-fitness cells
+ * appear vivid gold; low-fitness cells appear dark olive-green.  This mode
+ * reveals which cells are currently the most reproductively capable.
+ *
+ * @param energy     - Cell energy in [0, 1].
+ * @param spreadBonus - Per-cell spread bonus from the genome [0, ~0.3].
+ * @returns Packed RGBA 32-bit colour.
+ */
+export function fitnessColorFor(energy: number, spreadBonus: number): number {
+  // Fitness in [0, ~1.3]; clamp to [0, 1] for colour mapping.
+  const fitness = Math.min(1, energy * (1 + spreadBonus));
+  // Low fitness → dark olive (#334400), high fitness → vivid gold (#ffdd00).
+  return packRgba(
+    Math.round(0x33 + fitness * (0xFF - 0x33)),
+    Math.round(0x44 + fitness * (0xDD - 0x44)),
+    Math.round(0x00),
+  );
+}
+
+/**
+ * Returns the packed RGBA colour for a cell in `signal` render mode.
+ *
+ * Signal strength [0, 1] is mapped to a cyan-blue glow overlaid on the cell's
+ * base colour.  Empty cells with zero signal render near-black; Colony cells
+ * and their neighbours glow bright cyan, visualising the chemical signal field.
+ *
+ * @param signal   - Signal strength in [0, 1].
+ * @param baseRgba - Standard packed RGBA colour for this cell (from COLOR_LUT).
+ * @returns Packed RGBA 32-bit colour blended with signal glow.
+ */
+export function signalColorFor(signal: number, baseRgba: number): number {
+  if (signal <= 0) return baseRgba;
+
+  const s   = Math.min(1, signal);
+  const bR  =  baseRgba        & 0xFF;
+  const bG  = (baseRgba >>  8) & 0xFF;
+  const bB  = (baseRgba >> 16) & 0xFF;
+
+  // Target glow colour: vivid cyan (#00eeff).
+  const gR = 0x00;
+  const gG = 0xEE;
+  const gB = 0xFF;
+
+  // Lerp: low signal → base colour; high signal → cyan glow.
+  return packRgba(
+    Math.round(bR + s * (gR - bR)),
+    Math.round(bG + s * (gG - bG)),
+    Math.round(bB + s * (gB - bB)),
+  );
+}
+
 // Re-export CellType for callers that only import from this module.
 export { CellType };

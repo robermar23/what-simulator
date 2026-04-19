@@ -796,3 +796,89 @@ details.panel-section[open] > summary.panel-heading::after {
   white-space: nowrap;
   border: 0;
 }
+
+/* ==========================================================================
+   Evolution Panel (Phase 13)
+   Three collapsible chart sections appended below the ControlPanel.
+   ========================================================================== */
+
+/**
+ * Outer container for all three evolution visualisation sections.
+ * Uses the same surface colour as the control panel for visual continuity.
+ */
+.evolution-panel {
+  background-color: var(--color-surface);
+  border-block-start: 1px solid var(--color-border);
+}
+
+/**
+ * One collapsible section (<details>) housing a single chart.
+ * Matches the .panel-section style used by ControlPanel for consistency.
+ */
+.evo-section {
+  border-block-end: 1px solid var(--color-border);
+}
+
+/**
+ * Section toggle button (<summary> inside <details>).
+ * Styled to match .panel-heading from ControlPanel.
+ */
+.evo-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none; /* hide default browser triangle marker */
+}
+
+.evo-section-heading::-webkit-details-marker {
+  display: none;
+}
+
+.evo-section-heading::after {
+  content: '▶';
+  font-size: 9px;
+  color: var(--color-text-muted);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.evo-section[open] > .evo-section-heading::after {
+  transform: rotate(90deg);
+}
+
+.evo-section-heading:hover {
+  color: var(--color-text);
+  background-color: var(--color-surface-2);
+}
+
+/**
+ * Inner body div that holds the chart canvas.
+ * Small padding so the canvas has breathing room within the section.
+ */
+.evo-section-body {
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/**
+ * Chart canvas elements rendered by PopulationChart, GenomeHeatmap, and
+ * PhylogeneticTree.  They are intrinsically sized (fixed pixel dimensions)
+ * but we allow them to shrink horizontally if the panel is narrower than
+ * expected (e.g. on very small screens).
+ */
+.evo-chart-canvas {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--border-radius);
+  background-color: #0a0a12;
+}

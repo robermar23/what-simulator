@@ -14,6 +14,7 @@
 import { App } from './app.js';
 import { Toolbar } from './ui/Toolbar.js';
 import { ControlPanel } from './ui/ControlPanel.js';
+import { EvolutionPanel } from './ui/EvolutionPanel.js';
 import { DrawingTools } from './ui/DrawingTools.js';
 import { OverlayRenderer } from './rendering/OverlayRenderer.js';
 import { Tooltip } from './ui/Tooltip.js';
@@ -56,6 +57,10 @@ function bootstrap(): void {
 
   const controlPanel = new ControlPanel();
   controlPanel.mount(panelContainer);
+
+  // Phase 13: Evolution visualisation panels — appended below ControlPanel.
+  const evolutionPanel = new EvolutionPanel();
+  evolutionPanel.mount(panelContainer);
 
   // --- Start the application ------------------------------------------------
 
