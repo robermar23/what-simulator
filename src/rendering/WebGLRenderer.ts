@@ -74,7 +74,8 @@ void main() {
 `;
 
 /**
- * Fragment shader: maps (cellType, energy[, flags, variantId, renderMode]) → RGBA.
+ * Fragment shader: maps (cellType, energy[, flags, variantId, genome,
+ * generation, signalStrength, renderMode]) → RGBA.
  *
  * ## Render modes (u_renderMode)
  *
@@ -92,6 +93,19 @@ void main() {
  *       Each variant ID (0–255) maps to a unique hue from the VARIANT_PALETTE
  *       golden-angle hue distribution.  Energy modulates brightness (min 15%).
  *       Non-Life cells render as in default mode.
+ *
+ *   3 — **genome** (Phase 12): Life cells coloured by genome value.
+ *       Low genome (0x0000) → blue; neutral (0x7777) → green; high (0xFFFF) → red.
+ *       Reveals genetic diversity across the colony.
+ *
+ *   4 — **generation** (Phase 12): Life cells coloured by generation count.
+ *       Young lineages → cool cyan; old lineages → warm amber (saturates at 500).
+ *
+ *   5 — **fitness** (Phase 12): Life cells coloured by energy level as a proxy
+ *       for fitness.  Low energy → dark olive; high energy → vivid gold.
+ *
+ *   6 — **signal** (Phase 12): All cells overlaid with their signalStrength value.
+ *       Zero signal → base cell colour; full signal → vivid cyan (#00eeff).
  *
  * Colour values stay in sync with ColorMap.ts COLOR_ENTRIES.
  * Round 2 cell types 11–15 are included.
@@ -127,6 +141,24 @@ uniform usampler2D u_variantId;
  */
 uniform sampler2D  u_variantPalette;
 
+/**
+ * Integer (R16UI) texture holding the 16-bit genome for every cell (Phase 12).
+ * Used by the genome render mode to visualise genetic diversity.
+ */
+uniform usampler2D u_genome;
+
+/**
+ * Integer (R16UI) texture holding the generation count per cell (Phase 12).
+ * Used by the generation render mode to show lineage age.
+ */
+uniform usampler2D u_generation;
+
+/**
+ * Float (R32F) texture holding the signal strength per cell (Phase 12).
+ * Used by the signal render mode to show the chemical signal field.
+ */
+uniform sampler2D u_signalStrength;
+
 /** Pixels per cell (matches AppState.cellSize). */
 uniform float u_cellSize;
 
@@ -141,9 +173,13 @@ uniform bool u_showGridLines;
 
 /**
  * Active render mode:
- *   0 = default (cellType + energy)
- *   1 = lifecycle (Life cells coloured by JUVENILE / SENESCENT flags)
- *   2 = variantId (Life cells coloured by lineage palette)
+ *   0 = default    (cellType + energy)
+ *   1 = lifecycle  (Life cells coloured by JUVENILE / SENESCENT flags)
+ *   2 = variantId  (Life cells coloured by lineage palette)
+ *   3 = genome     (Life cells coloured by 16-bit genome value)
+ *   4 = generation (Life cells coloured by generation count)
+ *   5 = fitness    (Life cells coloured by energy as fitness proxy)
+ *   6 = signal     (all cells overlaid with signalStrength cyan glow)
  */
 uniform int u_renderMode;
 
@@ -288,14 +324,39 @@ void main() {
 
   } else if (u_renderMode == 2 && isLife) {
     // ---- VariantId render mode (Phase 11) — Life/LifeVariant only ----------
-    //
-    // Look up the pre-computed golden-angle palette colour for this variantId.
-    // The palette is a 256×1 RGBA texture; texel x coordinate = variantId/255.
-    // We use texelFetch with integer coordinates to get pixel-perfect results.
     vec3 paletteRGB = texelFetch(u_variantPalette, ivec2(int(vid), 0), 0).rgb;
-    // Energy-modulate brightness (minimum 15% so cells are never invisible).
     float brightness = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
     cellRGB = paletteRGB * brightness;
+
+  } else if (u_renderMode == 3 && isLife) {
+    // ---- Genome render mode (Phase 12) — Life/LifeVariant only -------------
+    // 16-bit genome normalised to [0,1]; blue at 0, green at neutral (~0.47), red at 1.
+    uint genomeVal = texelFetch(u_genome, cellCoord, 0).r;
+    float t        = float(genomeVal) / 65535.0;
+    // Hue 240→120→0 as t goes 0→0.47→1; simplified via component lerp.
+    float rC = clamp(t * 2.0 - 1.0, 0.0, 1.0);         // 0 until mid, then rises
+    float gC = 1.0 - abs(t - 0.5) * 2.0;               // peaks at midpoint
+    float bC = clamp(1.0 - t * 2.0, 0.0, 1.0);         // full at 0, fades to 0
+    float bright = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
+    cellRGB = vec3(rC, gC, bC) * bright;
+
+  } else if (u_renderMode == 4 && isLife) {
+    // ---- Generation render mode (Phase 12) — Life/LifeVariant only ---------
+    // Young (gen=0) → cyan (#00ccff); old (gen≥500) → amber (#ffaa22).
+    uint genVal = texelFetch(u_generation, cellCoord, 0).r;
+    float t     = clamp(float(genVal) / 500.0, 0.0, 1.0);
+    float bright = 0.2 + 0.8 * clamp(energy, 0.0, 1.0);
+    vec3 young  = vec3(0.0,  0.8,  1.0);   // cyan
+    vec3 old    = vec3(1.0,  0.667, 0.133); // amber
+    cellRGB = mix(young, old, t) * bright;
+
+  } else if (u_renderMode == 5 && isLife) {
+    // ---- Fitness render mode (Phase 12) — Life/LifeVariant only ------------
+    // Uses energy as a fitness proxy: low → dark olive, high → vivid gold.
+    float fit = clamp(energy, 0.0, 1.0);
+    vec3 lo   = vec3(0.2,  0.267, 0.0);   // dark olive
+    vec3 hi   = vec3(1.0,  0.867, 0.0);   // vivid gold
+    cellRGB = mix(lo, hi, fit);
 
   } else {
     // ---- Default render mode: cellType + energy → colour -------------------
@@ -308,6 +369,16 @@ void main() {
       brightness = 1.0;
     }
     cellRGB = base * brightness;
+  }
+
+  // ---- Signal overlay (Phase 12) — applied in signal render mode ------------
+  // Blends the cell's computed colour with vivid cyan (#00eeff) proportional
+  // to the cell's signalStrength.  This reveals Colony chemical signal fields.
+  if (u_renderMode == 6) {
+    float sig = texelFetch(u_signalStrength, cellCoord, 0).r;
+    sig = clamp(sig, 0.0, 1.0);
+    vec3 cyanGlow = vec3(0.0, 0.933, 1.0); // #00eeff
+    cellRGB = mix(cellRGB, cyanGlow, sig);
   }
 
   // ---- Grid-line overlay (Phase 6 feature, replicated in WebGL) -------------
@@ -403,6 +474,24 @@ export class WebGLRenderer {
    */
   private readonly _variantPaletteTex: WebGLTexture;
 
+  /**
+   * `R16UI` texture — one 16-bit uint per cell, holds the genome (Phase 12).
+   * Used by the genome render mode to map genetic value to colour.
+   */
+  private readonly _genomeTex: WebGLTexture;
+
+  /**
+   * `R16UI` texture — one 16-bit uint per cell, holds the generation count (Phase 12).
+   * Used by the generation render mode to show lineage age.
+   */
+  private readonly _generationTex: WebGLTexture;
+
+  /**
+   * `R32F` texture — one float per cell, holds the signal strength (Phase 12).
+   * Used by the signal render mode to show the chemical signal field.
+   */
+  private readonly _signalStrengthTex: WebGLTexture;
+
   // --- Uniform locations (cached once after compile) -------------------------
 
   private readonly _uCellType!: WebGLUniformLocation;
@@ -413,11 +502,17 @@ export class WebGLRenderer {
   private readonly _uVariantId!: WebGLUniformLocation;
   /** Uniform location for the variant palette texture (Phase 11). */
   private readonly _uVariantPalette!: WebGLUniformLocation;
+  /** Uniform location for the genome texture (Phase 12). */
+  private readonly _uGenome!: WebGLUniformLocation;
+  /** Uniform location for the generation texture (Phase 12). */
+  private readonly _uGeneration!: WebGLUniformLocation;
+  /** Uniform location for the signal strength texture (Phase 12). */
+  private readonly _uSignalStrength!: WebGLUniformLocation;
   private readonly _uCellSize!: WebGLUniformLocation;
   private readonly _uGridWidth!: WebGLUniformLocation;
   private readonly _uGridHeight!: WebGLUniformLocation;
   private readonly _uShowGridLines!: WebGLUniformLocation;
-  /** Uniform location for the render mode integer (Phase 10/11). */
+  /** Uniform location for the render mode integer (Phase 10/11/12). */
   private readonly _uRenderMode!: WebGLUniformLocation;
 
   // --- State -----------------------------------------------------------------
@@ -480,26 +575,33 @@ export class WebGLRenderer {
     this._program = this._createProgram(VERT_SRC, FRAG_SRC);
 
     // Cache all uniform locations once (avoids a string lookup per frame).
-    this._uCellType       = this._requireUniform('u_cellType');
-    this._uEnergy         = this._requireUniform('u_energy');
-    this._uFlags          = this._requireUniform('u_flags');
-    this._uVariantId      = this._requireUniform('u_variantId');
-    this._uVariantPalette = this._requireUniform('u_variantPalette');
-    this._uCellSize       = this._requireUniform('u_cellSize');
-    this._uGridWidth      = this._requireUniform('u_gridWidth');
-    this._uGridHeight     = this._requireUniform('u_gridHeight');
-    this._uShowGridLines  = this._requireUniform('u_showGridLines');
-    this._uRenderMode     = this._requireUniform('u_renderMode');
+    this._uCellType        = this._requireUniform('u_cellType');
+    this._uEnergy          = this._requireUniform('u_energy');
+    this._uFlags           = this._requireUniform('u_flags');
+    this._uVariantId       = this._requireUniform('u_variantId');
+    this._uVariantPalette  = this._requireUniform('u_variantPalette');
+    this._uGenome          = this._requireUniform('u_genome');
+    this._uGeneration      = this._requireUniform('u_generation');
+    this._uSignalStrength  = this._requireUniform('u_signalStrength');
+    this._uCellSize        = this._requireUniform('u_cellSize');
+    this._uGridWidth       = this._requireUniform('u_gridWidth');
+    this._uGridHeight      = this._requireUniform('u_gridHeight');
+    this._uShowGridLines   = this._requireUniform('u_showGridLines');
+    this._uRenderMode      = this._requireUniform('u_renderMode');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     this._vbo = this._createQuadBuffer();
     this._vao = this._createVAO(this._vbo);
 
     // --- Textures (allocated empty; resized on first render) -----------------
-    this._cellTypeTex  = this._createTexture();
-    this._energyTex    = this._createTexture();
-    this._flagsTex     = this._createTexture();
-    this._variantIdTex = this._createTexture();
+    this._cellTypeTex      = this._createTexture();
+    this._energyTex        = this._createTexture();
+    this._flagsTex         = this._createTexture();
+    this._variantIdTex     = this._createTexture();
+    // Phase 12 textures.
+    this._genomeTex        = this._createTexture();
+    this._generationTex    = this._createTexture();
+    this._signalStrengthTex = this._createTexture();
 
     // --- Variant palette texture (256×1, RGBA, static) ----------------------
     // Build the palette as a flat RGBA Uint8Array (4 bytes per variant).
@@ -569,13 +671,21 @@ export class WebGLRenderer {
 
   /**
    * Current render mode.
-   * - `'default'`   — cell type + energy colour mapping (Phase 1–9 behaviour).
-   * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags (Phase 10).
-   * - `'variantId'` — Life cells coloured by variant lineage palette (Phase 11).
+   * - `'default'`    — cell type + energy colour mapping (Phase 1–9 behaviour).
+   * - `'lifecycle'`  — Life cells coloured by JUVENILE/SENESCENT flags (Phase 10).
+   * - `'variantId'`  — Life cells coloured by variant lineage palette (Phase 11).
+   * - `'genome'`     — Life cells coloured by genome value (Phase 12).
+   * - `'generation'` — Life cells coloured by generation count (Phase 12).
+   * - `'fitness'`    — Life cells coloured by energy as fitness proxy (Phase 12).
+   * - `'signal'`     — All cells overlaid with signal strength glow (Phase 12).
    */
-  get renderMode(): 'default' | 'lifecycle' | 'variantId' {
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' {
     if (this._renderMode === 1) return 'lifecycle';
     if (this._renderMode === 2) return 'variantId';
+    if (this._renderMode === 3) return 'genome';
+    if (this._renderMode === 4) return 'generation';
+    if (this._renderMode === 5) return 'fitness';
+    if (this._renderMode === 6) return 'signal';
     return 'default';
   }
 
@@ -584,14 +694,14 @@ export class WebGLRenderer {
    *
    * @param mode - New render mode string.
    */
-  set renderMode(mode: 'default' | 'lifecycle' | 'variantId') {
-    if (mode === 'lifecycle') {
-      this._renderMode = 1;
-    } else if (mode === 'variantId') {
-      this._renderMode = 2;
-    } else {
-      this._renderMode = 0;
-    }
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal') {
+    if (mode === 'lifecycle')   { this._renderMode = 1; }
+    else if (mode === 'variantId')  { this._renderMode = 2; }
+    else if (mode === 'genome')     { this._renderMode = 3; }
+    else if (mode === 'generation') { this._renderMode = 4; }
+    else if (mode === 'fitness')    { this._renderMode = 5; }
+    else if (mode === 'signal')     { this._renderMode = 6; }
+    else                            { this._renderMode = 0; }
   }
 
   /**
@@ -656,8 +766,6 @@ export class WebGLRenderer {
     );
 
     // --- Upload variantId texture (R8UI, Phase 11) ----------------------------
-    // One byte per cell; the fragment shader indexes into u_variantPalette with
-    // this value to produce the lineage colour in variantId render mode.
     gl.bindTexture(gl.TEXTURE_2D, this._variantIdTex);
     gl.texSubImage2D(
       gl.TEXTURE_2D,
@@ -667,6 +775,42 @@ export class WebGLRenderer {
       gl.RED_INTEGER,
       gl.UNSIGNED_BYTE,
       buffers.variantId,
+    );
+
+    // --- Upload genome texture (R16UI, Phase 12) ------------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._genomeTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_SHORT,
+      buffers.genome,
+    );
+
+    // --- Upload generation texture (R16UI, Phase 12) --------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._generationTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_SHORT,
+      buffers.generation,
+    );
+
+    // --- Upload signalStrength texture (R32F, Phase 12) -----------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._signalStrengthTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED,
+      gl.FLOAT,
+      buffers.signalStrength,
     );
 
     // --- Draw -----------------------------------------------------------------
@@ -683,21 +827,35 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this._energyTex);
     gl.uniform1i(this._uEnergy, 1);
 
-    // Bind flags texture to texture unit 2 (Phase 10: lifecycle mode).
+    // Bind flags texture to texture unit 2 (Phase 10).
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this._flagsTex);
     gl.uniform1i(this._uFlags, 2);
 
-    // Bind variantId texture to texture unit 3 (Phase 11: variantId mode).
+    // Bind variantId texture to texture unit 3 (Phase 11).
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this._variantIdTex);
     gl.uniform1i(this._uVariantId, 3);
 
     // Bind variant palette texture to texture unit 4 (Phase 11).
-    // This is a static 256×1 RGBA texture uploaded once in the constructor.
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this._variantPaletteTex);
     gl.uniform1i(this._uVariantPalette, 4);
+
+    // Bind genome texture to texture unit 5 (Phase 12).
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this._genomeTex);
+    gl.uniform1i(this._uGenome, 5);
+
+    // Bind generation texture to texture unit 6 (Phase 12).
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this._generationTex);
+    gl.uniform1i(this._uGeneration, 6);
+
+    // Bind signalStrength texture to texture unit 7 (Phase 12).
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, this._signalStrengthTex);
+    gl.uniform1i(this._uSignalStrength, 7);
 
     // Per-frame uniforms.
     gl.uniform1f(this._uCellSize,      this._cellSize);
@@ -752,12 +910,16 @@ export class WebGLRenderer {
     // (Re-)allocate all per-cell textures at the new grid size.
     // texImage2D with null data allocates GPU memory without a data copy;
     // texSubImage2D fills each texture on the first real render call.
-    this._allocateTexture(this._cellTypeTex,  width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
-    this._allocateTexture(this._energyTex,    width, height, gl.R32F, gl.RED,         gl.FLOAT);
+    this._allocateTexture(this._cellTypeTex,       width, height, gl.R8UI,  gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._energyTex,         width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     // Phase 10: flags texture (R8UI) — holds lifecycle bitmask per cell.
-    this._allocateTexture(this._flagsTex,     width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._flagsTex,          width, height, gl.R8UI,  gl.RED_INTEGER, gl.UNSIGNED_BYTE);
     // Phase 11: variantId texture (R8UI) — holds lineage ID per cell.
-    this._allocateTexture(this._variantIdTex, width, height, gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    this._allocateTexture(this._variantIdTex,      width, height, gl.R8UI,  gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    // Phase 12: genome / generation (R16UI) and signalStrength (R32F).
+    this._allocateTexture(this._genomeTex,         width, height, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT);
+    this._allocateTexture(this._generationTex,     width, height, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT);
+    this._allocateTexture(this._signalStrengthTex, width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     // Note: _variantPaletteTex is 256×1 and never resizes — skip here.
   }
 
