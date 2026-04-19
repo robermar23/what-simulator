@@ -315,6 +315,65 @@ export interface SimulationConfig {
    * Range: [0, 0.05].  Default: 0.012.
    */
   colonyBoost: number;
+
+  // --- Phase 15: Evolution behaviour parameters ----------------------------
+
+  /**
+   * When `true`, applies Lamarckian-lite directed mutation bias: genome bit
+   * flips that improve local fitness (e.g. higher toxinResist when adjacent to
+   * Toxin) are 3× more likely than neutral flips.
+   *
+   * Off by default — turning it on makes evolution dramatically more visible
+   * on short timescales by biasing random variation toward environmental fit.
+   */
+  adaptiveMutationBias: boolean;
+
+  /**
+   * Weight [0, 1] of the nutrient signal gradient on spread target selection.
+   *
+   * Life cells with high `nutrientAbs` phenotype bias their spread toward
+   * higher-signal neighbours (nutrient-rich targets) when this is above 0.
+   * 0 = uniform spread; 1 = maximum gradient-following (chemotaxis).
+   *
+   * Range: [0, 1].  Default: 0.3.
+   */
+  chemotaxisWeight: number;
+
+  /**
+   * Retention factor [0, 1] applied to the `signalStrength` buffer each tick.
+   *
+   * 0.85 means 85% of signal remains after one tick — signal propagates
+   * roughly 1 / (1 - 0.85) = 6–7 cells from a colony or nutrient source.
+   * Lower values (e.g. 0.5) give very short-range signals; higher values
+   * allow gradients to span the whole canvas.
+   *
+   * Range: [0, 1].  Default: 0.85.
+   */
+  signalDiffusion: number;
+
+  /**
+   * Number of same-variant neighbours [1, 8] required for a Life cell to
+   * enter **Colony mode** (conserved energy, reduced spread, defended territory).
+   * Cells below this threshold are in **Pioneer mode** (aggressive expansion).
+   *
+   * Higher values require denser colonies before the mode switch; lower values
+   * make almost every cell a colonist, reducing frontier expansion speed.
+   *
+   * Range: [1, 8].  Default: 4.
+   */
+  quorumThreshold: number;
+
+  /**
+   * Probability [0, 1] that a stress-adaptation (toxin survival → toxin tier
+   * increment) is inherited by the child cell during reproduction.
+   *
+   * Implements simplified Lamarckian-lite inheritance: cells that survive
+   * hostile environments pass their acquired resistance to offspring.
+   * 0 = pure Darwinian selection; 1 = full Lamarckian inheritance.
+   *
+   * Range: [0, 1].  Default: 0.3.
+   */
+  adaptiveInheritanceRate: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +440,13 @@ export function defaultConfig(): SimulationConfig {
     antibioticDecayRate: 0.001, // energy lost per tick by Antibiotic cells
     rewinderStrength:    0.05,  // genome-nibble nudge probability per tick
     colonyBoost:         0.012, // energy provided to adjacent Life per tick
+
+    // Phase 15: evolution behaviour parameters
+    adaptiveMutationBias:    false, // Lamarckian-lite directed mutation off by default
+    chemotaxisWeight:        0.3,   // nutrient-gradient bias on spread target selection
+    signalDiffusion:         0.85,  // signal retention factor per tick (85% remains)
+    quorumThreshold:         4,     // same-variant neighbours needed for colony mode
+    adaptiveInheritanceRate: 0.3,   // probability stress-adaptation is inherited
   };
 }
 
@@ -473,6 +539,126 @@ export const Presets = {
       gravityStrength:   0.6,
       barrierLifetime:   300,
       fireBurnRate:      0.004,
+    };
+  },
+
+  // --- Phase 15: Round 2 evolution presets ---------------------------------
+
+  /**
+   * Natural Selection — high mutation, antibiotic-resistant strains emerge.
+   *
+   * Paint an Antibiotic band across the grid midline after loading, then watch
+   * the population on the far side evolve resistance over ~300 ticks.
+   * Adaptive mutation bias is enabled so fitness-improving mutations are
+   * preferentially retained.
+   */
+  naturalSelection(): SimulationConfig {
+    return {
+      ...defaultConfig(),
+      spreadRate:              0.40,
+      energyDecayRate:         0.003,
+      pointMutationRate:       0.008,
+      adaptiveMutationBias:    true,
+      juvenileThreshold:       25,
+      senescentThreshold:      350,
+      apoptosisBoost:          0.025,
+      chemotaxisWeight:        0.5,
+      signalDiffusion:         0.90,
+      quorumThreshold:         3,
+      adaptiveInheritanceRate: 0.4,
+      antibioticStrength:      0.18,
+      antibioticDecayRate:     0.0005, // slow depletion — pressure lasts longer
+    };
+  },
+
+  /**
+   * Coevolution — two competing variants locked in an evolutionary arms race.
+   *
+   * Starts with high competition and kin selection; distinct lineages form
+   * territorial boundaries within ~500 ticks.  Variants with higher spread
+   * tiers dominate open space; toxin-resistant strains win near toxin patches.
+   */
+  coevolution(): SimulationConfig {
+    return {
+      ...defaultConfig(),
+      spreadRate:              0.50,
+      energyDecayRate:         0.004,
+      pointMutationRate:       0.006,
+      competitionStrength:     0.5,
+      variantSpreadRate:       0.55,
+      variantEnergyDecayRate:  0.005,
+      senescentThreshold:      300,
+      apoptosisBoost:          0.03,
+      quorumThreshold:         2,   // colony mode kicks in early
+      signalDiffusion:         0.88,
+      censusInterval:          5,   // finer-grained chart updates
+    };
+  },
+
+  /**
+   * Mutagenic Chaos — maximum genome diversity, minimal selective pressure.
+   *
+   * The entire grid is bathed in Mutagen-equivalent mutation pressure.
+   * Genome entropy stays near maximum — no single lineage can consolidate.
+   * Useful for observing pure genetic drift without directional selection.
+   */
+  mutagenicChaos(): SimulationConfig {
+    return {
+      ...defaultConfig(),
+      spreadRate:              0.45,
+      energyDecayRate:         0.003,
+      pointMutationRate:       0.035, // very high: ~3.5% per reproduction
+      adaptiveMutationBias:    false, // pure random drift — no directed bias
+      mutagenBoost:            8.0,
+      mutagenDecayRate:        0.0005, // mutagen lasts longer
+      juvenileThreshold:       10,
+      senescentThreshold:      200,
+      censusInterval:          5,
+    };
+  },
+
+  /**
+   * Stable Colony — quorum dominates, low mutation, dense cooperative clusters.
+   *
+   * Life quickly saturates available space and locks into colony mode.
+   * Minimal mutation means the population is nearly homogenous — one or two
+   * dominant variants hold territory indefinitely.  Colony cells scattered on
+   * the grid provide permanent energy hubs that anchor territorial boundaries.
+   */
+  stableColony(): SimulationConfig {
+    return {
+      ...defaultConfig(),
+      spreadRate:              0.30,
+      energyDecayRate:         0.002,
+      pointMutationRate:       0.001, // very low — minimal divergence
+      quorumThreshold:         3,     // colony mode at just 3 neighbours
+      colonyBoost:             0.025, // strong cooperative energy bonus
+      signalDiffusion:         0.92,  // wide-ranging signal field
+      apoptosisBoost:          0.04,  // recycled nutrients sustain interior colonies
+      senescentThreshold:      600,   // long lifespan — stable, slow-cycling colonies
+    };
+  },
+
+  /**
+   * Radiation Wasteland — only highly resistant genomes survive long term.
+   *
+   * The entire grid is periodically blasted by RadioWaste-equivalent damage.
+   * Populations with low toxin-resist tiers die out within 200 ticks; only
+   * strains that evolve high toxinResist phenotypes persist.  Strong selection
+   * pressure makes resistance evolution observable in real time.
+   */
+  radiationWasteland(): SimulationConfig {
+    return {
+      ...defaultConfig(),
+      spreadRate:              0.55,
+      energyDecayRate:         0.006,
+      pointMutationRate:       0.012, // elevated to ensure resistance can evolve
+      adaptiveMutationBias:    true,  // bias toward resistance mutations
+      adaptiveInheritanceRate: 0.5,   // strong inheritance of resistance
+      radioWasteDamage:        0.025, // high radiation damage per tick
+      mutagenBoost:            5.0,   // radiation also mutagenises survivors
+      senescentThreshold:      250,   // short lifespans — fast generational turnover
+      juvenileThreshold:       15,
     };
   },
 } as const;

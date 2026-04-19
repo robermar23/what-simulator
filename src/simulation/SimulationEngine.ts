@@ -98,12 +98,6 @@ import {
   hasAdjacentIce,
   hasAdjacentFire,
   calcGravityBias,
-  // Phase 12: genome-aware obstacle rule helpers
-  calcMutagenMutationBoost,
-  calcRadioWasteDamage,
-  calcAntibioticKillChance,
-  hasAdjacentRewinder,
-  calcColonyEnergyBoost,
 } from './rules/obstacleRules.js';
 import {
   calcBarrierEnergy,
@@ -424,6 +418,8 @@ export class SimulationEngine {
       antibioticDecayRate,
       rewinderStrength,
       colonyBoost,
+      // Phase 15: evolution behaviour parameters
+      signalDiffusion,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -435,13 +431,14 @@ export class SimulationEngine {
     // Phase 12: Decay all signal strengths from the previous tick.
     // Colony cells overwrite their own and adjacent cells' signal each tick,
     // so decay must run first to clear stale non-colony signal residue.
-    // A decay factor of 0.5 gives signal a 2-tick half-life outside colony range.
+    // Retain `signalDiffusion` fraction of signal each tick (configurable).
+    // Default 0.85 → ~6-cell propagation range from a colony or nutrient source.
     // -----------------------------------------------------------------------
     const { signalStrength: ftSignal } = front;
     for (let i = 0; i < total; i++) {
       const s = ftSignal[i];
       if (s > 0) {
-        bkSignalStrength[i] = s * 0.5;
+        bkSignalStrength[i] = s * signalDiffusion;
       }
     }
 
