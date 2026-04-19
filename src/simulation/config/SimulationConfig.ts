@@ -225,6 +225,20 @@ export interface SimulationConfig {
    * Range: (0, 1].  Lower values = longer-burning fire.
    */
   fireBurnRate: number;
+
+  // --- Phase 11: Population genetics census --------------------------------
+
+  /**
+   * Number of simulation ticks between each population census broadcast.
+   *
+   * Every `censusInterval` ticks, the SimulationWorker scans all live cells,
+   * builds a {@link VariantCensus} snapshot (counts, mean genome, mean age,
+   * mean generation per variant), and posts it to the main thread.
+   *
+   * Lower values give finer-grained charts but add a small scan overhead.
+   * Range: [1, 50].  Default: 10.
+   */
+  censusInterval: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +261,7 @@ export function defaultConfig(): SimulationConfig {
     reproductionThreshold: 0.1,
     initialEnergy:        0.9,
     mutationRate:         0.0,   // legacy Life→LifeVariant mutation off by default
-    pointMutationRate:    0.002, // Round 2: per-bit genome mutation (0.2% per spread)
+    pointMutationRate:    0.005, // Round 2: per-bit genome mutation (0.5% per spread)
 
     // Phase 10: lifecycle stage thresholds
     juvenileThreshold:    30,    // ticks before a cell reaches maturity
@@ -279,6 +293,9 @@ export function defaultConfig(): SimulationConfig {
     gravityStrength:   0.5,
     drainRate:         0.01,
     fireBurnRate:      0.005,
+
+    // Phase 11: census broadcast interval
+    censusInterval:    10,
   };
 }
 
