@@ -214,12 +214,6 @@ const LIFE_SLIDERS: readonly SliderSpec[] = [
     title: 'Energy assigned to each newly born cell.',
   },
   {
-    label: 'Mutation Rate',
-    key:   'mutationRate',
-    min: 0, max: 0.1, step: 0.001,
-    title: 'Probability per tick that a Life cell mutates into Variant B (yellow).',
-  },
-  {
     label: 'Overpop. Limit',
     key:   'overpopulationLimit',
     min: 0, max: 8, step: 1,
@@ -278,42 +272,6 @@ const LIFECYCLE_SLIDERS: readonly SliderSpec[] = [
   },
 ];
 
-/**
- * Phase 3 — Life Variant B slider specs.
- * These control the independent parameters for mutated (LifeVariant) cells.
- */
-const VARIANT_SLIDERS: readonly SliderSpec[] = [
-  {
-    label: 'Spread Rate',
-    key:   'variantSpreadRate',
-    min: 0, max: 1, step: 0.01,
-    title: 'Spread probability for Variant B cells — can differ from Life A.',
-  },
-  {
-    label: 'Energy Decay',
-    key:   'variantEnergyDecayRate',
-    min: 0, max: 0.1, step: 0.001,
-    title: 'Metabolic cost per tick for Variant B.',
-  },
-  {
-    label: 'Repro. Threshold',
-    key:   'variantReproductionThreshold',
-    min: 0, max: 1, step: 0.01,
-    title: 'Minimum energy for Variant B to reproduce.',
-  },
-  {
-    label: 'Initial Energy',
-    key:   'variantInitialEnergy',
-    min: 0, max: 1, step: 0.01,
-    title: 'Starting energy for newly born Variant B cells.',
-  },
-  {
-    label: 'Competition',
-    key:   'competitionStrength',
-    min: 0, max: 1, step: 0.01,
-    title: 'Probability per tick that Variant B spreads into (kills) an adjacent Life A cell.',
-  },
-];
 
 // ---------------------------------------------------------------------------
 // ControlPanel class
@@ -344,17 +302,6 @@ export class ControlPanel {
   private readonly _toolButtons = new Map<DrawingTool, HTMLButtonElement>();
 
   /**
-   * The Life Variant B collapsible section element.
-   * Hidden until at least one variant cell exists.
-   */
-  private _variantSection: HTMLElement | null = null;
-
-  /**
-   * Badge element inside the variant section heading that shows variant count.
-   */
-  private _variantBadge: HTMLSpanElement | null = null;
-
-  /**
    * Builds and inserts the control panel DOM into `container`.
    *
    * @param container - The element to append the panel into.
@@ -382,24 +329,17 @@ export class ControlPanel {
     // --- Obstacle Parameters section (Phase 5) ----------------------------
     panel.append(this._buildCollapsibleSection('Obstacle Parameters', OBSTACLE_SLIDERS));
 
-    // --- Life Variant B section (Phase 3: collapsible, hidden initially) --
-    const variantSection = this._buildVariantSection();
-    this._variantSection = variantSection;
-    panel.append(variantSection);
-
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
+
+    // --- Evolution section (Phase 11: variant census display) --------------
+    panel.append(this._buildEvolutionSection());
 
     // --- Grid options (Phase 1: cell size only) ----------------------------
     panel.append(this._buildViewportSection());
 
     container.append(panel);
 
-    // Subscribe to fpsUpdate so the variant section can be shown/hidden as
-    // soon as variants appear.  Fires at ~4 Hz — cheap enough.
-    bus.on('fpsUpdate', ({ variantCells }) => {
-      this._updateVariantSectionVisibility(variantCells);
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -459,81 +399,6 @@ export class ControlPanel {
     section.append(row);
 
     return section;
-  }
-
-  /**
-   * Builds the Life Variant B collapsible section (Phase 3).
-   *
-   * Initially hidden (via the `hidden` attribute).  Shown when the
-   * {@link fpsUpdate} event reports `variantCells > 0`.  Uses a
-   * `<details>/<summary>` element so the user can collapse it even after
-   * it appears.
-   *
-   * The heading badge shows the live Variant B cell count.
-   *
-   * @returns The built section element (initially hidden).
-   */
-  private _buildVariantSection(): HTMLElement {
-    // Use a <details> element for native browser collapsing behaviour.
-    const details = document.createElement('details');
-    details.className = 'panel-section variant-section';
-    // Open by default when first revealed so the user notices it.
-    details.open = true;
-    // Hidden until variants are detected.
-    details.hidden = true;
-
-    // Summary acts as the clickable heading / toggle.
-    const summary = document.createElement('summary');
-    summary.className = 'panel-heading variant-heading';
-
-    const headingText = document.createElement('span');
-    headingText.textContent = 'Life Variant B';
-
-    // Badge showing the live variant count (e.g. "1 234").
-    const badge = document.createElement('span');
-    badge.className   = 'variant-badge';
-    badge.textContent = '0';
-    badge.setAttribute('aria-label', 'Variant B cell count');
-    this._variantBadge = badge;
-
-    summary.append(headingText, badge);
-    details.append(summary);
-
-    // Description blurb so first-time users understand what they are seeing.
-    const blurb = document.createElement('p');
-    blurb.className   = 'variant-blurb';
-    blurb.textContent =
-      'Mutated Life cells (yellow). Adjust their independent parameters ' +
-      'or use Competition to control how aggressively they displace Life A.';
-    details.append(blurb);
-
-    // Sliders for all Variant B parameters.
-    for (const spec of VARIANT_SLIDERS) {
-      details.append(this._buildSlider(spec));
-    }
-
-    return details;
-  }
-
-  /**
-   * Shows or hides the Life Variant B section and updates its badge count.
-   *
-   * Called each time an `fpsUpdate` event fires (~4 Hz).
-   *
-   * @param variantCells - Current number of LifeVariant cells.
-   */
-  private _updateVariantSectionVisibility(variantCells: number): void {
-    if (!this._variantSection) return;
-
-    if (variantCells > 0) {
-      // Reveal the section the first time variants appear.
-      this._variantSection.hidden = false;
-    }
-
-    // Always update the badge so the user can watch the colony grow / shrink.
-    if (this._variantBadge) {
-      this._variantBadge.textContent = variantCells.toLocaleString();
-    }
   }
 
   /**
@@ -778,6 +643,145 @@ export class ControlPanel {
   }
 
   /**
+   * Builds the Evolution section (Phase 11).
+   *
+   * Displays the count of currently living variant lineages sourced from the
+   * `variantCensus` EventBus event, which the SimulationWorker broadcasts
+   * every `censusInterval` ticks.  The count is updated in place so the DOM
+   * node is created once and only its text content changes.
+   *
+   * @returns The evolution section element.
+   */
+  private _buildEvolutionSection(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'panel-section';
+
+    const heading = document.createElement('h2');
+    heading.className   = 'panel-heading';
+    heading.textContent = 'Evolution';
+    section.append(heading);
+
+    // --- Living variant count display ----------------------------------------
+    const countRow = document.createElement('div');
+    countRow.className = 'stat-row';
+    countRow.title =
+      "Number of distinct variant lineages currently alive. " +
+      "A new lineage forms when a cell's genome diverges by " +
+      "≥3 bits from its parent at reproduction.";
+
+    const countLabel = document.createElement('span');
+    countLabel.className   = 'stat-label';
+    countLabel.textContent = 'Living Variants';
+
+    // Value readout — updated every census tick via EventBus subscription.
+    const countValue = document.createElement('span');
+    countValue.className   = 'stat-value';
+    countValue.textContent = '—';
+
+    countRow.append(countLabel, countValue);
+    section.append(countRow);
+
+    // --- Total observed variant count (living + extinct) ---------------------
+    const totalRow = document.createElement('div');
+    totalRow.className = 'stat-row';
+    totalRow.title     = 'Total variant lineages ever observed, including extinct ones.';
+
+    const totalLabel = document.createElement('span');
+    totalLabel.className   = 'stat-label';
+    totalLabel.textContent = 'Total Lineages';
+
+    const totalValue = document.createElement('span');
+    totalValue.className   = 'stat-value';
+    totalValue.textContent = '—';
+
+    totalRow.append(totalLabel, totalValue);
+    section.append(totalRow);
+
+    // Census interval slider — how often the worker broadcasts census data.
+    const censusRow = document.createElement('div');
+    censusRow.className = 'slider-row';
+    censusRow.title = 'How many ticks between each population census. ' +
+                      'Lower values update more frequently but cost slightly more CPU.';
+
+    const censusLabel = document.createElement('label');
+    censusLabel.htmlFor     = 'census-interval-slider';
+    censusLabel.className   = 'slider-label';
+    censusLabel.textContent = 'Census (ticks)';
+
+    const censusSlider = document.createElement('input');
+    censusSlider.type  = 'range';
+    censusSlider.id    = 'census-interval-slider';
+    censusSlider.min   = '1';
+    censusSlider.max   = '50';
+    censusSlider.step  = '1';
+    censusSlider.value = String(appState.config.censusInterval ?? 10);
+
+    const censusReadout = document.createElement('span');
+    censusReadout.className   = 'slider-value';
+    censusReadout.textContent = censusSlider.value;
+
+    censusSlider.addEventListener('input', () => {
+      const v = Number(censusSlider.value);
+      censusReadout.textContent = String(v);
+      appState.updateConfig('censusInterval', v);
+    });
+
+    censusRow.append(censusLabel, censusSlider, censusReadout);
+    section.append(censusRow);
+
+    // Competition strength slider — how aggressively LifeVariant invades Life.
+    const compRow = document.createElement('div');
+    compRow.className = 'slider-row';
+    compRow.title = 'Probability per tick that a variant cell spreads into (displaces) an adjacent plain Life cell.';
+
+    const compLabel = document.createElement('label');
+    compLabel.htmlFor     = 'competition-strength-slider';
+    compLabel.className   = 'slider-label';
+    compLabel.textContent = 'Competition';
+
+    const compSlider = document.createElement('input');
+    compSlider.type  = 'range';
+    compSlider.id    = 'competition-strength-slider';
+    compSlider.min   = '0';
+    compSlider.max   = '1';
+    compSlider.step  = '0.01';
+    compSlider.value = String(appState.config.competitionStrength);
+    this._inputs.set('competitionStrength', compSlider);
+
+    const compReadout = document.createElement('span');
+    compReadout.className   = 'slider-value';
+    compReadout.textContent = this._format(appState.config.competitionStrength, 0.01);
+    this._readouts.set('competitionStrength', compReadout);
+
+    compSlider.addEventListener('input', () => {
+      const v = Number(compSlider.value);
+      compReadout.textContent = this._format(v, 0.01);
+      appState.updateConfig('competitionStrength', v);
+    });
+
+    compRow.append(compLabel, compSlider, compReadout);
+    section.append(compRow);
+
+    // Subscribe to census updates — fired by App._onSimMessage every
+    // `censusInterval` ticks after receiving a `variantCensus` worker message.
+    bus.on('variantCensus', ({ census, livingVariants }) => {
+      // Count variants with non-zero populations in this snapshot.
+      let seenAlive = 0;
+      for (let i = 0; i < census.counts.length; i++) {
+        if (census.counts[i] > 0) seenAlive++;
+      }
+
+      countValue.textContent = String(livingVariants);
+      // Use seenAlive as a proxy for total: it covers all currently-living
+      // lineages.  The registry's totalCount (living + extinct) would require
+      // importing VariantRegistry here; the panel display is a sufficient summary.
+      totalValue.textContent = String(Math.max(seenAlive, livingVariants));
+    });
+
+    return section;
+  }
+
+  /**
    * Builds the viewport / cell-size section.
    *
    * Phase 6 additions:
@@ -972,39 +976,56 @@ export class ControlPanel {
     rendererRow.append(rendererCheckbox, rendererLabel, rendererBadge);
     section.append(rendererRow);
 
-    // --- Render mode toggle (Phase 10) ----------------------------------------
-    // Toggles the simulation canvas between default cell-type colouring and
-    // the lifecycle-stage overlay (juvenile = lime, mature = green, senescent =
-    // purple-pink).  Uses `appState.renderMode` which fires `renderModeChange`
-    // on the EventBus — forwarded by App to the RenderWorker.
+    // --- Render mode selector (Phase 10/11) ------------------------------------
+    // Dropdown to switch the active visualisation mode for the simulation canvas.
+    //   • Variant ID   — cells coloured by lineage palette (golden-angle hues)
+    //   • Lifecycle    — cells coloured by age stage (juvenile/mature/senescent)
+    //   • Cell Type    — default energy-modulated cell-type colour LUT
+    // Uses `appState.renderMode` which fires `renderModeChange` on the EventBus.
     const renderModeRow = document.createElement('div');
     renderModeRow.className = 'toggle-row';
-    renderModeRow.title =
-      'Lifecycle view colours cells by age stage: ' +
-      'lime = juvenile, green = mature, purple = senescent. ' +
-      'Default view colours by cell type and energy.';
-
-    const renderModeCheckbox = document.createElement('input');
-    renderModeCheckbox.type    = 'checkbox';
-    renderModeCheckbox.id      = 'lifecycle-view-toggle';
-    renderModeCheckbox.checked = appState.renderMode === 'lifecycle';
-    renderModeCheckbox.setAttribute('aria-label', 'Toggle lifecycle stage view');
 
     const renderModeLabel = document.createElement('label');
-    renderModeLabel.htmlFor     = 'lifecycle-view-toggle';
-    renderModeLabel.textContent = 'Lifecycle View';
+    renderModeLabel.htmlFor     = 'render-mode-select';
+    renderModeLabel.textContent = 'View Mode';
     renderModeLabel.className   = 'toggle-label';
 
-    renderModeCheckbox.addEventListener('change', () => {
-      appState.renderMode = renderModeCheckbox.checked ? 'lifecycle' : 'variantId';
+    const renderModeSelect = document.createElement('select');
+    renderModeSelect.id        = 'render-mode-select';
+    renderModeSelect.className = 'preset-select';
+    renderModeSelect.setAttribute('aria-label', 'Select visualisation mode');
+
+    // Build select options — map 'Cell Type' display option to no-special-mode.
+    const renderModeEntries: Array<{ mode: string; label: string }> = [
+      { mode: 'variantId', label: 'Variant ID' },
+      { mode: 'lifecycle', label: 'Lifecycle'  },
+      { mode: 'default',   label: 'Cell Type'  },
+    ];
+
+    for (const entry of renderModeEntries) {
+      const opt = document.createElement('option');
+      opt.value       = entry.mode;
+      opt.textContent = entry.label;
+      renderModeSelect.append(opt);
+    }
+
+    // Initialise to current state.
+    renderModeSelect.value = appState.renderMode ?? 'variantId';
+
+    renderModeSelect.addEventListener('change', () => {
+      // The select value matches the RenderMode union members directly.
+      // 'default' is not a RenderMode variant — treat it as 'variantId' reset.
+      const selected = renderModeSelect.value;
+      appState.renderMode = selected === 'default' ? 'variantId' : selected as typeof appState.renderMode;
     });
 
-    // Keep checkbox in sync if renderMode is changed from outside the panel.
+    // Keep dropdown in sync when renderMode changes from outside the panel
+    // (e.g. programmatic preset load).
     bus.on('renderModeChange', ({ mode }) => {
-      renderModeCheckbox.checked = mode === 'lifecycle';
+      renderModeSelect.value = mode;
     });
 
-    renderModeRow.append(renderModeCheckbox, renderModeLabel);
+    renderModeRow.append(renderModeLabel, renderModeSelect);
     section.append(renderModeRow);
 
     return section;
@@ -1089,16 +1110,6 @@ export class ControlPanel {
         const val = Number(appState.config[spec.key]);
         input.value         = String(val);
         readout.textContent = this._format(val, spec.step);
-      }
-    }
-    // Sync Variant B sliders.
-    for (const spec of VARIANT_SLIDERS) {
-      const input   = this._inputs.get(spec.key);
-      const readout = this._readouts.get(spec.key);
-      if (input && readout) {
-        const val = Number(appState.config[spec.key]);
-        input.value          = String(val);
-        readout.textContent  = this._format(val, spec.step);
       }
     }
   }
