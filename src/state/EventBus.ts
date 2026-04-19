@@ -18,7 +18,7 @@
 
 import { type TickStats } from '../simulation/SimulationEngine.js';
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
-import { type RenderMode } from '../workers/workerBridge.js';
+import { type RenderMode, type VariantCensus } from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Event map
@@ -113,6 +113,18 @@ export interface EventMap {
   renderModeChange: {
     /** The newly selected render mode. */
     mode: RenderMode;
+  };
+
+  /**
+   * Fired every `censusInterval` ticks when the SimulationWorker broadcasts
+   * a population snapshot (Phase 11).
+   * Consumed by the ControlPanel Evolution section to update variant counts.
+   */
+  variantCensus: {
+    /** The full population census snapshot. */
+    census: VariantCensus;
+    /** Number of currently distinct living variant lineages. */
+    livingVariants: number;
   };
 
 }

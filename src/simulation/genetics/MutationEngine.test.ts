@@ -20,6 +20,7 @@ import {
   computeChildGenome,
   countBitDifferences,
   applyPhenotypeFromGenome,
+  assignVariantId,
 } from './MutationEngine.js';
 import {
   packGenome,
@@ -198,5 +199,63 @@ describe('MutationEngine — applyPhenotypeFromGenome', () => {
     expect(nutrientAbs[0]).toBeLessThanOrEqual(1.0);
     expect(spreadBonus[0]).toBeCloseTo(0.0, 2); // tier 7 of 15 is near-zero bonus
     expect(heatResist[0]).toBeCloseTo(toxinResist[0] * 0.5, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assignVariantId (Phase 11)
+// ---------------------------------------------------------------------------
+
+describe('MutationEngine — assignVariantId', () => {
+  // NOTE: `parentGenome` here represents the *lineage reference genome*
+  // (the founding genome of the parent's variant lineage), not the
+  // immediate parent cell's genome.  The engine passes _variantRefGenomes[id].
+
+  it('returns parentId unchanged when Hamming distance < 3 (1 bit)', () => {
+    const refGenome   = 0x7777;
+    const childGenome = refGenome ^ 0x0001; // 1-bit difference
+    expect(countBitDifferences(refGenome, childGenome)).toBe(1);
+    expect(assignVariantId(5, refGenome, childGenome, 10)).toBe(5);
+  });
+
+  it('returns parentId unchanged when Hamming distance < 3 (2 bits)', () => {
+    const refGenome   = 0x7777;
+    const childGenome = refGenome ^ 0x0003; // 2-bit difference — still below threshold
+    expect(countBitDifferences(refGenome, childGenome)).toBe(2);
+    expect(assignVariantId(3, refGenome, childGenome, 20)).toBe(3);
+  });
+
+  it('returns parentId unchanged when genomes are identical (0-bit difference)', () => {
+    expect(assignVariantId(4, 0x1234, 0x1234, 50)).toBe(4);
+  });
+
+  it('returns nextVariantId when Hamming distance is exactly 3', () => {
+    const refGenome   = 0x7777;
+    const childGenome = refGenome ^ 0x0007; // 3-bit difference — at threshold
+    expect(countBitDifferences(refGenome, childGenome)).toBe(3);
+    expect(assignVariantId(3, refGenome, childGenome, 20)).toBe(20);
+  });
+
+  it('returns nextVariantId when Hamming distance > 3', () => {
+    const refGenome   = 0x0000;
+    const childGenome = 0x00FF; // 8-bit difference
+    expect(countBitDifferences(refGenome, childGenome)).toBe(8);
+    expect(assignVariantId(2, refGenome, childGenome, 7)).toBe(7);
+  });
+
+  it('returns nextVariantId when genomes are maximally different (16 bits)', () => {
+    expect(assignVariantId(0, 0x0000, 0xFFFF, 99)).toBe(99);
+  });
+
+  it('parentId 0 and nextVariantId 1 — creates first derived lineage', () => {
+    const refGenome   = 0x7777;
+    const childGenome = refGenome ^ 0x0007; // 3 bits differ — triggers speciation
+    expect(assignVariantId(0, refGenome, childGenome, 1)).toBe(1);
+  });
+
+  it('returns parentId 0 when child has only 1-bit drift from neutral reference', () => {
+    const refGenome   = 0x7777;
+    const childGenome = refGenome ^ 0x0001; // 1-bit mutation — well below threshold
+    expect(assignVariantId(0, refGenome, childGenome, 1)).toBe(0);
   });
 });

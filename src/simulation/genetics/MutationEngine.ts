@@ -32,7 +32,8 @@
  *
  * {@link countBitDifferences} returns the Hamming distance between two
  * genomes.  The caller uses this to decide whether to assign a new
- * `variantId` (threshold: ≥3 bits differ — see Phase 11 VariantRegistry).
+ * `variantId` (threshold: ≥2 bits differ from the lineage reference genome —
+ * see Phase 11 VariantRegistry).
  */
 
 import {
@@ -123,6 +124,59 @@ export function countBitDifferences(genomeA: number, genomeB: number): number {
     count++;
   }
   return count;
+}
+
+// ---------------------------------------------------------------------------
+// Variant identity assignment (Phase 11)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum number of distinct variant lineages (Uint8 range, 0 = base seed).
+ * IDs 1–255 are dynamically assigned as genomes diverge.
+ */
+export const MAX_VARIANT_ID = 255;
+
+/**
+ * Determines whether a child cell should start a new variant lineage.
+ *
+ * A new `variantId` is assigned when the Hamming distance between the
+ * lineage reference genome and the child's genome is ≥ 2 bits — meaning
+ * the child has diverged enough to represent a distinct evolutionary branch.
+ *
+ * The caller passes the **lineage reference genome** (the founding genome of
+ * the parent's variant lineage) as `parentGenome`, NOT the immediate parent
+ * cell's genome.  Since each spread can flip at most 1 bit, comparing against
+ * the immediate parent would never reach threshold; comparing against the
+ * lineage ancestor allows mutations to accumulate across generations.
+ *
+ * The caller is responsible for managing the `nextVariantId` counter and
+ * ensuring it stays in [1, {@link MAX_VARIANT_ID}].  When the counter reaches
+ * 255, the caller wraps it back to 1 (cycling over extinct lineages).
+ *
+ * Decision logic:
+ *   - `countBitDifferences(lineageRefGenome, childGenome) >= 3` → new lineage
+ *   - Otherwise → child inherits the parent's `variantId` unchanged.
+ *
+ * @param parentId      - `variantId` of the parent cell.
+ * @param parentGenome  - Lineage reference genome for `parentId` (the founding
+ *                        cell's genome — not the immediate parent's genome).
+ * @param childGenome   - 16-bit genome of the child cell (post-mutation).
+ * @param nextVariantId - The next available variant ID to assign (1–255).
+ * @returns The variant ID for the child cell:
+ *   - `nextVariantId` (a new lineage) if ≥3 bits diverged from the reference, or
+ *   - `parentId` (inherited) if fewer than 3 bits changed.
+ */
+export function assignVariantId(
+  parentId:      number,
+  parentGenome:  number,
+  childGenome:   number,
+  nextVariantId: number,
+): number {
+  // A divergence of ≥3 bits from the lineage reference signals a new branch.
+  if (countBitDifferences(parentGenome, childGenome) >= 3) {
+    return nextVariantId;
+  }
+  return parentId;
 }
 
 // ---------------------------------------------------------------------------
