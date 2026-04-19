@@ -62,6 +62,18 @@
  *   - Effective toxin resist = `front.toxinResist[i]` (per-cell).
  *   - Effective nutrient absorption = `front.nutrientAbs[i]` (per-cell).
  *
+ * ## Phase 12 additions (Genome-Aware Obstacles)
+ *   - **Mutagen**: Passable cell that boosts adjacent Life mutation rate by
+ *     `config.mutagenBoost` multiplier.  Depletes each tick and becomes Empty.
+ *   - **RadioWaste**: Impassable; permanent radiation source — damages adjacent
+ *     Life energy and applies random genome bit flips each tick.
+ *   - **Antibiotic**: Passable; per-tick kill chance for adjacent Life cells,
+ *     reduced by the cell's `toxinResist` phenotype.  Depletes over time.
+ *   - **Rewinder**: Impassable; nudges adjacent Life genome nibbles toward the
+ *     neutral baseline (0x7777) each tick, eroding genetic drift.
+ *   - **Colony**: Impassable; provides `colonyBoost` energy to adjacent Life
+ *     cells and emits a `signalStrength` pulse each tick for signal render mode.
+ *
  * ## Phase 10 additions (Lifecycle Stages and Senescence)
  *   - Life cells age through three stages tracked in the `flags` buffer:
  *       - **Juvenile** (`age < juvenileThreshold`): spread × 0.4, decay × 0.8,
@@ -86,6 +98,12 @@ import {
   hasAdjacentIce,
   hasAdjacentFire,
   calcGravityBias,
+  // Phase 12: genome-aware obstacle rule helpers
+  calcMutagenMutationBoost,
+  calcRadioWasteDamage,
+  calcAntibioticKillChance,
+  hasAdjacentRewinder,
+  calcColonyEnergyBoost,
 } from './rules/obstacleRules.js';
 import {
   calcBarrierEnergy,
@@ -398,12 +416,34 @@ export class SimulationEngine {
       juvenileThreshold,
       senescentThreshold,
       apoptosisBoost,
+      // Phase 12: genome-aware obstacle parameters
+      mutagenBoost,
+      mutagenDecayRate,
+      radioWasteDamage,
+      antibioticStrength,
+      antibioticDecayRate,
+      rewinderStrength,
+      colonyBoost,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
     const width    = this._width;
     const height   = this._height;
     const total    = this._total;
+
+    // -----------------------------------------------------------------------
+    // Phase 12: Decay all signal strengths from the previous tick.
+    // Colony cells overwrite their own and adjacent cells' signal each tick,
+    // so decay must run first to clear stale non-colony signal residue.
+    // A decay factor of 0.5 gives signal a 2-tick half-life outside colony range.
+    // -----------------------------------------------------------------------
+    const { signalStrength: ftSignal } = front;
+    for (let i = 0; i < total; i++) {
+      const s = ftSignal[i];
+      if (s > 0) {
+        bkSignalStrength[i] = s * 0.5;
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Phase 5: Pre-scan for GravityWell positions.
@@ -423,13 +463,20 @@ export class SimulationEngine {
     for (let i = 0; i < total; i++) {
       const type = ftType[i];
 
-      // ---- Static cell types — skip immediately ---------------------------
+      // ---- Static / impassable cell types — skip immediately ---------------
+      // These cells have no per-tick update of their own; their effects on
+      // Life cells are handled inside the Life branch below.
+      // Phase 12 additions: RadioWaste (permanent), Rewinder (permanent) are
+      // fully static.  Colony, Mutagen, Antibiotic have per-tick behaviour and
+      // fall through to their own dedicated branches further below.
       if (
         type === CellType.Empty      ||
         type === CellType.Wall       ||
         type === CellType.GravityWell||
         type === CellType.Drain      ||
-        type === CellType.Ice
+        type === CellType.Ice        ||
+        type === CellType.RadioWaste ||
+        type === CellType.Rewinder
       ) {
         continue;
       }
@@ -489,6 +536,63 @@ export class SimulationEngine {
         } else {
           bkEnergy[i] = newEn;
         }
+        continue;
+      }
+
+      // ------------------------------------------------------------------
+      // Phase 12: Mutagen cells — deplete over time (like Nutrient)
+      // ------------------------------------------------------------------
+      if (type === CellType.Mutagen) {
+        if (bkType[i] !== CellType.Mutagen) continue;
+
+        const newEn = ftEnergy[i] - mutagenDecayRate;
+        if (newEn <= 0) {
+          bkType[i]   = CellType.Empty;
+          bkEnergy[i] = 0;
+        } else {
+          bkEnergy[i] = newEn;
+        }
+        continue;
+      }
+
+      // ------------------------------------------------------------------
+      // Phase 12: Antibiotic cells — deplete over time
+      // ------------------------------------------------------------------
+      if (type === CellType.Antibiotic) {
+        if (bkType[i] !== CellType.Antibiotic) continue;
+
+        const newEn = ftEnergy[i] - antibioticDecayRate;
+        if (newEn <= 0) {
+          bkType[i]   = CellType.Empty;
+          bkEnergy[i] = 0;
+        } else {
+          bkEnergy[i] = newEn;
+        }
+        continue;
+      }
+
+      // ------------------------------------------------------------------
+      // Phase 12: Colony cells — emit signal to adjacent Life cells;
+      // Colony is permanent (no energy decay of the colony structure itself)
+      // ------------------------------------------------------------------
+      if (type === CellType.Colony) {
+        if (bkType[i] !== CellType.Colony) continue;
+
+        // Emit signal strength to adjacent cells — the signal render mode
+        // reads bkSignalStrength to visualise chemical gradients.
+        const nLen = this._fillNeighbors(i, width, height, useMoore);
+        for (let k = 0; k < nLen; k++) {
+          const ni = this._neighborBuf[k];
+          // Signal radiates outward; cap at 1.0 so multiple colonies don't
+          // overflow the Float32 buffer.
+          if (bkSignalStrength[ni] < 0.8) {
+            bkSignalStrength[ni] = 0.8;
+          }
+        }
+        // Decay existing signal toward 0 each tick (Colony re-emits each tick
+        // so its direct neighbours stay at 0.8; further cells from previous
+        // tick decay naturally).
+        bkSignalStrength[i] = 1.0; // Colony cell itself always at max signal.
         continue;
       }
 
@@ -553,10 +657,15 @@ export class SimulationEngine {
 
         const nLen = this._fillNeighbors(i, width, height, useMoore);
 
-        // Single-pass neighbour scan.
-        let liveNeighbours   = 0;
-        let adjacentToxin    = false;
-        let adjacentNutrient = false;
+        // Single-pass neighbour scan — detect all relevant adjacent types.
+        let liveNeighbours    = 0;
+        let adjacentToxin     = false;
+        let adjacentNutrient  = false;
+        let adjacentMutagen   = false; // Phase 12
+        let adjacentRadWaste  = false; // Phase 12
+        let adjacentAntibiotic = false; // Phase 12
+        let adjacentRewinder  = false; // Phase 12
+        let adjacentColony    = false; // Phase 12
 
         for (let n = 0; n < nLen; n++) {
           const nType = ftType[this._neighborBuf[n]];
@@ -566,6 +675,16 @@ export class SimulationEngine {
             if (!adjacentToxin) adjacentToxin = true;
           } else if (nType === CellType.Nutrient) {
             if (!adjacentNutrient) adjacentNutrient = true;
+          } else if (nType === CellType.Mutagen) {
+            if (!adjacentMutagen) adjacentMutagen = true;
+          } else if (nType === CellType.RadioWaste) {
+            if (!adjacentRadWaste) adjacentRadWaste = true;
+          } else if (nType === CellType.Antibiotic) {
+            if (!adjacentAntibiotic) adjacentAntibiotic = true;
+          } else if (nType === CellType.Rewinder) {
+            if (!adjacentRewinder) adjacentRewinder = true;
+          } else if (nType === CellType.Colony) {
+            if (!adjacentColony) adjacentColony = true;
           }
         }
 
@@ -611,6 +730,17 @@ export class SimulationEngine {
           newEnergy -= drainRate;
         }
 
+        // --- Phase 12: genome-aware obstacle energy effects -------------------
+
+        if (adjacentRadWaste) {
+          // Radiation damage (partial resistance from toxinResist).
+          newEnergy -= radioWasteDamage * (1 - cellToxinResist * 0.5);
+        }
+        if (adjacentColony) {
+          // Colony energy subsidy — reward Life cells that cluster near Colony.
+          newEnergy += colonyBoost;
+        }
+
         if (newEnergy > 1.0) newEnergy = 1.0;
 
         // --- Phase 10: Apoptosis -------------------------------------------
@@ -643,6 +773,21 @@ export class SimulationEngine {
           bkFlags[i]  = 0;
           this._stats.deaths++;
           continue;
+        }
+
+        // --- Phase 12: Antibiotic kill check ---------------------------------
+        // Adjacent Antibiotic cells roll a per-tick kill chance, reduced by
+        // the cell's toxinResist phenotype (genetic selection pressure).
+        if (adjacentAntibiotic) {
+          const killChance = antibioticStrength * (1 - cellToxinResist);
+          if (killChance > 0 && Math.random() < killChance) {
+            bkType[i]   = CellType.Empty;
+            bkEnergy[i] = 0;
+            bkAge[i]    = 0;
+            bkFlags[i]  = 0;
+            this._stats.deaths++;
+            continue;
+          }
         }
 
         // --- Generic death checks -----------------------------------------
@@ -688,6 +833,34 @@ export class SimulationEngine {
         }
         bkFlags[i] = newFlags;
 
+        // --- Phase 12: Rewinder — nudge genome nibbles toward neutral --------
+        // Each nibble (4 bits) of the 16-bit genome is compared to tier 7
+        // (0x7 = neutral).  With probability `rewinderStrength`, one nibble
+        // that differs from 7 is shifted one step toward 7 in the back buffer.
+        if (adjacentRewinder && rewinderStrength > 0 && Math.random() < rewinderStrength) {
+          let g = bkGenome[i];
+          // Pick a random nibble (0–3) and nudge it one step toward 0x7.
+          const nibbleIdx = (Math.random() * 4) | 0;
+          const shift     = nibbleIdx * 4;
+          const nibble    = (g >> shift) & 0xF;
+          if (nibble !== 7) {
+            const step       = nibble < 7 ? 1 : -1;
+            const newNibble  = nibble + step;
+            const mask       = ~(0xF << shift);
+            g = (g & mask) | (newNibble << shift);
+            bkGenome[i] = g;
+            // Re-derive phenotype from the nudged genome so it takes effect.
+            applyPhenotypeFromGenome(
+              g,
+              bkToxinResist,
+              bkNutrientAbs,
+              bkHeatResist,
+              bkSpreadBonus,
+              i,
+            );
+          }
+        }
+
         // --- Legacy Phase 3 mutation (Life → LifeVariant) -----------------
         // Juvenile cells cannot mutate (lifecycle spec).
         if (!isJuvenile && !isVariant && mutationRate > 0 && Math.random() < mutationRate) {
@@ -713,11 +886,13 @@ export class SimulationEngine {
         //   Juvenile   → 0        (cannot mutate while establishing)
         //   Mature     → pointMutationRate (normal)
         //   Senescent  → pointMutationRate × 2 (last-ditch diversity burst)
+        // Phase 12: Mutagen adjacency multiplies the effective rate further.
+        const mutagenMult     = adjacentMutagen ? mutagenBoost : 1.0;
         const stageMutationRate = isJuvenile
           ? 0
-          : isSenescent
-          ? Math.min(1.0, pointMutationRate * 2)
-          : pointMutationRate;
+          : Math.min(1.0, (isSenescent
+            ? pointMutationRate * 2
+            : pointMutationRate) * mutagenMult);
 
         if (newEnergy >= cellReproThresh) {
           this._trySpread(
@@ -747,6 +922,7 @@ export class SimulationEngine {
             gravityStrength,
             gravityResponse,
             stageMutationRate,
+            antibioticStrength, // Phase 12
           );
         }
 
@@ -852,6 +1028,8 @@ export class SimulationEngine {
    *   this spread event.  The caller passes a stage-adjusted value:
    *   0 for juvenile cells, `pointMutationRate × 2` for senescent cells,
    *   and `config.pointMutationRate` for mature cells (Phase 10).
+   * @param antibioticStrength - Phase 12: antibiotic entry penalty for cells
+   *   spreading into Antibiotic cells (passed to {@link calcSpreadEnergy}).
    */
   private _trySpread(
     parentIdx:         number,
@@ -880,6 +1058,7 @@ export class SimulationEngine {
     gravityStrength:   number,
     gravityResponse:   number,
     pointMutationRate: number,
+    antibioticStrength: number,
   ): void {
     const isVariant = lifeType === CellType.LifeVariant;
     const width     = this._width;
@@ -980,6 +1159,7 @@ export class SimulationEngine {
           childToxinResist,
           nutrientBoost,
           childNutrientAbs,
+          antibioticStrength, // Phase 12: entry penalty when spreading into Antibiotic
         );
 
         // --- Write cell state to back buffer -------------------------------
