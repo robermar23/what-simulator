@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildTreeLayout, type TreeNode } from './PhylogeneticTree.js';
+import { buildTreeLayout } from './PhylogeneticTree.js';
 import { type VariantRecord } from '../simulation/genetics/VariantRegistry.js';
 
 // ---------------------------------------------------------------------------

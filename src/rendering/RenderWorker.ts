@@ -253,25 +253,31 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       // No invalidate needed — grid lines are drawn after each render.
       break;
 
-    // --- renderModeChange (Phase 10/11) -------------------------------------
+    // --- renderModeChange (Phase 10/11/12) -----------------------------------
     case 'renderModeChange': {
-      // Map the full RenderMode union to the subset supported by the renderers.
-      // - 'lifecycle'  → Phase 10 lifecycle stage colouring.
-      // - 'variantId'  → Phase 11 variant lineage palette colouring.
-      // - all others   → 'default' (cellType + energy LUT).
-      //   ('genome', 'generation', 'fitness', 'signal' added in Phase 14.)
-      let rMode: 'default' | 'lifecycle' | 'variantId';
-      if (msg.mode === 'lifecycle') {
-        rMode = 'lifecycle';
-      } else if (msg.mode === 'variantId') {
-        rMode = 'variantId';
-      } else {
-        rMode = 'default';
-      }
-      renderer.renderMode = rMode;
+      // All RenderMode values map directly to the renderer's renderMode setter.
+      // The Canvas 2D Renderer supports the full set; WebGLRenderer falls back
+      // to 'default' for modes it doesn't implement (genome/generation/fitness/signal).
+      const fullMode = msg.mode as
+        | 'default' | 'lifecycle' | 'variantId'
+        | 'genome'  | 'generation' | 'fitness' | 'signal';
+      renderer.renderMode = fullMode;
       renderer.invalidate();
       break;
     }
+
+    // --- backgroundChange (Phase 14) ----------------------------------------
+    case 'backgroundChange':
+      // Toggle transparent empty-cell rendering (Canvas 2D only — WebGL does
+      // not support per-pixel alpha on the OffscreenCanvas).
+      if (renderer instanceof Renderer) {
+        renderer.transparentEmpty = msg.backgroundActive;
+      }
+      // Apply environment tint to all Life cell colours so cells look like
+      // they "live in" the background even at full grid saturation (both
+      // Canvas 2D and WebGL renderers support this).
+      renderer.envTint = msg.tint;
+      break;
 
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {

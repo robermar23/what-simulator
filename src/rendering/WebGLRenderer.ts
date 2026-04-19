@@ -183,6 +183,13 @@ uniform bool u_showGridLines;
  */
 uniform int u_renderMode;
 
+/**
+ * Environment colour tint blended into every Life cell colour so cells
+ * visually belong to the active background environment.
+ * xyz = RGB in [0, 1]; w = blend alpha in [0, 1] (0 = no tint).
+ */
+uniform vec4 u_envTint;
+
 // --- Output -----------------------------------------------------------------
 out vec4 outColor;
 
@@ -198,41 +205,41 @@ out vec4 outColor;
  * @returns Linear RGB in [0, 1]^3.
  */
 vec3 baseColor(uint t) {
-  // ---- Round 1 types (0–10) ------------------------------------------------
+  // ---- Round 1 types (0–10) — must match ColorMap.ts COLOR_ENTRIES ----------
   // 0  Empty        #0a0a12
   if (t ==  0u) return vec3(0.0392, 0.0392, 0.0706);
   // 1  Life A       #00ff88
   if (t ==  1u) return vec3(0.0,    1.0,    0.5333);
-  // 2  Wall         #3a3a3a
-  if (t ==  2u) return vec3(0.2275, 0.2275, 0.2275);
-  // 3  Toxin        #cc00ff
-  if (t ==  3u) return vec3(0.8,    0.0,    1.0);
-  // 4  Nutrient     #00cc44
-  if (t ==  4u) return vec3(0.0,    0.8,    0.2667);
-  // 5  Drain        #0044cc
-  if (t ==  5u) return vec3(0.0,    0.2667, 0.8);
-  // 6  GravityWell  #ff8800
-  if (t ==  6u) return vec3(1.0,    0.5333, 0.0);
-  // 7  Barrier      #ffee00
-  if (t ==  7u) return vec3(1.0,    0.9333, 0.0);
-  // 8  Fire         #ff4400
-  if (t ==  8u) return vec3(1.0,    0.2667, 0.0);
-  // 9  Ice          #aaddff
-  if (t ==  9u) return vec3(0.6667, 0.8667, 1.0);
-  // 10 LifeVariant  #ffdd00
+  // 2  Wall         #252830 — cold dark slate
+  if (t ==  2u) return vec3(0.1451, 0.1569, 0.1882);
+  // 3  Toxin        #7700cc — deep violet
+  if (t ==  3u) return vec3(0.4667, 0.0,    0.8);
+  // 4  Nutrient     #1a9e50 — rich organic green
+  if (t ==  4u) return vec3(0.1020, 0.6196, 0.3137);
+  // 5  Drain        #0528aa — deep navy
+  if (t ==  5u) return vec3(0.0196, 0.1569, 0.6667);
+  // 6  GravityWell  #cc5500 — deep amber
+  if (t ==  6u) return vec3(0.8,    0.3333, 0.0);
+  // 7  Barrier      #ffdd22 — electric lemon
+  if (t ==  7u) return vec3(1.0,    0.8667, 0.1333);
+  // 8  Fire         #dd2200 — deep ember red
+  if (t ==  8u) return vec3(0.8667, 0.1333, 0.0);
+  // 9  Ice          #b8e8ff — glacial crystal blue
+  if (t ==  9u) return vec3(0.7216, 0.9098, 1.0);
+  // 10 LifeVariant  #ffdd00 — bright gold
   if (t == 10u) return vec3(1.0,    0.8667, 0.0);
 
   // ---- Round 2 types (11–15) -----------------------------------------------
-  // 11 Mutagen     #ff00cc — pulsing magenta
-  if (t == 11u) return vec3(1.0,    0.0,    0.8);
-  // 12 RadioWaste  #99ff00 — sickly green-yellow
-  if (t == 12u) return vec3(0.6,    1.0,    0.0);
-  // 13 Antibiotic  #f0f0f0 — white crystalline
-  if (t == 13u) return vec3(0.9412, 0.9412, 0.9412);
-  // 14 Rewinder    #4488ff — blue-silver
-  if (t == 14u) return vec3(0.2667, 0.5333, 1.0);
-  // 15 Colony      #ffaa22 — warm amber
-  if (t == 15u) return vec3(1.0,    0.6667, 0.1333);
+  // 11 Mutagen     #cc0077 — deep magenta
+  if (t == 11u) return vec3(0.8,    0.0,    0.4667);
+  // 12 RadioWaste  #77bb00 — muted bilious yellow-green
+  if (t == 12u) return vec3(0.4667, 0.7333, 0.0);
+  // 13 Antibiotic  #c8e0ff — icy blue-white crystal
+  if (t == 13u) return vec3(0.7843, 0.8784, 1.0);
+  // 14 Rewinder    #1144dd — deep electric blue
+  if (t == 14u) return vec3(0.0667, 0.2667, 0.8667);
+  // 15 Colony      #cc8811 — deep honeycomb amber
+  if (t == 15u) return vec3(0.8,    0.5333, 0.0667);
 
   return vec3(0.0); // unknown type — invisible black
 }
@@ -246,11 +253,11 @@ vec3 baseColor(uint t) {
  */
 float minBrightness(uint t) {
   if (t ==  1u) return 0.15;   // Life A
-  if (t ==  7u) return 0.0;    // Barrier (fades to invisible)
-  if (t ==  8u) return 0.1;    // Fire
+  if (t ==  7u) return 0.0;    // Barrier (fades to invisible as lifetime expires)
+  if (t ==  8u) return 0.1;    // Fire (dark ember glow just before burnout)
   if (t == 10u) return 0.15;   // Life Variant B
-  if (t == 11u) return 0.25;   // Mutagen (dims as it depletes)
-  if (t == 15u) return 0.4;    // Colony (dims when energy is low)
+  if (t == 11u) return 0.25;   // Mutagen (dims as potency depletes)
+  if (t == 15u) return 0.4;    // Colony (dims when starved of sacrificed energy)
   return 1.0;                  // all others: static brightness
 }
 
@@ -262,6 +269,71 @@ float minBrightness(uint t) {
  */
 bool isEnergyModulated(uint t) {
   return t == 1u || t == 7u || t == 8u || t == 10u || t == 11u || t == 15u;
+}
+
+// ---------------------------------------------------------------------------
+// Obstacle material texture helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic per-cell hash — maps a 2D integer cell coordinate to a
+ * pseudo-random float in [0, 1].  The value is stable every frame (no
+ * time-varying parameter) so the texture never flickers.
+ *
+ * Based on a Murmur-style multiplicative hash seeded with a constant so that
+ * the origin cell (0, 0) does not trivially hash to 0.
+ *
+ * @param c - Integer cell coordinate (clamped to grid bounds by the caller).
+ * @returns Pseudo-random float in [0, 1].
+ */
+float cellHash(ivec2 c) {
+  uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u + 2166136261u;
+  h ^= h >> 13u;
+  h *= 1540483477u;
+  h ^= h >> 15u;
+  return float(h & 0xFFFFu) / 65535.0;
+}
+
+/**
+ * Returns the normalised position of the current fragment within its cell,
+ * with (0, 0) at the top-left corner and (1, 1) at the bottom-right.
+ *
+ * At u_cellSize < 2.0 (1 px per cell) every fragment IS an entire cell, so
+ * (0.5, 0.5) is returned — the bevel and shape offsets then evaluate to ~0,
+ * which is the desired neutral (no sub-cell detail at 1 px/cell).
+ *
+ * @returns Normalised [0,1]^2 position within the cell.
+ */
+vec2 cellLocalUV() {
+  if (u_cellSize < 2.0) return vec2(0.5);
+  vec2 inCell = fract(gl_FragCoord.xy / u_cellSize);
+  // Flip Y so (0,0) = top-left: WebGL Y=0 is at the bottom of the screen
+  // but our grid's row 0 is at the top.
+  return vec2(inCell.x, 1.0 - inCell.y);
+}
+
+/**
+ * Per-type hash-noise magnitude for obstacle cells.
+ * Returns 0.0 for life cells and empty — they have their own visual logic.
+ *
+ * @param t - Cell type ordinal.
+ * @returns Noise scale in [0, 1]; multiply by the signed hash to get the offset.
+ */
+float obstacleNoiseMag(uint t) {
+  if (t ==  2u) return 0.13; // Wall       — rough stone (high variation)
+  if (t ==  3u) return 0.10; // Toxin      — viscous, slightly uneven
+  if (t ==  4u) return 0.10; // Nutrient   — organic texture
+  if (t ==  5u) return 0.10; // Drain      — turbulent
+  if (t ==  6u) return 0.10; // GravityWell — heat shimmer
+  if (t ==  7u) return 0.08; // Barrier    — energised field
+  if (t ==  8u) return 0.10; // Fire       — flickering embers
+  if (t ==  9u) return 0.05; // Ice        — clean crystal (low variation)
+  if (t == 11u) return 0.12; // Mutagen    — pulsing spots
+  if (t == 12u) return 0.18; // RadioWaste — highly irregular contamination
+  if (t == 13u) return 0.05; // Antibiotic — uniform crystalline facets
+  if (t == 14u) return 0.08; // Rewinder   — geometric shimmer
+  if (t == 15u) return 0.10; // Colony     — honeycomb variation
+  return 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +441,86 @@ void main() {
       brightness = 1.0;
     }
     cellRGB = base * brightness;
+
+    // ---- Obstacle material texture ------------------------------------------
+    //
+    // Applied to every non-Life, non-Empty cell to replace the flat crayon-block
+    // look with something that reads as a real material.  Three additive layers:
+    //
+    //   1. Hash noise  — per-cell brightness variation (breaks uniform colour)
+    //   2. Bevel       — top-left highlight / bottom-right shadow (3D depth)
+    //   3. Shape       — type-specific radial/edge pattern (wall mortar seams,
+    //                    ice specular, drain vortex, toxin pool glow, etc.)
+    //
+    // All effects are purely deterministic from cell position — no time uniform
+    // is needed and the texture never flickers between frames.
+
+    bool isObstacle = (cellType >= 2u && cellType != 10u);
+    if (isObstacle) {
+      // --- 1. Per-cell hash noise ---
+      float noise = (cellHash(cellCoord) * 2.0 - 1.0) * obstacleNoiseMag(cellType);
+
+      // --- 2. Inner-cell bevel (raised-surface illusion) ---
+      // uv = (0,0) at top-left, (1,1) at bottom-right of the cell.
+      // The linear diagonal (1 - x - y) is +1 at origin, -1 at far corner;
+      // scaled to ±0.12 so the effect is visible but not overpowering.
+      vec2  uv    = cellLocalUV();
+      float bevel = (1.0 - uv.x - uv.y) * 0.12;
+
+      // --- 3. Per-type sub-cell shaping ---
+      float shape = 0.0;
+
+      if (cellType == 2u) {
+        // Wall — dark mortar seam at all four cell edges, stone texture inside.
+        // smoothstep creates a thin gradient seam rather than a hard cut.
+        float edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+        shape = -(1.0 - smoothstep(0.0, 0.14, edge)) * 0.32;
+
+      } else if (cellType == 3u) {
+        // Toxin — viscous pool: bright centre, darkened rim (surface-tension look)
+        float r = length(uv - 0.5) * 2.0;
+        shape = -(r * r) * 0.20;
+
+      } else if (cellType == 5u) {
+        // Drain — vortex: dark centre (the pull), brighter turbulent rim
+        float r = length(uv - 0.5) * 2.0;
+        shape = (r - 0.5) * 0.20;
+
+      } else if (cellType == 6u) {
+        // GravityWell — radial heat glow: bright centre, falls off to edges
+        float r = length(uv - 0.5) * 2.0;
+        shape = (1.0 - r) * 0.22;
+
+      } else if (cellType == 9u) {
+        // Ice — glacial crystal: sharp specular in the top-left corner plus
+        // a stronger bevel to simulate faceted ice surfaces.
+        float spec = max(0.0, 1.0 - uv.x * 4.0 - uv.y * 4.0);
+        shape  = spec * 0.45;
+        bevel *= 1.6; // extra-strong bevel for crystalline facets
+
+      } else if (cellType == 12u) {
+        // RadioWaste — irregular hot-spots: secondary radial brightening
+        // on top of the already-high hash noise, giving a "glowing contamination" look
+        float r = length(uv - 0.5) * 2.0;
+        shape = (1.0 - r) * 0.14;
+
+      } else if (cellType == 13u) {
+        // Antibiotic — pure crystalline facets: very strong bevel, minimal noise
+        bevel *= 2.4;
+
+      } else if (cellType == 14u) {
+        // Rewinder — diagonal stripe shimmer (geometric/digital read)
+        float stripe = fract((uv.x + uv.y) * 3.0);
+        shape = (stripe - 0.5) * 0.10;
+
+      } else if (cellType == 15u) {
+        // Colony — warm honeycomb: glowing centre (colony hub feel)
+        float r = length(uv - 0.5) * 2.0;
+        shape = (1.0 - r) * 0.20;
+      }
+
+      cellRGB = clamp(cellRGB + vec3(noise + bevel + shape), 0.0, 1.0);
+    }
   }
 
   // ---- Signal overlay (Phase 12) — applied in signal render mode ------------
@@ -392,6 +544,12 @@ void main() {
     if (inCell.x < (1.0 / u_cellSize) || inCell.y < (1.0 / u_cellSize)) {
       cellRGB = cellRGB + vec3(gridAlpha);
     }
+  }
+
+  // Environment tint — blend cell colour toward the background palette colour.
+  // u_envTint.a = 0 means no tint; this branch is free when no background active.
+  if (u_envTint.a > 0.0) {
+    cellRGB = mix(cellRGB, u_envTint.rgb, u_envTint.a);
   }
 
   outColor = vec4(clamp(cellRGB, 0.0, 1.0), 1.0);
@@ -514,6 +672,10 @@ export class WebGLRenderer {
   private readonly _uShowGridLines!: WebGLUniformLocation;
   /** Uniform location for the render mode integer (Phase 10/11/12). */
   private readonly _uRenderMode!: WebGLUniformLocation;
+  private readonly _uEnvTint!:    WebGLUniformLocation;
+
+  /** Current environment tint `[r, g, b, alpha]` — r/g/b normalised to [0,1]. */
+  private _envTintVec: readonly [number, number, number, number] = [0, 0, 0, 0];
 
   // --- State -----------------------------------------------------------------
 
@@ -588,6 +750,7 @@ export class WebGLRenderer {
     this._uGridHeight      = this._requireUniform('u_gridHeight');
     this._uShowGridLines   = this._requireUniform('u_showGridLines');
     this._uRenderMode      = this._requireUniform('u_renderMode');
+    this._uEnvTint         = this._requireUniform('u_envTint');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     this._vbo = this._createQuadBuffer();
@@ -702,6 +865,16 @@ export class WebGLRenderer {
     else if (mode === 'fitness')    { this._renderMode = 5; }
     else if (mode === 'signal')     { this._renderMode = 6; }
     else                            { this._renderMode = 0; }
+  }
+
+  /**
+   * Environment colour tint blended into every Life cell colour.
+   *
+   * @param tint - `[r, g, b, alpha]` with r/g/b ∈ [0, 255] and alpha ∈ [0, 1].
+   *               Set alpha to 0 (via `[0,0,0,0]`) to disable tinting.
+   */
+  set envTint(tint: readonly [number, number, number, number]) {
+    this._envTintVec = tint;
   }
 
   /**
@@ -863,6 +1036,10 @@ export class WebGLRenderer {
     gl.uniform1i(this._uGridHeight,    height);
     gl.uniform1i(this._uShowGridLines, this._showGridLines ? 1 : 0);
     gl.uniform1i(this._uRenderMode,    this._renderMode);
+
+    // Upload environment tint — r/g/b normalised to [0,1] for the shader.
+    const [tr, tg, tb, ta] = this._envTintVec;
+    gl.uniform4f(this._uEnvTint, tr / 255, tg / 255, tb / 255, ta);
 
     gl.bindVertexArray(this._vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

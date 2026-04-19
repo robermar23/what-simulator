@@ -66,41 +66,39 @@ interface ColorEntry {
  */
 const COLOR_ENTRIES: readonly ColorEntry[] = [
   // 0 — Empty — near-black void
-  { hex: '#0a0a12', minBrightness: 1, energyModulated: false },
+  { hex: '#0a0a12', minBrightness: 1,    energyModulated: false },
   // 1 — Life (A) — bright green, dims with low energy
-  { hex: '#00ff88', minBrightness: 0.15, energyModulated: true },
-  // 2 — Wall — mid-dark grey, static
-  { hex: '#3a3a3a', minBrightness: 1, energyModulated: false },
-  // 3 — Toxin — vivid purple
-  { hex: '#cc00ff', minBrightness: 1, energyModulated: false },
-  // 4 — Nutrient — saturated green (distinct from Life)
-  { hex: '#00cc44', minBrightness: 1, energyModulated: false },
-  // 5 — Drain — deep blue
-  { hex: '#0044cc', minBrightness: 1, energyModulated: false },
-  // 6 — GravityWell — warm orange glow
-  { hex: '#ff8800', minBrightness: 1, energyModulated: false },
-  // 7 — Barrier — bright yellow fading to invisible as lifetime runs out.
-  //     minBrightness=0 so the colour fully dims when energy → 0.
-  { hex: '#ffee00', minBrightness: 0, energyModulated: true },
-  // 8 — Fire — red-orange ember; dims from bright flame to dark ash.
-  //     minBrightness=0.1 gives a visible dark-red glow just before burnout.
-  { hex: '#ff4400', minBrightness: 0.1, energyModulated: true },
-  // 9 — Ice — pale blue-white, static
-  { hex: '#aaddff', minBrightness: 1, energyModulated: false },
-  // 10 — LifeVariant (B) — bright yellow, dims with low energy
-  { hex: '#ffdd00', minBrightness: 0.15, energyModulated: true },
+  { hex: '#00ff88', minBrightness: 0.15, energyModulated: true  },
+  // 2 — Wall — cold dark slate (deeper than the old mid-grey; hash noise adds stone texture)
+  { hex: '#252830', minBrightness: 1,    energyModulated: false },
+  // 3 — Toxin — deep violet (less neon than #cc00ff; looks viscous rather than cartoon)
+  { hex: '#7700cc', minBrightness: 1,    energyModulated: false },
+  // 4 — Nutrient — rich organic green (darker/warmer than pure #00cc44)
+  { hex: '#1a9e50', minBrightness: 1,    energyModulated: false },
+  // 5 — Drain — deep navy (suggests a pull-current vortex rather than a flat blue)
+  { hex: '#0528aa', minBrightness: 1,    energyModulated: false },
+  // 6 — GravityWell — deep amber (less cartoon, more like a heat lens)
+  { hex: '#cc5500', minBrightness: 1,    energyModulated: false },
+  // 7 — Barrier — electric lemon; fades to invisible as lifetime runs out
+  { hex: '#ffdd22', minBrightness: 0,    energyModulated: true  },
+  // 8 — Fire — deep ember red; dims from bright flame to dark ash
+  { hex: '#dd2200', minBrightness: 0.1,  energyModulated: true  },
+  // 9 — Ice — glacial crystal blue (brighter/cooler than the old pale #aaddff)
+  { hex: '#b8e8ff', minBrightness: 1,    energyModulated: false },
+  // 10 — LifeVariant (B) — bright gold, dims with low energy
+  { hex: '#ffdd00', minBrightness: 0.15, energyModulated: true  },
 
-  // --- Round 2 additions (Phase 13) ---
-  // 11 — Mutagen — pulsing magenta; energy-modulated so depleting mutagen dims
-  { hex: '#ff00cc', minBrightness: 0.25, energyModulated: true },
-  // 12 — RadioWaste — sickly green-yellow; permanent, never decays
-  { hex: '#99ff00', minBrightness: 1,    energyModulated: false },
-  // 13 — Antibiotic — white crystalline; survival check each tick
-  { hex: '#f0f0f0', minBrightness: 1,    energyModulated: false },
-  // 14 — Rewinder — blue-silver; shifts genome nibbles toward neutral tier 7
-  { hex: '#4488ff', minBrightness: 1,    energyModulated: false },
-  // 15 — Colony — warm amber honeycomb; energy-modulated as it sustains itself
-  { hex: '#ffaa22', minBrightness: 0.4,  energyModulated: true },
+  // --- Round 2 additions ---
+  // 11 — Mutagen — deep magenta (less neon than #ff00cc; dims as it depletes)
+  { hex: '#cc0077', minBrightness: 0.25, energyModulated: true  },
+  // 12 — RadioWaste — muted bilious yellow-green (more ominous than bright #99ff00)
+  { hex: '#77bb00', minBrightness: 1,    energyModulated: false },
+  // 13 — Antibiotic — icy blue-white crystal (warmer than pure white; suggests crystalline drug)
+  { hex: '#c8e0ff', minBrightness: 1,    energyModulated: false },
+  // 14 — Rewinder — deep electric blue (more authoritative than #4488ff)
+  { hex: '#1144dd', minBrightness: 1,    energyModulated: false },
+  // 15 — Colony — deep honeycomb amber (richer than #ffaa22; dims when energy is low)
+  { hex: '#cc8811', minBrightness: 0.4,  energyModulated: true  },
 ];
 
 // ---------------------------------------------------------------------------

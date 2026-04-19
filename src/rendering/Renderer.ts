@@ -31,6 +31,35 @@ import {
   signalColorFor,
 } from './ColorMap.js';
 
+// Phase 14: fully transparent packed RGBA value (little-endian: A=0, B=0, G=0, R=0).
+// Used to render Empty cells as transparent when a background canvas is active,
+// allowing the procedural background to show through the simulation grid.
+const TRANSPARENT = 0x00000000;
+
+/**
+ * Per-type hash-noise magnitude for obstacle cells.
+ * Index = CellType ordinal.  0 = no noise (life cells and empty).
+ * Matches obstacleNoiseMag() in the WebGL fragment shader.
+ */
+const OBSTACLE_NOISE_MAG: readonly number[] = [
+  0,    // 0  Empty
+  0,    // 1  Life
+  0.13, // 2  Wall       — rough stone
+  0.10, // 3  Toxin
+  0.10, // 4  Nutrient
+  0.10, // 5  Drain
+  0.10, // 6  GravityWell
+  0.08, // 7  Barrier
+  0.10, // 8  Fire
+  0.05, // 9  Ice        — clean crystal
+  0,    // 10 LifeVariant
+  0.12, // 11 Mutagen
+  0.18, // 12 RadioWaste — highly irregular
+  0.05, // 13 Antibiotic — crystalline
+  0.08, // 14 Rewinder
+  0.10, // 15 Colony
+];
+
 // ---------------------------------------------------------------------------
 // Canvas type alias
 // ---------------------------------------------------------------------------
@@ -120,6 +149,13 @@ export class Renderer {
   private _showGridLines = false;
 
   /**
+   * When true, Empty cells are written as fully transparent (alpha=0) rather
+   * than opaque near-black.  Enabled when a procedural background is active
+   * (Phase 14) so the background canvas shows through the simulation grid.
+   */
+  private _transparentEmpty = false;
+
+  /**
    * Current render mode.
    * - `'default'`    — colour from the pre-built LUT (cellType + energy).
    * - `'lifecycle'`  — Life cells coloured by JUVENILE/SENESCENT flags.
@@ -130,6 +166,14 @@ export class Renderer {
    * - `'signal'`     — All cells overlaid with chemical signal strength (Phase 12).
    */
   private _renderMode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' = 'default';
+
+  /**
+   * Environment colour tint `[r, g, b, alpha]` blended into every non-empty
+   * Life cell colour so cells visually belong to the active background
+   * environment regardless of grid saturation.
+   * r/g/b ∈ [0, 255]; alpha ∈ [0, 1] (0 = no tint).
+   */
+  private _envTint: readonly [number, number, number, number] = [0, 0, 0, 0];
 
   /**
    * Pre-allocated ImageData written into each frame.
@@ -211,6 +255,28 @@ export class Renderer {
   }
 
   /**
+   * Whether Empty cells render as fully transparent (alpha=0).
+   * Set to `true` when a procedural background is active so the background
+   * canvas shows through.  Set to `false` when background is `'none'`.
+   * Phase 14.
+   */
+  get transparentEmpty(): boolean {
+    return this._transparentEmpty;
+  }
+
+  /**
+   * Enables or disables transparent Empty-cell rendering.
+   * Forces a full redraw on the next frame so stale opaque pixels are cleared.
+   *
+   * @param value - True to use transparent empty cells; false for opaque.
+   */
+  set transparentEmpty(value: boolean) {
+    if (this._transparentEmpty === value) return;
+    this._transparentEmpty = value;
+    this.invalidate(); // force full repaint — empty cell colour changed
+  }
+
+  /**
    * Current render mode.
    * - `'default'`    — standard colour LUT (cellType + energy).
    * - `'lifecycle'`  — Life cells coloured by JUVENILE / SENESCENT flags.
@@ -232,8 +298,21 @@ export class Renderer {
   set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal') {
     if (this._renderMode !== mode) {
       this._renderMode = mode;
-      this.invalidate(); // stale LUT colours must be discarded when mode changes
+      this.invalidate();
     }
+  }
+
+  /**
+   * Environment colour tint blended into Life cell colours at render time.
+   *
+   * `[r, g, b, alpha]` — r/g/b in [0, 255], alpha in [0, 1].
+   * Set to `[0, 0, 0, 0]` to disable tinting (default / no background).
+   *
+   * @param tint - The new tint tuple.
+   */
+  set envTint(tint: readonly [number, number, number, number]) {
+    this._envTint = tint;
+    this.invalidate();
   }
 
   /**
@@ -257,23 +336,29 @@ export class Renderer {
       this._resize(width, height);
     }
 
-    const lut         = COLOR_LUT;
-    const cellSize    = this._cellSize;
-    const pixelBuf    = this._pixelBuf;
-    const prev        = this._prevColors;
-    const mode        = this._renderMode;
-    const isLifecycle  = mode === 'lifecycle';
-    const isVariant    = mode === 'variantId';
-    const isGenome     = mode === 'genome';
-    const isGeneration = mode === 'generation';
-    const isFitness    = mode === 'fitness';
-    const isSignal     = mode === 'signal';
+    const lut            = COLOR_LUT;
+    const cellSize       = this._cellSize;
+    const pixelBuf       = this._pixelBuf;
+    const prev           = this._prevColors;
+    const mode           = this._renderMode;
+    const transpEmpty    = this._transparentEmpty;
+    const tintAlpha      = this._envTint[3]; // fast check: skip tint work when alpha=0
+    const isLifecycle    = mode === 'lifecycle';
+    const isVariant      = mode === 'variantId';
+    const isGenome       = mode === 'genome';
+    const isGeneration   = mode === 'generation';
+    const isFitness      = mode === 'fitness';
+    const isSignal       = mode === 'signal';
     const { cellType, energy, flags, variantId, genome, generation, spreadBonus, signalStrength } = buffers;
 
     const canvasWidth = this._canvas.width; // pixels
+    const gridWidth   = this._gridWidth;    // needed by 1px path for noise cx/cy
 
     if (cellSize === 1) {
       // Fast path: 1-pixel cells — every cell maps to one pixel.
+      // Running (cx, cy) counter avoids modulo/division inside the hot loop.
+      let ncx = 0;
+      let ncy = 0;
       for (let i = 0; i < this._totalCells; i++) {
         const ct = cellType[i];
         let packed: number;
@@ -298,18 +383,32 @@ export class Renderer {
           } else {
             packed = base;
           }
+        } else if (transpEmpty && ct === CellType.Empty) {
+          packed = TRANSPARENT;
         } else {
           packed = isSignal ? signalColorFor(signalStrength[i], base) : base;
+        }
+
+        // Per-cell hash noise for obstacle cells — breaks the flat uniform look.
+        const noiseMag = OBSTACLE_NOISE_MAG[ct] ?? 0;
+        if (noiseMag > 0) {
+          packed = Renderer._noisePacked(packed, Renderer._cellNoise(ncx, ncy) * noiseMag * 255);
+        }
+
+        if (tintAlpha > 0 && packed !== TRANSPARENT) {
+          packed = this._applyTint(packed);
         }
 
         if (packed !== prev[i]) {
           prev[i]     = packed;
           pixelBuf[i] = packed;
         }
+
+        // Advance running position — cheaper than modulo/division every iteration.
+        if (++ncx === gridWidth) { ncx = 0; ++ncy; }
       }
     } else {
       // General path: each cell maps to a `cellSize × cellSize` pixel square.
-      const gridWidth  = this._gridWidth;
       const gridHeight = this._gridHeight;
 
       for (let cy = 0; cy < gridHeight; cy++) {
@@ -337,8 +436,20 @@ export class Renderer {
             } else {
               packed = base;
             }
+          } else if (transpEmpty && ct === CellType.Empty) {
+            packed = TRANSPARENT;
           } else {
             packed = isSignal ? signalColorFor(signalStrength[ci], base) : base;
+          }
+
+          // Per-cell hash noise for obstacle cells.
+          const noiseMag = OBSTACLE_NOISE_MAG[ct] ?? 0;
+          if (noiseMag > 0) {
+            packed = Renderer._noisePacked(packed, Renderer._cellNoise(cx, cy) * noiseMag * 255);
+          }
+
+          if (tintAlpha > 0 && packed !== TRANSPARENT) {
+            packed = this._applyTint(packed);
           }
 
           // Skip unchanged cells — no pixel writes needed.
@@ -395,6 +506,59 @@ export class Renderer {
    * Uses a very low-opacity white so the grid hint is subtle on all backgrounds.
    * Each line is 1 physical pixel regardless of `cellSize`.
    */
+  /**
+   * Blends an environment tint colour into a packed RGBA cell colour.
+   *
+   * Packed format (little-endian): bits [0–7]=R, [8–15]=G, [16–23]=B, [24–31]=A.
+   * The alpha channel of the cell is preserved; only RGB is shifted toward the tint.
+   *
+   * @param packed - Original packed RGBA cell colour.
+   * @returns Tinted packed RGBA colour.
+   */
+  /**
+   * Murmur-inspired integer hash — deterministic per-cell brightness noise.
+   * Matches the GLSL cellHash() function in WebGLRenderer so both renderers
+   * produce the same per-cell texture pattern.
+   *
+   * @param cx - Cell column (0-based).
+   * @param cy - Cell row (0-based).
+   * @returns Signed noise in [-1, +1].
+   */
+  private static _cellNoise(cx: number, cy: number): number {
+    let h = (Math.imul(cx, 374761393) + Math.imul(cy, 668265263) + 2166136261) >>> 0;
+    h = Math.imul(h ^ (h >>> 13), 1540483477) >>> 0;
+    h ^= h >>> 15;
+    return ((h & 0xffff) / 32767.5) - 1.0; // [-1, +1]
+  }
+
+  /**
+   * Applies a brightness delta (in raw 0–255 units) to the RGB channels of a
+   * packed little-endian RGBA colour.  Alpha is preserved unchanged.
+   *
+   * @param packed - Source packed RGBA word (R in low byte).
+   * @param delta  - Integer brightness offset in [-255, +255].
+   * @returns Modified packed RGBA with channels clamped to [0, 255].
+   */
+  private static _noisePacked(packed: number, delta: number): number {
+    const d = (delta + 0.5) | 0;
+    const r = Math.min(255, Math.max(0, ( packed         & 0xff) + d));
+    const g = Math.min(255, Math.max(0, ((packed >>>  8) & 0xff) + d));
+    const b = Math.min(255, Math.max(0, ((packed >>> 16) & 0xff) + d));
+    return (packed & 0xff000000) | (b << 16) | (g << 8) | r;
+  }
+
+  private _applyTint(packed: number): number {
+    const [tr, tg, tb, ta] = this._envTint;
+    const r =  packed         & 0xff;
+    const g = (packed >>>  8) & 0xff;
+    const b = (packed >>> 16) & 0xff;
+    const a = (packed >>> 24) & 0xff;
+    return (a                                         << 24) |
+           (((b + ((tb - b) * ta + 0.5)) | 0)        << 16) |
+           (((g + ((tg - g) * ta + 0.5)) | 0)        <<  8) |
+            ((r + ((tr - r) * ta + 0.5)) | 0);
+  }
+
   private _drawGridLines(): void {
     const ctx        = this._ctx;
     const cellSize   = this._cellSize;
