@@ -29,6 +29,18 @@
  *
  * The render worker reads from `sab[frontIdx]` and validates consistency
  * using the seqlock values around the read — see `RenderWorker.ts`.
+ *
+ * ## Phase 11 — Population census and variant events
+ *
+ * Every `censusInterval` ticks (default 10), the worker:
+ *   1. Scans the front grid buffers to build a `VariantCensus`.
+ *   2. Posts the census to the main thread.
+ *   3. Drains the engine's variant-creation event queue and posts
+ *      `variantCreated` messages for any new lineages.
+ *   4. Detects newly-extinct variants (census count = 0 for a previously
+ *      live variant) and posts `variantExtinct` messages.
+ *
+ * The census config field `censusInterval` is part of `SimulationConfig`.
  */
 
 // Workers use `self` for the global scope instead of `window`.
@@ -45,7 +57,11 @@ import {
   CTRL_FRONT_IDX,
   CTRL_TICK_COUNT,
 } from '../workers/sharedBuffers.js';
-import { type SimWorkerInMsg, type SimWorkerOutMsg } from '../workers/workerBridge.js';
+import {
+  type SimWorkerInMsg,
+  type SimWorkerOutMsg,
+  type VariantCensus,
+} from '../workers/workerBridge.js';
 
 // ---------------------------------------------------------------------------
 // Worker state
@@ -78,6 +94,26 @@ let tickIntervalId: ReturnType<typeof setInterval> | null = null;
 let tickNum = 0;
 
 // ---------------------------------------------------------------------------
+// Phase 11 — Census tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-variant peak population counters tracked on this worker thread.
+ * Updated each tick; used to detect extinction (count transitions 1→0).
+ *
+ * Index = variantId (0–255).
+ */
+const variantPeakPop: Uint32Array = new Uint32Array(256);
+
+/**
+ * Per-variant population count from the PREVIOUS census broadcast.
+ * Used to detect variants that have gone extinct between two censuses.
+ *
+ * Index = variantId (0–255).
+ */
+const prevCensusCounts: Uint32Array = new Uint32Array(256);
+
+// ---------------------------------------------------------------------------
 // Seqlock write — publishes one tick's result to the SAB
 // ---------------------------------------------------------------------------
 
@@ -103,6 +139,11 @@ function publishToSab(): void {
   view.energy.set(local.energy);
   view.age.set(local.age);
   view.flags.set(local.flags);
+  // Round 2 genome buffers — must be included so the render worker can
+  // access per-cell genome data for the variantId / genome render modes.
+  view.genome.set(local.genome);
+  view.variantId.set(local.variantId);
+  view.generation.set(local.generation);
 
   // --- Seqlock: mark write complete (seq → even) ---------------------------
   Atomics.add(ctrl, CTRL_SEQ, 1);
@@ -111,6 +152,80 @@ function publishToSab(): void {
   Atomics.store(ctrl, CTRL_FRONT_IDX, backIdx);
   // Increment the global tick counter.
   Atomics.add(ctrl, CTRL_TICK_COUNT, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 — Census builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Scans the local `grid.front` buffers to build a compact `VariantCensus`.
+ *
+ * Operates on TypedArrays only — no object allocation per cell.
+ * Called every `censusInterval` ticks.
+ *
+ * @param tick - Current simulation tick number.
+ * @returns A freshly allocated `VariantCensus` snapshot.
+ */
+function buildCensus(tick: number): VariantCensus {
+  const counts    = new Uint32Array(256);
+  const meanGenome = new Uint16Array(256);
+  // Use Float64 accumulators for age/gen sums to avoid overflow, then
+  // divide at the end to populate the Float32 mean arrays.
+  const ageSum    = new Float64Array(256);
+  const genSum    = new Float64Array(256);
+  const meanAge   = new Float32Array(256);
+  const meanGen   = new Float32Array(256);
+
+  const { cellType, variantId, genome, age, generation } = grid.front;
+  const total = width * height;
+
+  for (let i = 0; i < total; i++) {
+    const ct = cellType[i];
+    if (ct !== CellType.Life && ct !== CellType.LifeVariant) continue;
+
+    const v = variantId[i];
+    counts[v]++;
+    // Store last-seen genome as approximation of modal genome.
+    meanGenome[v] = genome[i];
+    ageSum[v]    += age[i];
+    genSum[v]    += generation[i];
+  }
+
+  for (let v = 0; v < 256; v++) {
+    const c = counts[v];
+    if (c > 0) {
+      meanAge[v] = ageSum[v] / c;
+      meanGen[v] = genSum[v] / c;
+    }
+    // Update running peak on this worker side.
+    if (c > variantPeakPop[v]) variantPeakPop[v] = c;
+  }
+
+  return { tick, counts, meanGenome, meanAge, meanGen };
+}
+
+/**
+ * Checks for newly-extinct variants by comparing the current census counts
+ * against the previous broadcast and posts `variantExtinct` messages for any
+ * variant whose count just dropped to 0.
+ *
+ * @param currentCounts - Live cell counts from the freshly built census.
+ * @param tick          - Current simulation tick (extinction tick to report).
+ */
+function detectExtinctions(currentCounts: Uint32Array, tick: number): void {
+  for (let v = 0; v < 256; v++) {
+    if (prevCensusCounts[v] > 0 && currentCounts[v] === 0) {
+      // Variant v went extinct between the last census and this one.
+      const msg: SimWorkerOutMsg = {
+        type:      'variantExtinct',
+        variantId: v,
+        tick,
+        peakPop:   variantPeakPop[v],
+      };
+      self.postMessage(msg);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +239,8 @@ function publishToSab(): void {
  * 3. Swaps local buffers.
  * 4. Publishes the result to the SAB via the seqlock.
  * 5. Posts tick statistics back to the main thread.
+ * 6. Every `censusInterval` ticks: broadcasts a VariantCensus and any
+ *    variant creation / extinction events.
  */
 function tick(): void {
   grid.copyFrontToBack();
@@ -135,6 +252,43 @@ function tick(): void {
 
   // Publish the new state to shared memory so the render worker sees it.
   publishToSab();
+
+  // --- Phase 11: drain variant-creation events from the engine --------------
+  // The engine queues new variant IDs whenever a genome diverges by ≥3 bits.
+  // We drain them every tick so `variantCreated` messages arrive promptly.
+  {
+    const { buf, count } = engine.drainVariantEvents();
+    for (let e = 0; e < count; e++) {
+      const base = e * 3;
+      const childId  = buf[base];
+      const parentId = buf[base + 1];
+      const genome   = buf[base + 2];
+      const msg: SimWorkerOutMsg = {
+        type:      'variantCreated',
+        variantId: childId,
+        parentId,
+        tick:      tickNum,
+        genome,
+      };
+      self.postMessage(msg);
+    }
+  }
+
+  // --- Phase 11: census broadcast every `censusInterval` ticks -------------
+  const censusInterval = config.censusInterval ?? 10;
+  if (tickNum % censusInterval === 0) {
+    const census = buildCensus(tickNum);
+
+    // Detect and report extinctions before overwriting prevCensusCounts.
+    detectExtinctions(census.counts, tickNum);
+
+    // Broadcast the full census to the main thread.
+    const censusMsg: SimWorkerOutMsg = { type: 'variantCensus', data: census };
+    self.postMessage(censusMsg);
+
+    // Save current counts as the new "previous" for the next comparison.
+    prevCensusCounts.set(census.counts);
+  }
 
   // Post tick statistics to the main thread for the status bar / EventBus.
   const msg: SimWorkerOutMsg = {
@@ -228,6 +382,11 @@ self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
       // Seed the local grid with life.
       grid.seed(p.density, p.initialEnergy);
 
+      // Reset Phase 11 tracking state.
+      variantPeakPop.fill(0);
+      prevCensusCounts.fill(0);
+      engine.resetVariantCounter();
+
       // Set up SAB views for both buffer sets.
       const totalCells = width * height;
       ctrl        = makeControlView(p.sab);
@@ -237,12 +396,15 @@ self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
       // Publish the initial seeded state to the SAB front buffer (set 0).
       // We write directly to set 0 without the seqlock since no one is
       // reading yet (init happens before the render worker's first frame).
-      const view = sabViews[0]!;
+      const view  = sabViews[0]!;
       const local = grid.front;
       view.cellType.set(local.cellType);
       view.energy.set(local.energy);
       view.age.set(local.age);
       view.flags.set(local.flags);
+      view.genome.set(local.genome);
+      view.variantId.set(local.variantId);
+      view.generation.set(local.generation);
       // front pointer is already 0 (SAB is zero-initialised).
 
       const ready: SimWorkerOutMsg = { type: 'ready' };
@@ -273,8 +435,6 @@ self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
       if (tickIntervalId !== null) {
         startLoop(msg.hz);
       }
-      // Store the Hz so the next 'play' message uses the right rate.
-      // Stored in a module-scoped variable below.
       currentHz = msg.hz;
       break;
 
@@ -295,10 +455,23 @@ self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
       grid.clear();
       grid.seed(msg.density, msg.initialEnergy);
 
+      // Reset Phase 11 tracking state for the new simulation.
+      variantPeakPop.fill(0);
+      prevCensusCounts.fill(0);
+      engine.resetVariantCounter();
+
       // Publish the fresh grid to the SAB using the seqlock.
       publishToSab();
       break;
     }
+
+    // --- setRenderMode / highlightVariant — forwarded to render worker ------
+    // The SimulationWorker does not need to act on these; they are consumed
+    // by the render worker via its own message channel in app.ts.
+    case 'setRenderMode':
+    case 'highlightVariant':
+      // No-op here; app.ts routes these messages to the render worker directly.
+      break;
   }
 };
 
@@ -313,9 +486,6 @@ self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
 let currentHz = 30;
 
 // Override 'play' to use currentHz.
-// (The handler above calls startLoop(30) — patch that to use currentHz.)
-// We do this by monkey-patching after the handler is defined, keeping the
-// handler itself readable.
 const _originalOnMessage = self.onmessage!.bind(self);
 self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
   if (event.data.type === 'play') {
