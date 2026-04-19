@@ -24,6 +24,11 @@ import {
   ENERGY_STEPS,
   lifecycleColorFor,
   variantColorFor,
+  // Phase 12: new render mode colour functions
+  genomeColorFor,
+  generationColorFor,
+  fitnessColorFor,
+  signalColorFor,
 } from './ColorMap.js';
 
 // ---------------------------------------------------------------------------
@@ -116,13 +121,15 @@ export class Renderer {
 
   /**
    * Current render mode.
-   * - `'default'`   — colour from the pre-built LUT (cellType + energy).
-   * - `'lifecycle'` — Life cells coloured by JUVENILE/SENESCENT flags.
-   * - `'variantId'` — Life cells coloured by variant lineage palette (Phase 11).
-   *
-   * All modes render non-Life cells identically (via the standard LUT).
+   * - `'default'`    — colour from the pre-built LUT (cellType + energy).
+   * - `'lifecycle'`  — Life cells coloured by JUVENILE/SENESCENT flags.
+   * - `'variantId'`  — Life cells coloured by variant lineage palette (Phase 11).
+   * - `'genome'`     — Life cells coloured by 16-bit genome value (Phase 12).
+   * - `'generation'` — Life cells coloured by generation count (Phase 12).
+   * - `'fitness'`    — Life cells coloured by energy × spreadBonus (Phase 12).
+   * - `'signal'`     — All cells overlaid with chemical signal strength (Phase 12).
    */
-  private _renderMode: 'default' | 'lifecycle' | 'variantId' = 'default';
+  private _renderMode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' = 'default';
 
   /**
    * Pre-allocated ImageData written into each frame.
@@ -205,11 +212,15 @@ export class Renderer {
 
   /**
    * Current render mode.
-   * - `'default'`   — standard colour LUT (cellType + energy).
-   * - `'lifecycle'` — Life cells coloured by JUVENILE / SENESCENT flags.
-   * - `'variantId'` — Life cells coloured by variant lineage palette (Phase 11).
+   * - `'default'`    — standard colour LUT (cellType + energy).
+   * - `'lifecycle'`  — Life cells coloured by JUVENILE / SENESCENT flags.
+   * - `'variantId'`  — Life cells coloured by variant lineage palette (Phase 11).
+   * - `'genome'`     — Life cells coloured by 16-bit genome value (Phase 12).
+   * - `'generation'` — Life cells coloured by generation count (Phase 12).
+   * - `'fitness'`    — Life cells coloured by energy × spreadBonus (Phase 12).
+   * - `'signal'`     — All cells overlaid with chemical signal strength (Phase 12).
    */
-  get renderMode(): 'default' | 'lifecycle' | 'variantId' {
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' {
     return this._renderMode;
   }
 
@@ -218,7 +229,7 @@ export class Renderer {
    *
    * @param mode - New render mode.
    */
-  set renderMode(mode: 'default' | 'lifecycle' | 'variantId') {
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal') {
     if (this._renderMode !== mode) {
       this._renderMode = mode;
       this.invalidate(); // stale LUT colours must be discarded when mode changes
@@ -250,9 +261,14 @@ export class Renderer {
     const cellSize    = this._cellSize;
     const pixelBuf    = this._pixelBuf;
     const prev        = this._prevColors;
-    const isLifecycle = this._renderMode === 'lifecycle';
-    const isVariant   = this._renderMode === 'variantId';
-    const { cellType, energy, flags, variantId } = buffers;
+    const mode        = this._renderMode;
+    const isLifecycle  = mode === 'lifecycle';
+    const isVariant    = mode === 'variantId';
+    const isGenome     = mode === 'genome';
+    const isGeneration = mode === 'generation';
+    const isFitness    = mode === 'fitness';
+    const isSignal     = mode === 'signal';
+    const { cellType, energy, flags, variantId, genome, generation, spreadBonus, signalStrength } = buffers;
 
     const canvasWidth = this._canvas.width; // pixels
 
@@ -262,20 +278,28 @@ export class Renderer {
         const ct = cellType[i];
         let packed: number;
 
+        // Base LUT colour (used for non-Life cells and as base for signal overlay).
+        const e     = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
+        const base  = lut[ct * ENERGY_STEPS + e];
+
         if (ct === CellType.Life || ct === CellType.LifeVariant) {
           if (isLifecycle) {
-            // Phase 10: lifecycle mode — colour Life cells by stage flags.
             packed = lifecycleColorFor(flags[i], energy[i]);
           } else if (isVariant) {
-            // Phase 11: variantId mode — colour Life cells by lineage palette.
             packed = variantColorFor(variantId[i], energy[i]);
+          } else if (isGenome) {
+            packed = genomeColorFor(genome[i], energy[i]);
+          } else if (isGeneration) {
+            packed = generationColorFor(generation[i], energy[i]);
+          } else if (isFitness) {
+            packed = fitnessColorFor(energy[i], spreadBonus[i]);
+          } else if (isSignal) {
+            packed = signalColorFor(signalStrength[i], base);
           } else {
-            const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
-            packed  = lut[ct * ENERGY_STEPS + e];
+            packed = base;
           }
         } else {
-          const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[i] * (ENERGY_STEPS - 1)));
-          packed  = lut[ct * ENERGY_STEPS + e];
+          packed = isSignal ? signalColorFor(signalStrength[i], base) : base;
         }
 
         if (packed !== prev[i]) {
@@ -294,23 +318,27 @@ export class Renderer {
           const ct = cellType[ci];
           let packed: number;
 
+          const e    = Math.min(ENERGY_STEPS - 1, Math.floor(energy[ci] * (ENERGY_STEPS - 1)));
+          const base = lut[ct * ENERGY_STEPS + e];
+
           if (ct === CellType.Life || ct === CellType.LifeVariant) {
             if (isLifecycle) {
-              // Phase 10: lifecycle mode — colour Life cells by stage flags.
               packed = lifecycleColorFor(flags[ci], energy[ci]);
             } else if (isVariant) {
-              // Phase 11: variantId mode — colour Life cells by lineage palette.
               packed = variantColorFor(variantId[ci], energy[ci]);
+            } else if (isGenome) {
+              packed = genomeColorFor(genome[ci], energy[ci]);
+            } else if (isGeneration) {
+              packed = generationColorFor(generation[ci], energy[ci]);
+            } else if (isFitness) {
+              packed = fitnessColorFor(energy[ci], spreadBonus[ci]);
+            } else if (isSignal) {
+              packed = signalColorFor(signalStrength[ci], base);
             } else {
-              const e = Math.min(ENERGY_STEPS - 1, Math.floor(energy[ci] * (ENERGY_STEPS - 1)));
-              packed  = lut[ct * ENERGY_STEPS + e];
+              packed = base;
             }
           } else {
-            const e = Math.min(
-              ENERGY_STEPS - 1,
-              Math.floor(energy[ci] * (ENERGY_STEPS - 1)),
-            );
-            packed = lut[ct * ENERGY_STEPS + e];
+            packed = isSignal ? signalColorFor(signalStrength[ci], base) : base;
           }
 
           // Skip unchanged cells — no pixel writes needed.
