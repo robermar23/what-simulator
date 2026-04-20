@@ -15,7 +15,17 @@ import { describe, it, expect } from 'vitest';
 import {
   BACKGROUND_LABELS,
   type BackgroundType,
+  type WebGLBackground,
 } from '../BackgroundRenderer.js';
+
+// --- Phase 16d: WebGL backgrounds ------------------------------------------
+import {
+  createWebGLBackground,
+} from './WebGLBackgrounds.js';
+import {
+  BACKGROUND_VERT_SRC,
+  GLSL_COMMON,
+} from './glsl-common.js';
 
 // --- PetriDishBackground ---------------------------------------------------
 import {
@@ -443,5 +453,83 @@ describe('ventPlumeParticle', () => {
       if (y < ventY) { foundAbove = true; break; }
     }
     expect(foundAbove).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Phase 16d — glsl-common.ts
+// ===========================================================================
+
+describe('BACKGROUND_VERT_SRC', () => {
+  it('is a #version 300 es shader', () => {
+    expect(BACKGROUND_VERT_SRC).toContain('#version 300 es');
+  });
+
+  it('declares a_position input and v_texCoord output', () => {
+    expect(BACKGROUND_VERT_SRC).toContain('in vec2 a_position');
+    expect(BACKGROUND_VERT_SRC).toContain('out vec2 v_texCoord');
+  });
+
+  it('maps clip-space to UV [0,1]', () => {
+    // a_position * 0.5 + 0.5 maps [-1,1] → [0,1]
+    expect(BACKGROUND_VERT_SRC).toContain('a_position * 0.5 + 0.5');
+  });
+});
+
+describe('GLSL_COMMON', () => {
+  it('declares hash1, noise2, and fbm functions', () => {
+    expect(GLSL_COMMON).toContain('float hash1(vec2 p)');
+    expect(GLSL_COMMON).toContain('float noise2(vec2 p)');
+    expect(GLSL_COMMON).toContain('float fbm(vec2 p)');
+  });
+
+  it('fbm uses 4 octaves', () => {
+    expect(GLSL_COMMON).toContain('i < 4');
+  });
+
+  it('noise2 uses smoothstep curve', () => {
+    expect(GLSL_COMMON).toContain('3.0 - 2.0 * f');
+  });
+});
+
+// ===========================================================================
+// Phase 16d — createWebGLBackground factory
+// ===========================================================================
+
+describe('createWebGLBackground', () => {
+  const NON_NONE: Exclude<BackgroundType, 'none'>[] = ['petri', 'water', 'leaf', 'soil', 'space', 'deepsea'];
+
+  it('returns null for "none"', () => {
+    expect(createWebGLBackground('none')).toBeNull();
+  });
+
+  it('returns an object with render() and envTintOklab for every non-none type', () => {
+    for (const t of NON_NONE) {
+      const bg = createWebGLBackground(t);
+      expect(bg).not.toBeNull();
+      expect(typeof (bg as WebGLBackground).render).toBe('function');
+      // envTintOklab is either null or a 3-element array
+      const tint = (bg as WebGLBackground).envTintOklab;
+      if (tint !== null) {
+        expect(tint).toHaveLength(3);
+        for (const v of tint) expect(typeof v).toBe('number');
+      }
+    }
+  });
+
+  it('each call returns a new instance', () => {
+    const a = createWebGLBackground('space');
+    const b = createWebGLBackground('space');
+    expect(a).not.toBe(b);
+  });
+
+  it('all 6 environments have distinct envTintOklab or null (no two non-null tints are identical)', () => {
+    const tints = NON_NONE
+      .map(t => createWebGLBackground(t)!.envTintOklab)
+      .filter((t): t is readonly [number, number, number] => t !== null);
+
+    const serialised = tints.map(t => t.join(','));
+    const unique = new Set(serialised);
+    expect(unique.size).toBe(serialised.length);
   });
 });
