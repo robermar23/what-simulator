@@ -48,9 +48,10 @@
  * Skipping a frame (a few microseconds window) is far preferable to blocking.
  */
 
-import { Renderer }                         from './Renderer.js';
-import { WebGLRenderer, isWebGL2Available } from './WebGLRenderer.js';
-import { type GridBuffers }                 from '../simulation/GridState.js';
+import { Renderer }                                   from './Renderer.js';
+import { WebGLRenderer, isWebGL2Available }           from './WebGLRenderer.js';
+import { createWebGLBackground }                      from './backgrounds/WebGLBackgrounds.js';
+import { type GridBuffers }                           from '../simulation/GridState.js';
 import {
   makeControlView,
   makeBufferViews,
@@ -266,16 +267,19 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       break;
     }
 
-    // --- backgroundChange (Phase 14) ----------------------------------------
+    // --- backgroundChange (Phase 14/16d) -------------------------------------
     case 'backgroundChange':
-      // Toggle transparent empty-cell rendering (Canvas 2D only — WebGL does
-      // not support per-pixel alpha on the OffscreenCanvas).
       if (renderer instanceof Renderer) {
+        // Canvas 2D path: toggle transparent empty cells so the bg canvas shows.
         renderer.transparentEmpty = msg.backgroundActive;
+      } else if (renderer instanceof WebGLRenderer) {
+        // WebGL path: instantiate the matching GPU background shader and hand
+        // it to the renderer so it composites behind the HDR scene each frame.
+        const webGLBg = createWebGLBackground(msg.backgroundType);
+        renderer.setWebGLBackground(webGLBg);
       }
-      // Apply environment tint to all Life cell colours so cells look like
-      // they "live in" the background even at full grid saturation (both
-      // Canvas 2D and WebGL renderers support this).
+      // Apply environment tint to all Life cell colours so cells visually
+      // belong to the environment even when the grid is fully covered.
       renderer.envTint = msg.tint;
       break;
 
