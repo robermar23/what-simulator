@@ -115,3 +115,70 @@ export function scaleBrightness(color: RgbColor, factor: number): RgbColor {
     b: Math.round(color.b * factor),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Gamma correction — IEC 61966-2-1 sRGB transfer functions (Phase 16a)
+//
+// These TypeScript implementations are exact mirrors of the GLSL helpers in
+// WebGLRenderer.ts (FRAG_SRC).  Keeping them in sync ensures that any
+// CPU-side colour computation matches the GPU output.
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a normalised sRGB channel value [0, 1] to linear light [0, 1].
+ *
+ * Uses the IEC 61966-2-1 piecewise transfer function.  All brightness
+ * scaling and colour blending should be performed in linear light to
+ * produce perceptually correct results.
+ *
+ * @param c - Gamma-compressed sRGB channel value in [0, 1].
+ * @returns Linear light value in [0, 1].
+ */
+export function srgbToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+/**
+ * Converts a linear light channel value [0, 1] to gamma-compressed sRGB [0, 1].
+ *
+ * Apply this as the final step when producing display pixel values so the
+ * monitor receives correctly encoded sRGB output.
+ *
+ * @param c - Linear light channel value in [0, 1].
+ * @returns sRGB gamma-encoded value in [0, 1].
+ */
+export function linearToSrgb(c: number): number {
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+
+/**
+ * Converts an {@link RgbColor} from sRGB (0–255 channels) to linear light,
+ * returning a new `{r, g, b}` triple with each channel in [0, 1].
+ *
+ * Useful for CPU-side colour blending that needs to match WebGL shader output.
+ *
+ * @param color - sRGB colour with channels in [0, 255].
+ * @returns Linear light channels in [0, 1].
+ */
+export function rgbToLinear(color: RgbColor): { readonly r: number; readonly g: number; readonly b: number } {
+  return {
+    r: srgbToLinear(color.r / 255),
+    g: srgbToLinear(color.g / 255),
+    b: srgbToLinear(color.b / 255),
+  };
+}
+
+/**
+ * Converts a linear light `{r, g, b}` triple (channels in [0, 1]) to a
+ * gamma-encoded {@link RgbColor} with integer channels in [0, 255].
+ *
+ * @param linear - Linear light channels, each in [0, 1].
+ * @returns sRGB colour with channels in [0, 255].
+ */
+export function linearToRgb(linear: { readonly r: number; readonly g: number; readonly b: number }): RgbColor {
+  return {
+    r: Math.round(linearToSrgb(Math.max(0, Math.min(1, linear.r))) * 255),
+    g: Math.round(linearToSrgb(Math.max(0, Math.min(1, linear.g))) * 255),
+    b: Math.round(linearToSrgb(Math.max(0, Math.min(1, linear.b))) * 255),
+  };
+}
