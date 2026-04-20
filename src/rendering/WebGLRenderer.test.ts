@@ -21,9 +21,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebGLRenderer, isWebGL2Available } from './WebGLRenderer.js';
-import { Renderer, type RendererOptions }   from './Renderer.js';
-import { type GridBuffers }                 from '../simulation/GridState.js';
+import { WebGLRenderer, isWebGL2Available, FRAG_SRC } from './WebGLRenderer.js';
+import { Renderer, type RendererOptions }              from './Renderer.js';
+import { type GridBuffers }                            from '../simulation/GridState.js';
 
 // ---------------------------------------------------------------------------
 // Minimal Canvas 2D context mock
@@ -342,5 +342,250 @@ describe('WebGLRenderer static contract', () => {
 
   it('render method is defined on the prototype', () => {
     expect(typeof WebGLRenderer.prototype.render).toBe('function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FRAG_SRC — Phase 16a gamma correction (shader source assertions)
+//
+// WebGL rendering cannot be executed in jsdom, but we can assert that the
+// shader source contains the required gamma functions so a regression
+// (accidental deletion, merge conflict) fails the test suite immediately.
+// ---------------------------------------------------------------------------
+
+describe('FRAG_SRC gamma correction (Phase 16a)', () => {
+  it('declares the srgbToLinear function', () => {
+    expect(FRAG_SRC).toContain('float srgbToLinear(float c)');
+  });
+
+  it('declares the srgbToLinearVec function', () => {
+    expect(FRAG_SRC).toContain('vec3 srgbToLinearVec(vec3 c)');
+  });
+
+  it('declares the linearToSrgb function', () => {
+    expect(FRAG_SRC).toContain('float linearToSrgb(float c)');
+  });
+
+  it('declares the linearToSrgbVec function', () => {
+    expect(FRAG_SRC).toContain('vec3 linearToSrgbVec(vec3 c)');
+  });
+
+  it('uses the IEC 61966-2-1 threshold 0.04045 in srgbToLinear', () => {
+    // If the constant changes, the TypeScript and GLSL implementations diverge.
+    expect(FRAG_SRC).toContain('0.04045');
+  });
+
+  it('uses the IEC 61966-2-1 threshold 0.0031308 in linearToSrgb', () => {
+    expect(FRAG_SRC).toContain('0.0031308');
+  });
+
+  it('applies linearToSrgbVec to the final outColor output', () => {
+    // The last colour write must encode to sRGB; without this the display
+    // would receive linear light values and appear too dark.
+    expect(FRAG_SRC).toContain('linearToSrgbVec(clamp(cellRGB');
+  });
+
+  it('linearises baseColor() result in the default render path', () => {
+    // All six render modes must work in linear space before blending.
+    expect(FRAG_SRC).toContain('srgbToLinearVec(baseColor(cellType))');
+  });
+
+  it('linearises the variant palette sample in render mode 2', () => {
+    expect(FRAG_SRC).toContain('srgbToLinearVec(texelFetch(u_variantPalette');
+  });
+
+  it('linearises lifecycle base colours in render mode 1', () => {
+    // Juvenile lime (#44ff88) and mature green (#00ff88) are the two main
+    // hardcoded sRGB colours in the lifecycle branch.
+    expect(FRAG_SRC).toContain('srgbToLinearVec(vec3(0.2667, 1.0, 0.5333))');
+    expect(FRAG_SRC).toContain('srgbToLinearVec(vec3(0.0, 1.0, 0.5333))');
+  });
+
+  it('linearises the environment tint before mixing', () => {
+    expect(FRAG_SRC).toContain('srgbToLinearVec(u_envTint.rgb)');
+  });
+
+  it('linearises the signal cyan glow colour in render mode 6', () => {
+    expect(FRAG_SRC).toContain('srgbToLinearVec(vec3(0.0, 0.933, 1.0))');
+  });
+
+  it('uses srgbToLinear for the grid-line alpha value', () => {
+    expect(FRAG_SRC).toContain('srgbToLinear(0.08)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FRAG_SRC — Phase 16b OKLab perceptual colour space (shader source assertions)
+// ---------------------------------------------------------------------------
+
+describe('FRAG_SRC OKLab colour space (Phase 16b)', () => {
+  it('declares the oklabToLinearRgb function', () => {
+    expect(FRAG_SRC).toContain('vec3 oklabToLinearRgb(float L, float a, float b)');
+  });
+
+  it('uses the correct OKLab→LMS matrix coefficients', () => {
+    // These constants must stay in sync with ColorMap.ts oklabToSrgb().
+    expect(FRAG_SRC).toContain('0.3963377774');
+    expect(FRAG_SRC).toContain('0.2158037573');
+    expect(FRAG_SRC).toContain('4.0767416621');
+  });
+
+  it('genome render mode uses oklabToLinearRgb (not the old sRGB component lerp)', () => {
+    expect(FRAG_SRC).toContain('cellRGB = oklabToLinearRgb(ok.x, ok.y, ok.z)');
+  });
+
+  it('genome render mode defines the three OKLab endpoint vectors', () => {
+    // Blue, green, and red endpoints from PLAN3.md / genomeColorFor() TypeScript.
+    expect(FRAG_SRC).toContain('vec3 blueOk');
+    expect(FRAG_SRC).toContain('vec3 greenOk');
+    expect(FRAG_SRC).toContain('vec3 redOk');
+  });
+
+  it('genome render mode scales the L channel for energy brightness', () => {
+    // Perceptually correct brightness — L axis only, hue/chroma preserved.
+    expect(FRAG_SRC).toContain('ok.x *= bright');
+  });
+
+  it('genome render mode no longer uses the old sRGB component lerp', () => {
+    // The old formula used rC/gC/bC variables that are no longer present in mode 3.
+    // We check the srgbToLinearVec call that wrapped those variables is gone.
+    expect(FRAG_SRC).not.toContain('srgbToLinearVec(vec3(rC, gC, bC))');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FRAG_SRC — Phase 16c HDR bloom uniform + hdrBaseColor (shader assertions)
+// ---------------------------------------------------------------------------
+
+describe('FRAG_SRC HDR bloom (Phase 16c)', () => {
+  it('declares the u_hdrOutput uniform', () => {
+    expect(FRAG_SRC).toContain('uniform bool u_hdrOutput;');
+  });
+
+  it('declares the hdrBaseColor function', () => {
+    expect(FRAG_SRC).toContain('vec3 hdrBaseColor(uint t)');
+  });
+
+  it('hdrBaseColor returns boosted Fire value (2.0, 0.08, 0.0)', () => {
+    expect(FRAG_SRC).toContain('vec3(2.0,   0.08,  0.0)');
+  });
+
+  it('hdrBaseColor returns boosted Barrier value (1.8, 1.3, 0.04)', () => {
+    expect(FRAG_SRC).toContain('vec3(1.8,   1.3,   0.04)');
+  });
+
+  it('hdrBaseColor returns boosted Colony value (1.2, 0.5, 0.006)', () => {
+    expect(FRAG_SRC).toContain('vec3(1.2,   0.5,   0.006)');
+  });
+
+  it('default render mode selects hdrBaseColor when u_hdrOutput is true', () => {
+    expect(FRAG_SRC).toContain('u_hdrOutput ? hdrBaseColor(cellType) : srgbToLinearVec(baseColor(cellType))');
+  });
+
+  it('final outColor is conditional on u_hdrOutput', () => {
+    // HDR pass emits raw linear with alpha=0 for empty cells (Phase 16d);
+    // direct pass gamma-encodes and is always opaque.
+    expect(FRAG_SRC).toContain('outColor = u_hdrOutput');
+    // Phase 16d: empty cells are transparent in HDR mode — alpha is dynamic.
+    expect(FRAG_SRC).toContain('float alpha =');
+    expect(FRAG_SRC).toContain('vec4(cellRGB, alpha)');
+    expect(FRAG_SRC).toContain('vec4(linearToSrgbVec(clamp(cellRGB, 0.0, 1.0)), 1.0)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PP shader sources — Phase 16c bloom pipeline constants
+// ---------------------------------------------------------------------------
+
+import {
+  PP_VERT_SRC,
+  BLOOM_EXTRACT_FRAG_SRC,
+  BLOOM_BLUR_FRAG_SRC,
+  COMPOSITE_FRAG_SRC,
+} from './WebGLRenderer.js';
+
+describe('PP shader sources (Phase 16c)', () => {
+  it('PP_VERT_SRC outputs v_texCoord from a_position', () => {
+    expect(PP_VERT_SRC).toContain('out vec2 v_texCoord');
+    expect(PP_VERT_SRC).toContain('a_position * 0.5 + 0.5');
+  });
+
+  it('BLOOM_EXTRACT_FRAG_SRC samples u_scene and applies u_threshold', () => {
+    expect(BLOOM_EXTRACT_FRAG_SRC).toContain('uniform sampler2D u_scene');
+    expect(BLOOM_EXTRACT_FRAG_SRC).toContain('uniform float u_threshold');
+    expect(BLOOM_EXTRACT_FRAG_SRC).toContain('max(0.0, luma - u_threshold)');
+  });
+
+  it('BLOOM_EXTRACT_FRAG_SRC uses BT.709 luminance coefficients', () => {
+    expect(BLOOM_EXTRACT_FRAG_SRC).toContain('0.2126');
+    expect(BLOOM_EXTRACT_FRAG_SRC).toContain('0.7152');
+    expect(BLOOM_EXTRACT_FRAG_SRC).toContain('0.0722');
+  });
+
+  it('BLOOM_BLUR_FRAG_SRC declares the 9-tap Gaussian weights array', () => {
+    expect(BLOOM_BLUR_FRAG_SRC).toContain('float[](0.227027, 0.194595, 0.121622, 0.054054, 0.016216)');
+  });
+
+  it('BLOOM_BLUR_FRAG_SRC uses u_horizontal to select blur direction', () => {
+    expect(BLOOM_BLUR_FRAG_SRC).toContain('uniform bool u_horizontal');
+    expect(BLOOM_BLUR_FRAG_SRC).toContain('u_horizontal');
+  });
+
+  it('COMPOSITE_FRAG_SRC declares reinhardExtended', () => {
+    expect(COMPOSITE_FRAG_SRC).toContain('vec3 reinhardExtended(vec3 c)');
+  });
+
+  it('COMPOSITE_FRAG_SRC uses whitePoint = 4.0', () => {
+    expect(COMPOSITE_FRAG_SRC).toContain('whitePoint = 4.0');
+  });
+
+  it('COMPOSITE_FRAG_SRC additively blends base + bloom * strength', () => {
+    expect(COMPOSITE_FRAG_SRC).toContain('uniform float u_bloomStrength');
+    // Phase 16d: scene is composited with background first → variable 'base';
+    // bloom is then added to 'base' (not directly to 'scene').
+    expect(COMPOSITE_FRAG_SRC).toContain('base + bloom');
+  });
+
+  it('COMPOSITE_FRAG_SRC has background uniforms (Phase 16d)', () => {
+    expect(COMPOSITE_FRAG_SRC).toContain('uniform sampler2D u_background');
+    expect(COMPOSITE_FRAG_SRC).toContain('uniform bool u_hasBackground');
+    expect(COMPOSITE_FRAG_SRC).toContain('mix(bg, sceneRGBA.rgb, sceneRGBA.a)');
+  });
+
+  it('COMPOSITE_FRAG_SRC sRGB-encodes the final output', () => {
+    expect(COMPOSITE_FRAG_SRC).toContain('linearToSrgbVec');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WebGLRenderer — Phase 16c public bloom API (prototype checks)
+// ---------------------------------------------------------------------------
+
+describe('WebGLRenderer bloom API (Phase 16c)', () => {
+  it('prototype has bloomEnabled getter and setter', () => {
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'bloomEnabled',
+    )?.get).toBe('function');
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'bloomEnabled',
+    )?.set).toBe('function');
+  });
+
+  it('prototype has bloomThreshold getter and setter', () => {
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'bloomThreshold',
+    )?.get).toBe('function');
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'bloomThreshold',
+    )?.set).toBe('function');
+  });
+
+  it('prototype has bloomStrength getter and setter', () => {
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'bloomStrength',
+    )?.get).toBe('function');
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'bloomStrength',
+    )?.set).toBe('function');
   });
 });
