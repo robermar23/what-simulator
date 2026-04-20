@@ -520,6 +520,7 @@ export class App {
       const msg: RenderWorkerInMsg = {
         type: 'backgroundChange',
         backgroundActive: type !== 'none',
+        backgroundType: type,
         tint: ENVIRONMENT_TINTS[type],
       };
       this._renderWorker.postMessage(msg);

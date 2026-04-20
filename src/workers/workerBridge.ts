@@ -27,6 +27,7 @@
  */
 
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
+import { type BackgroundType }   from '../rendering/BackgroundRenderer.js';
 
 // ---------------------------------------------------------------------------
 // Round 2 — Population genetics types
@@ -272,13 +273,16 @@ export type RenderWorkerInMsg =
    */
   | { type: 'renderModeChange'; mode: RenderMode }
   /**
-   * Phase 14: notify the render worker that the background type has changed.
+   * Phase 14/16d: notify the render worker that the background type has changed.
    * When `backgroundActive` is true, empty cells are rendered as transparent
-   * so the procedural background canvas shows through.
+   * so the procedural background shows through.  `backgroundType` lets the
+   * WebGL render worker instantiate the matching `WebGLBackground` shader.
    */
   | {
       type: 'backgroundChange';
       backgroundActive: boolean;
+      /** Which background environment is now active (Phase 16d). */
+      backgroundType: BackgroundType;
       /** Environment tint `[r, g, b, alpha]` — blended into Life cell colours. */
       tint: readonly [number, number, number, number];
     }
