@@ -48,6 +48,7 @@
 import { type GridBuffers } from '../simulation/GridState.js';
 import { type AnyCanvas, type RendererOptions } from './Renderer.js';
 import { VARIANT_PALETTE } from './ColorMap.js';
+import { type WebGLBackground } from './BackgroundRenderer.js'; // Phase 16d
 
 // ---------------------------------------------------------------------------
 // GLSL source strings
@@ -110,7 +111,7 @@ void main() {
  * Colour values stay in sync with ColorMap.ts COLOR_ENTRIES.
  * Round 2 cell types 11–15 are included.
  */
-const FRAG_SRC = /* glsl */ `#version 300 es
+export const FRAG_SRC = /* glsl */ `#version 300 es
 precision highp float;
 precision highp usampler2D;
 
@@ -190,8 +191,107 @@ uniform int u_renderMode;
  */
 uniform vec4 u_envTint;
 
+/**
+ * When true the scene renders into an RGBA16F HDR framebuffer — emissive
+ * cell types (Fire, Barrier, Colony, Life A) output linear values > 1.0
+ * that feed the bloom extraction pass.  The composite shader applies
+ * Reinhard tonemapping and sRGB encoding instead.
+ * When false (default), this shader gamma-encodes the output directly.
+ */
+uniform bool u_hdrOutput;
+
 // --- Output -----------------------------------------------------------------
 out vec4 outColor;
+
+// ---------------------------------------------------------------------------
+// Gamma correction — IEC 61966-2-1 sRGB transfer functions (Phase 16a)
+//
+// All colour math (brightness scaling, blending, mixing) must operate in
+// linear light space to be perceptually correct.  The monitor expects sRGB-
+// encoded values, so we:
+//   1. Linearise every input colour (baseColor, palette samples, hardcoded
+//      hex values) before doing any arithmetic.
+//   2. Apply linearToSrgbVec() as the very last step before writing outColor.
+//
+// The TypeScript equivalents of these functions live in colorUtils.ts so
+// the CPU-side colour code and tests stay in sync.
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a single gamma-compressed sRGB channel [0,1] to linear light [0,1].
+ *
+ * Uses the IEC 61966-2-1 piecewise function (not a simple power curve) for
+ * accuracy in the dark region where the power approximation breaks down.
+ *
+ * @param c - sRGB channel value in [0, 1].
+ * @returns Linear light value in [0, 1].
+ */
+float srgbToLinear(float c) {
+  return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+/** Applies srgbToLinear per-channel to a vec3. */
+vec3 srgbToLinearVec(vec3 c) {
+  return vec3(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
+}
+
+/**
+ * Converts a single linear light channel [0,1] to gamma-compressed sRGB [0,1].
+ *
+ * Applied as the very last operation before writing outColor so that all
+ * in-shader arithmetic stays in linear light while the display receives the
+ * sRGB-encoded value it expects.
+ *
+ * @param c - Linear light channel value in [0, 1].
+ * @returns sRGB gamma-encoded value in [0, 1].
+ */
+float linearToSrgb(float c) {
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+/** Applies linearToSrgb per-channel to a vec3. */
+vec3 linearToSrgbVec(vec3 c) {
+  return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
+}
+
+// ---------------------------------------------------------------------------
+// OKLab colour space — perceptually uniform conversion (Phase 16b)
+//
+// OKLab (Björn Ottosson, 2020): equal Euclidean distances = equal perceived
+// colour differences; L is true lightness independent of hue.
+//
+// Returns LINEAR sRGB — no gamma encoding here; the final linearToSrgbVec()
+// call at the end of main() handles the output encoding.
+//
+// TypeScript mirror: ColorMap.ts oklabToSrgb()
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts OKLab (L, a, b) to LINEAR sRGB [0, 1], clamped to gamut.
+ *
+ * @param L - Perceived lightness in [0, 1].
+ * @param a - Green–red chroma axis (approx. −0.5 … +0.5).
+ * @param b - Blue–yellow chroma axis (approx. −0.5 … +0.5).
+ * @returns Linear sRGB vec3 with channels clamped to [0, 1].
+ */
+vec3 oklabToLinearRgb(float L, float a, float b) {
+  // Step 1: OKLab → LMS (cube-root domain)
+  float l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  float m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  float s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+
+  // Step 2: Undo cube root → LMS in linear light
+  float l = l_ * l_ * l_;
+  float m = m_ * m_ * m_;
+  float s = s_ * s_ * s_;
+
+  // Step 3: LMS → linear sRGB (OKLab spec matrix); clamp out-of-gamut values.
+  return clamp(vec3(
+     4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+  ), 0.0, 1.0);
+}
 
 // ---------------------------------------------------------------------------
 // Colour table — must stay in sync with ColorMap.ts / COLOR_ENTRIES
@@ -242,6 +342,28 @@ vec3 baseColor(uint t) {
   if (t == 15u) return vec3(0.8,    0.5333, 0.0667);
 
   return vec3(0.0); // unknown type — invisible black
+}
+
+/**
+ * Returns HDR-boosted linear RGB for emissive cell types when rendering to
+ * the RGBA16F HDR framebuffer (u_hdrOutput = true).
+ *
+ * Values > 1.0 for Fire, Barrier, Colony, and Life A cause those cells to
+ * exceed the display range so the bloom extraction pass captures their glow.
+ * All other types fall back to the standard sRGB-linearised base colour.
+ *
+ * Must stay in sync with the HDR boost table in docs/PLAN3.md §Phase 16c.
+ *
+ * @param t - Cell type ordinal [0, 15].
+ * @returns Linear RGB — channels may exceed 1.0 for emissive types.
+ */
+vec3 hdrBaseColor(uint t) {
+  if (t ==  1u) return vec3(0.0,   1.4,   0.35);   // Life A   — vivid healthy glow
+  if (t ==  7u) return vec3(1.8,   1.3,   0.04);   // Barrier  — electric lemon crackle
+  if (t ==  8u) return vec3(2.0,   0.08,  0.0);    // Fire     — burning flame
+  if (t == 15u) return vec3(1.2,   0.5,   0.006);  // Colony   — warm honeycomb glow
+  // All other types: identical to non-HDR path.
+  return srgbToLinearVec(baseColor(t));
 }
 
 /**
@@ -382,35 +504,51 @@ void main() {
     bool isSenescent = (flags & 16u) != 0u;
 
     if (isJuvenile) {
-      // Bright lime — slightly dimmed at low energy but never fully dark.
+      // Bright lime (#44ff88) — linearise sRGB base, then dim at low energy.
       float e = max(0.3, energy);
-      cellRGB = vec3(0.2667 * e, 1.0 * e, 0.5333 * e);
+      cellRGB = srgbToLinearVec(vec3(0.2667, 1.0, 0.5333)) * e;
     } else if (isSenescent) {
-      // Purple-pink — fixed dim tone to signal ageing.
-      cellRGB = vec3(0.8, 0.2667, 0.7333);
+      // Purple-pink (#cc44bb) — linearise sRGB; fixed dim tone signals ageing.
+      cellRGB = srgbToLinearVec(vec3(0.8, 0.2667, 0.7333));
     } else {
-      // Mature — same energy-modulated green as the default Life colour.
+      // Mature (#00ff88) — linearise sRGB base, then energy-modulate brightness.
       float brightness = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
-      cellRGB = vec3(0.0, 1.0, 0.5333) * brightness;
+      cellRGB = srgbToLinearVec(vec3(0.0, 1.0, 0.5333)) * brightness;
     }
 
   } else if (u_renderMode == 2 && isLife) {
     // ---- VariantId render mode (Phase 11) — Life/LifeVariant only ----------
-    vec3 paletteRGB = texelFetch(u_variantPalette, ivec2(int(vid), 0), 0).rgb;
+    // Palette texture stores sRGB bytes; linearise before brightness multiply.
+    vec3 paletteRGB = srgbToLinearVec(texelFetch(u_variantPalette, ivec2(int(vid), 0), 0).rgb);
     float brightness = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
     cellRGB = paletteRGB * brightness;
 
   } else if (u_renderMode == 3 && isLife) {
-    // ---- Genome render mode (Phase 12) — Life/LifeVariant only -------------
-    // 16-bit genome normalised to [0,1]; blue at 0, green at neutral (~0.47), red at 1.
+    // ---- Genome render mode (Phase 16b) — OKLab interpolation --------------
+    // Interpolates through OKLab so all three endpoints share equal perceived
+    // lightness.  Blue/green/red appear equally vivid — unlike the old sRGB
+    // component lerp where yellow/green dominated perceptually.
+    //
+    // Endpoints (must stay in sync with ColorMap.ts genomeColorFor):
+    //   genome 0x0000 → blue  OKLab(0.55, −0.05, −0.22)
+    //   genome ~0x8000 → green OKLab(0.72, −0.17, +0.12)  ← neutral midpoint
+    //   genome 0xFFFF → red   OKLab(0.55, +0.18, +0.10)
     uint genomeVal = texelFetch(u_genome, cellCoord, 0).r;
     float t        = float(genomeVal) / 65535.0;
-    // Hue 240→120→0 as t goes 0→0.47→1; simplified via component lerp.
-    float rC = clamp(t * 2.0 - 1.0, 0.0, 1.0);         // 0 until mid, then rises
-    float gC = 1.0 - abs(t - 0.5) * 2.0;               // peaks at midpoint
-    float bC = clamp(1.0 - t * 2.0, 0.0, 1.0);         // full at 0, fades to 0
+
+    vec3 blueOk  = vec3(0.55, -0.05, -0.22);
+    vec3 greenOk = vec3(0.72, -0.17,  0.12);
+    vec3 redOk   = vec3(0.55,  0.18,  0.10);
+
+    // Piecewise lerp through OKLab space.
+    vec3 ok = t < 0.5
+        ? mix(blueOk,  greenOk, t * 2.0)
+        : mix(greenOk, redOk,   (t - 0.5) * 2.0);
+
+    // Scale L axis for energy brightness — preserves hue and chroma.
     float bright = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
-    cellRGB = vec3(rC, gC, bC) * bright;
+    ok.x *= bright;
+    cellRGB = oklabToLinearRgb(ok.x, ok.y, ok.z);
 
   } else if (u_renderMode == 4 && isLife) {
     // ---- Generation render mode (Phase 12) — Life/LifeVariant only ---------
@@ -418,21 +556,24 @@ void main() {
     uint genVal = texelFetch(u_generation, cellCoord, 0).r;
     float t     = clamp(float(genVal) / 500.0, 0.0, 1.0);
     float bright = 0.2 + 0.8 * clamp(energy, 0.0, 1.0);
-    vec3 young  = vec3(0.0,  0.8,  1.0);   // cyan
-    vec3 old    = vec3(1.0,  0.667, 0.133); // amber
+    // Linearise sRGB endpoints before mixing so the gradient is perceptually uniform.
+    vec3 young  = srgbToLinearVec(vec3(0.0,  0.8,  1.0));    // cyan   linearised
+    vec3 old    = srgbToLinearVec(vec3(1.0,  0.667, 0.133));  // amber  linearised
     cellRGB = mix(young, old, t) * bright;
 
   } else if (u_renderMode == 5 && isLife) {
     // ---- Fitness render mode (Phase 12) — Life/LifeVariant only ------------
     // Uses energy as a fitness proxy: low → dark olive, high → vivid gold.
     float fit = clamp(energy, 0.0, 1.0);
-    vec3 lo   = vec3(0.2,  0.267, 0.0);   // dark olive
-    vec3 hi   = vec3(1.0,  0.867, 0.0);   // vivid gold
+    // Linearise sRGB endpoints so mid-fitness cells appear at 50% perceived brightness.
+    vec3 lo   = srgbToLinearVec(vec3(0.2,  0.267, 0.0));   // dark olive  linearised
+    vec3 hi   = srgbToLinearVec(vec3(1.0,  0.867, 0.0));   // vivid gold  linearised
     cellRGB = mix(lo, hi, fit);
 
   } else {
     // ---- Default render mode: cellType + energy → colour -------------------
-    vec3 base = baseColor(cellType);
+    // In HDR mode use boosted emissive values; otherwise standard linearised sRGB.
+    vec3 base = u_hdrOutput ? hdrBaseColor(cellType) : srgbToLinearVec(baseColor(cellType));
     float brightness;
     if (isEnergyModulated(cellType)) {
       float minB = minBrightness(cellType);
@@ -529,7 +670,7 @@ void main() {
   if (u_renderMode == 6) {
     float sig = texelFetch(u_signalStrength, cellCoord, 0).r;
     sig = clamp(sig, 0.0, 1.0);
-    vec3 cyanGlow = vec3(0.0, 0.933, 1.0); // #00eeff
+    vec3 cyanGlow = srgbToLinearVec(vec3(0.0, 0.933, 1.0)); // #00eeff linearised
     cellRGB = mix(cellRGB, cyanGlow, sig);
   }
 
@@ -540,7 +681,9 @@ void main() {
 
   if (u_showGridLines && u_cellSize >= 2.0) {
     vec2 inCell = fract(gl_FragCoord.xy / u_cellSize);
-    float gridAlpha = 0.08;
+    // 0.08 sRGB white ≈ 0.006 in linear light; convert so the overlay
+    // is added in the same space as cellRGB (which is now linear).
+    float gridAlpha = srgbToLinear(0.08);
     if (inCell.x < (1.0 / u_cellSize) || inCell.y < (1.0 / u_cellSize)) {
       cellRGB = cellRGB + vec3(gridAlpha);
     }
@@ -548,11 +691,208 @@ void main() {
 
   // Environment tint — blend cell colour toward the background palette colour.
   // u_envTint.a = 0 means no tint; this branch is free when no background active.
+  // u_envTint.rgb carries normalised sRGB values (0–1); linearise before mixing
+  // so the blend operates in linear light alongside the rest of cellRGB.
   if (u_envTint.a > 0.0) {
-    cellRGB = mix(cellRGB, u_envTint.rgb, u_envTint.a);
+    vec3 tintLinear = srgbToLinearVec(u_envTint.rgb);
+    cellRGB = mix(cellRGB, tintLinear, u_envTint.a);
   }
 
-  outColor = vec4(clamp(cellRGB, 0.0, 1.0), 1.0);
+  // When u_hdrOutput is true (scene pass targeting an RGBA16F FBO), emit raw
+  // linear values so the composite shader can tonemap HDR → LDR.  Empty cells
+  // are output as fully transparent (alpha 0) so the background texture shows
+  // through during the composite pass.  In direct mode apply sRGB encoding.
+  float alpha = (u_hdrOutput && cellType == 0u) ? 0.0 : 1.0;
+  outColor = u_hdrOutput
+      ? vec4(cellRGB, alpha)
+      : vec4(linearToSrgbVec(clamp(cellRGB, 0.0, 1.0)), 1.0);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Post-processing shader sources (Phase 16c — HDR bloom pipeline)
+// ---------------------------------------------------------------------------
+
+/**
+ * Passthrough vertex shader used by all post-processing passes.
+ * @internal Exported for shader-content assertions in unit tests.
+ * Converts the clip-space quad position to normalised UV coordinates [0, 1]
+ * that the fragment shaders use to sample the source texture.
+ */
+export const PP_VERT_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+in vec2 a_position;
+out vec2 v_texCoord;
+
+void main() {
+  // Clip space [-1,1] → UV [0,1].
+  v_texCoord  = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}
+`;
+
+/**
+ * Bloom extraction pass (Pass 2).
+ *
+ * Samples the HDR scene texture.  For each fragment, computes the luminance
+ * and extracts only the portion above the configurable threshold.
+ * Pixels below the threshold are zeroed — only bright emissive cells
+ * (Fire, Barrier, Colony, Life A at high energy) survive and spread.
+ *
+ * Runs at half the scene resolution to keep blur passes cheap.
+ */
+export const BLOOM_EXTRACT_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+/** HDR scene texture from Pass 1. */
+uniform sampler2D u_scene;
+
+/**
+ * Luminance threshold [0, 1].  Pixels whose perceived brightness exceeds
+ * this value contribute to bloom.  Default: 0.85.
+ */
+uniform float u_threshold;
+
+in  vec2 v_texCoord;
+out vec4 outColor;
+
+void main() {
+  vec3  color = texture(u_scene, v_texCoord).rgb;
+  // Perceptual luminance (ITU-R BT.709 coefficients).
+  float luma  = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  // Only the above-threshold portion drives bloom; below-threshold → black.
+  float contrib = max(0.0, luma - u_threshold);
+  outColor = vec4(color * contrib, 1.0);
+}
+`;
+
+/**
+ * Separable 9-tap Gaussian blur pass (Passes 3 and 4).
+ *
+ * Applied twice — once horizontal, once vertical — to achieve a full 2-D
+ * Gaussian without the O(n²) cost of a 2-D kernel.
+ *
+ * Kernel weights follow a Gaussian with σ ≈ 1.5 and are normalised to
+ * sum ≈ 1.0 across the 9 taps:
+ *   centre (×1): 0.227027
+ *   ±1 (×2):     0.194595
+ *   ±2 (×2):     0.121622
+ *   ±3 (×2):     0.054054
+ *   ±4 (×2):     0.016216
+ */
+export const BLOOM_BLUR_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+/** Texture to blur (extract result on Pass 3; H-blur result on Pass 4). */
+uniform sampler2D u_source;
+
+/** True = horizontal pass; false = vertical pass. */
+uniform bool u_horizontal;
+
+in  vec2 v_texCoord;
+out vec4 outColor;
+
+void main() {
+  // Gaussian weights for the 9-tap kernel (centre + 4 symmetrical pairs).
+  const float WEIGHTS[5] = float[](0.227027, 0.194595, 0.121622, 0.054054, 0.016216);
+
+  // Per-texel offset in UV space (one texel in the blur direction).
+  vec2 texOffset = 1.0 / vec2(textureSize(u_source, 0));
+
+  // Accumulate weighted samples from the source.
+  vec3 result = texture(u_source, v_texCoord).rgb * WEIGHTS[0];
+  for (int i = 1; i < 5; ++i) {
+    vec2 off = u_horizontal
+        ? vec2(texOffset.x * float(i), 0.0)
+        : vec2(0.0, texOffset.y * float(i));
+    result += texture(u_source, v_texCoord + off).rgb * WEIGHTS[i];
+    result += texture(u_source, v_texCoord - off).rgb * WEIGHTS[i];
+  }
+  outColor = vec4(result, 1.0);
+}
+`;
+
+/**
+ * Composite + tonemap pass (Pass 5).
+ *
+ * Additively blends the full-resolution HDR scene with the half-resolution
+ * blurred bloom texture, then applies Reinhard extended tonemapping to map
+ * HDR linear values to the [0, 1] display range, and finally sRGB-encodes
+ * the output for the 8-bit display framebuffer.
+ *
+ * Reinhard extended formula: c * (1 + c/w²) / (1 + c)
+ * where w = whitePoint = 4.0  (HDR values at 4× display-white → near-white).
+ *
+ * The sRGB transfer functions are duplicated here (not shared from the scene
+ * shader) because this is a separate GLSL programme that cannot inherit from
+ * the scene FRAG_SRC source string.
+ */
+export const COMPOSITE_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+/** Full-resolution HDR scene texture from Pass 1 (RGBA — alpha 0 = empty cell). */
+uniform sampler2D u_scene;
+
+/** Half-resolution blurred bloom texture from Pass 4. */
+uniform sampler2D u_bloom;
+
+/**
+ * Bloom additive blend strength [0, 1].
+ * 0 = no bloom; 1 = bloom at full computed intensity.  Default: 0.6.
+ */
+uniform float u_bloomStrength;
+
+/**
+ * Pre-rendered background texture (RGBA16F, linear sRGB).
+ * Only sampled when u_hasBackground is true.
+ */
+uniform sampler2D u_background;
+
+/**
+ * True when a WebGL background has been rendered for this frame.
+ * When false, empty cells show as the plain dark background colour.
+ */
+uniform bool u_hasBackground;
+
+in  vec2 v_texCoord;
+out vec4 outColor;
+
+float linearToSrgb(float c) {
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+vec3 linearToSrgbVec(vec3 c) {
+  return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
+}
+
+/**
+ * Reinhard extended tonemapping — maps HDR [0, ∞) to [0, 1] without hue shift.
+ * whitePoint = 4.0: a value at 4× display-white maps to ~0.94 (near-white).
+ *
+ * @param c - Linear HDR colour triple (channels may exceed 1.0).
+ * @returns LDR colour in [0, 1]^3.
+ */
+vec3 reinhardExtended(vec3 c) {
+  const float whitePoint = 4.0;
+  return c * (1.0 + c / (whitePoint * whitePoint)) / (1.0 + c);
+}
+
+void main() {
+  vec4  sceneRGBA = texture(u_scene, v_texCoord);
+  vec3  bloom     = texture(u_bloom, v_texCoord).rgb * u_bloomStrength;
+
+  // Composite background behind the scene using scene alpha.
+  // Empty cells (alpha = 0) fully reveal the background;
+  // non-empty cells (alpha = 1) fully occlude it.
+  vec3 base = sceneRGBA.rgb;
+  if (u_hasBackground) {
+    vec3 bg = texture(u_background, v_texCoord).rgb;
+    base    = mix(bg, sceneRGBA.rgb, sceneRGBA.a);
+  }
+
+  vec3 hdr = base + bloom;
+  vec3 ldr = reinhardExtended(hdr);
+  outColor = vec4(linearToSrgbVec(clamp(ldr, 0.0, 1.0)), 1.0);
 }
 `;
 
@@ -673,9 +1013,77 @@ export class WebGLRenderer {
   /** Uniform location for the render mode integer (Phase 10/11/12). */
   private readonly _uRenderMode!: WebGLUniformLocation;
   private readonly _uEnvTint!:    WebGLUniformLocation;
+  /** Uniform location for the HDR output flag (Phase 16c). */
+  private readonly _uHdrOutput!:  WebGLUniformLocation;
 
   /** Current environment tint `[r, g, b, alpha]` — r/g/b normalised to [0,1]. */
   private _envTintVec: readonly [number, number, number, number] = [0, 0, 0, 0];
+
+  // --- Phase 16c HDR bloom pipeline ------------------------------------------
+
+  /**
+   * True when `EXT_color_buffer_float` is available and the 5-pass HDR bloom
+   * pipeline has been initialised.  False = direct 8-bit render path.
+   */
+  private _bloomEnabled  = false;
+
+  /** Luminance threshold above which pixels contribute to bloom [0, 1]. */
+  private _bloomThreshold = 0.85;
+
+  /** Bloom additive blend strength [0, 1]. */
+  private _bloomStrength  = 0.6;
+
+  // HDR scene texture + FBO (full resolution, RGBA16F).
+  private _hdrTex:          WebGLTexture       | null = null;
+  private _hdrFbo:          WebGLFramebuffer   | null = null;
+
+  // Half-resolution bloom extraction + Gaussian blur textures and FBOs.
+  private _bloomExtractTex: WebGLTexture       | null = null;
+  private _bloomExtractFbo: WebGLFramebuffer   | null = null;
+  private _bloomBlurHTex:   WebGLTexture       | null = null;
+  private _bloomBlurHFbo:   WebGLFramebuffer   | null = null;
+  private _bloomBlurVTex:   WebGLTexture       | null = null;
+  private _bloomBlurVFbo:   WebGLFramebuffer   | null = null;
+
+  // Post-processing shader programs (null when bloom is unsupported).
+  private _bloomExtractProg: WebGLProgram      | null = null;
+  private _bloomBlurProg:    WebGLProgram      | null = null;
+  private _compositeProg:    WebGLProgram      | null = null;
+
+  /** VAO for the post-processing passes (reuses `_vbo`, separate PP program). */
+  private _ppVao: WebGLVertexArrayObject | null = null;
+
+  // Uniform locations for the post-processing programs (null when unsupported).
+  private _uExtractScene:      WebGLUniformLocation | null = null;
+  private _uExtractThreshold:  WebGLUniformLocation | null = null;
+  private _uBlurSource:        WebGLUniformLocation | null = null;
+  private _uBlurHorizontal:    WebGLUniformLocation | null = null;
+  private _uCompositeScene:    WebGLUniformLocation | null = null;
+  private _uCompositeBloom:    WebGLUniformLocation | null = null;
+  private _uCompositeStrength: WebGLUniformLocation | null = null;
+
+  // --- Phase 16d WebGL background -------------------------------------------
+
+  /**
+   * Current WebGL background instance (null = no background).
+   * Renders into `_bgFbo` once per frame before the composite pass.
+   */
+  private _webGLBackground: WebGLBackground | null = null;
+
+  /** Monotonically increasing frame counter passed to background.render(). */
+  private _frame = 0;
+
+  /** RGBA16F texture the background renders into each frame. */
+  private _bgTex: WebGLTexture | null = null;
+
+  /** Framebuffer wrapping `_bgTex` as its colour attachment. */
+  private _bgFbo: WebGLFramebuffer | null = null;
+
+  /** Composite shader uniform location for the background sampler. */
+  private _uCompositeBg: WebGLUniformLocation | null = null;
+
+  /** Composite shader uniform location for the u_hasBackground bool. */
+  private _uCompositeHasBg: WebGLUniformLocation | null = null;
 
   // --- State -----------------------------------------------------------------
 
@@ -751,10 +1159,64 @@ export class WebGLRenderer {
     this._uShowGridLines   = this._requireUniform('u_showGridLines');
     this._uRenderMode      = this._requireUniform('u_renderMode');
     this._uEnvTint         = this._requireUniform('u_envTint');
+    this._uHdrOutput       = this._requireUniform('u_hdrOutput');
 
     // --- Fullscreen quad geometry ---------------------------------------------
+    // _vbo MUST be created before the HDR block below, because _createPPVao()
+    // (called inside that block) binds this._vbo to configure the PP VAO's
+    // vertex attribute.  If _vbo were created after, _createPPVao() would bind
+    // null and the PP VAO would have no vertex data → all bloom passes silent.
     this._vbo = this._createQuadBuffer();
     this._vao = this._createVAO(this._vbo);
+
+    // --- HDR bloom pipeline (Phase 16c) --------------------------------------
+    //
+    // RGBA16F framebuffer attachments require EXT_color_buffer_float in WebGL 2.
+    // Desktop GPUs support it universally; some mobile browsers do not.
+    // If unavailable, _bloomEnabled stays false and we render directly.
+    const hdrExt = gl.getExtension('EXT_color_buffer_float');
+    if (hdrExt !== null) {
+      this._bloomEnabled = true;
+
+      // Compile the three post-processing programs.
+      this._bloomExtractProg = this._createProgram(PP_VERT_SRC, BLOOM_EXTRACT_FRAG_SRC);
+      this._bloomBlurProg    = this._createProgram(PP_VERT_SRC, BLOOM_BLUR_FRAG_SRC);
+      this._compositeProg    = this._createProgram(PP_VERT_SRC, COMPOSITE_FRAG_SRC);
+
+      // Cache PP uniform locations.
+      this._uExtractScene      = this._requireUniformIn(this._bloomExtractProg, 'u_scene');
+      this._uExtractThreshold  = this._requireUniformIn(this._bloomExtractProg, 'u_threshold');
+      this._uBlurSource        = this._requireUniformIn(this._bloomBlurProg,    'u_source');
+      this._uBlurHorizontal    = this._requireUniformIn(this._bloomBlurProg,    'u_horizontal');
+      this._uCompositeScene    = this._requireUniformIn(this._compositeProg,    'u_scene');
+      this._uCompositeBloom    = this._requireUniformIn(this._compositeProg,    'u_bloom');
+      this._uCompositeStrength = this._requireUniformIn(this._compositeProg,    'u_bloomStrength');
+      this._uCompositeBg       = this._requireUniformIn(this._compositeProg,    'u_background');
+      this._uCompositeHasBg    = this._requireUniformIn(this._compositeProg,    'u_hasBackground');
+
+      // Background texture + FBO (same RGBA16F format; sized in _resize).
+      this._bgTex = this._createTexture();
+      this._bgFbo = this._createFbo();
+
+      // Create HDR + bloom texture objects (sized lazily in _resize).
+      this._hdrTex          = this._createTexture();
+      this._bloomExtractTex = this._createTexture();
+      this._bloomBlurHTex   = this._createTexture();
+      this._bloomBlurVTex   = this._createTexture();
+
+      // Create FBO objects (attached to textures in _resize).
+      this._hdrFbo          = this._createFbo();
+      this._bloomExtractFbo = this._createFbo();
+      this._bloomBlurHFbo   = this._createFbo();
+      this._bloomBlurVFbo   = this._createFbo();
+
+      // Post-processing VAO — shares _vbo with the scene pass.
+      this._ppVao = this._createPPVao();
+    } else {
+      console.warn(
+        'WebGLRenderer: EXT_color_buffer_float unavailable; bloom disabled.',
+      );
+    }
 
     // --- Textures (allocated empty; resized on first render) -----------------
     this._cellTypeTex      = this._createTexture();
@@ -875,6 +1337,81 @@ export class WebGLRenderer {
    */
   set envTint(tint: readonly [number, number, number, number]) {
     this._envTintVec = tint;
+  }
+
+  // --- Phase 16c bloom controls ---------------------------------------------
+
+  /**
+   * Returns true when the HDR bloom pipeline is active.
+   * False when `EXT_color_buffer_float` was unavailable at construction.
+   */
+  get bloomEnabled(): boolean {
+    return this._bloomEnabled;
+  }
+
+  /**
+   * Enables or disables the HDR bloom post-processing pipeline.
+   * Has no effect when `EXT_color_buffer_float` is unavailable.
+   *
+   * @param enabled - True to enable bloom; false to use direct 8-bit rendering.
+   */
+  set bloomEnabled(enabled: boolean) {
+    // Can only enable if the extension is available (FBOs were created).
+    if (enabled && this._hdrFbo === null) return;
+    this._bloomEnabled = enabled;
+  }
+
+  /**
+   * Luminance threshold above which pixels contribute to bloom.
+   *
+   * @returns Current threshold in [0, 1]. Default: 0.85.
+   */
+  get bloomThreshold(): number {
+    return this._bloomThreshold;
+  }
+
+  /**
+   * Sets the luminance threshold for bloom extraction.
+   * Lower values spread bloom to more cells; higher values restrict it to the
+   * brightest emissive types.
+   *
+   * @param t - Threshold in [0, 1]. Values outside the range are clamped.
+   */
+  set bloomThreshold(t: number) {
+    this._bloomThreshold = Math.max(0, Math.min(1, t));
+  }
+
+  /**
+   * Bloom additive blend strength.
+   *
+   * @returns Current strength in [0, 1]. Default: 0.6.
+   */
+  get bloomStrength(): number {
+    return this._bloomStrength;
+  }
+
+  /**
+   * Sets the bloom blend strength in the composite pass.
+   * 0 = no bloom visible; 1 = full computed bloom intensity.
+   *
+   * @param s - Strength in [0, 1]. Values outside the range are clamped.
+   */
+  set bloomStrength(s: number) {
+    this._bloomStrength = Math.max(0, Math.min(1, s));
+  }
+
+  // --- Phase 16d background control ----------------------------------------
+
+  /**
+   * Sets the WebGL background rendered behind the simulation in the HDR bloom
+   * composite pass.  Pass `null` to clear (empty cells → opaque dark).
+   *
+   * Only effective when the HDR bloom pipeline is active.
+   *
+   * @param bg - WebGL background instance, or null for no background.
+   */
+  setWebGLBackground(bg: WebGLBackground | null): void {
+    this._webGLBackground = bg;
   }
 
   /**
@@ -1041,9 +1578,17 @@ export class WebGLRenderer {
     const [tr, tg, tb, ta] = this._envTintVec;
     gl.uniform4f(this._uEnvTint, tr / 255, tg / 255, tb / 255, ta);
 
-    gl.bindVertexArray(this._vao);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.bindVertexArray(null);
+    // Dispatch to the appropriate render path.
+    if (this._bloomEnabled && this._hdrFbo !== null) {
+      this._drawHDRPipeline(width, height);
+    } else {
+      // Direct path: render scene straight to the 8-bit display framebuffer.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.uniform1i(this._uHdrOutput, 0);
+      gl.bindVertexArray(this._vao);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.bindVertexArray(null);
+    }
   }
 
   /**
@@ -1098,6 +1643,34 @@ export class WebGLRenderer {
     this._allocateTexture(this._generationTex,     width, height, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT);
     this._allocateTexture(this._signalStrengthTex, width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     // Note: _variantPaletteTex is 256×1 and never resizes — skip here.
+
+    // --- HDR bloom textures (Phase 16c) --------------------------------------
+    //
+    // Allocated only when the extension is available.  The scene FBO matches
+    // the canvas pixel size exactly; bloom FBOs run at half resolution to keep
+    // the Gaussian blur cheap without a visible quality loss.
+    if (this._bloomEnabled && this._hdrTex !== null) {
+      const halfW = Math.max(1, Math.floor(canvasW / 2));
+      const halfH = Math.max(1, Math.floor(canvasH / 2));
+
+      this._allocateHdrTexture(this._hdrTex,          canvasW, canvasH);
+      this._attachTexToFbo(    this._hdrFbo!,          this._hdrTex);
+
+      this._allocateHdrTexture(this._bloomExtractTex!, halfW, halfH);
+      this._attachTexToFbo(    this._bloomExtractFbo!, this._bloomExtractTex!);
+
+      this._allocateHdrTexture(this._bloomBlurHTex!,   halfW, halfH);
+      this._attachTexToFbo(    this._bloomBlurHFbo!,   this._bloomBlurHTex!);
+
+      this._allocateHdrTexture(this._bloomBlurVTex!,   halfW, halfH);
+      this._attachTexToFbo(    this._bloomBlurVFbo!,   this._bloomBlurVTex!);
+
+      // Background texture runs at full scene resolution (same as HDR scene).
+      if (this._bgTex !== null) {
+        this._allocateHdrTexture(this._bgTex, canvasW, canvasH);
+        this._attachTexToFbo(this._bgFbo!, this._bgTex);
+      }
+    }
   }
 
   /**
@@ -1270,6 +1843,202 @@ export class WebGLRenderer {
     const tex = this._gl.createTexture();
     if (tex === null) throw new Error('WebGLRenderer: gl.createTexture() returned null.');
     return tex;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 16c — HDR bloom pipeline
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Runs the 5-pass HDR bloom pipeline when `EXT_color_buffer_float` is
+   * available.  Assumes `this._program` is already bound with all scene
+   * uniforms set (called from `render()` after the scene setup block).
+   *
+   * Pass 1 — scene to RGBA16F HDR FBO (full resolution).
+   * Pass 2 — bloom extraction to half-res FBO (luma > threshold).
+   * Pass 3 — horizontal 9-tap Gaussian blur (half-res).
+   * Pass 4 — vertical   9-tap Gaussian blur (half-res).
+   * Pass 5 — composite scene + bloom, Reinhard tonemap, sRGB encode → display.
+   *
+   * @param width  - Grid width in cells.
+   * @param height - Grid height in cells.
+   */
+  private _drawHDRPipeline(width: number, height: number): void {
+    // Guard: resources are fully present (should always be true when _bloomEnabled).
+    if (
+      this._hdrFbo          === null || this._hdrTex          === null ||
+      this._bloomExtractFbo === null || this._bloomExtractTex === null ||
+      this._bloomBlurHFbo   === null || this._bloomBlurHTex   === null ||
+      this._bloomBlurVFbo   === null || this._bloomBlurVTex   === null ||
+      this._bloomExtractProg === null || this._bloomBlurProg  === null ||
+      this._compositeProg   === null || this._ppVao           === null
+    ) return;
+
+    const gl     = this._gl;
+    const cW     = width  * this._cellSize;
+    const cH     = height * this._cellSize;
+    const halfW  = Math.max(1, Math.floor(cW / 2));
+    const halfH  = Math.max(1, Math.floor(cH / 2));
+
+    // --- Pass 0 (optional): Render WebGL background into bg FBO -------------
+    const hasBg = this._webGLBackground !== null && this._bgFbo !== null && this._bgTex !== null;
+    if (hasBg) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this._bgFbo);
+      gl.viewport(0, 0, cW, cH);
+      this._webGLBackground!.render(gl, cW, cH, this._frame);
+    }
+
+    // --- Pass 1: Render scene to HDR FBO ------------------------------------
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._hdrFbo);
+    gl.viewport(0, 0, cW, cH);
+    // Re-bind scene program (background render may have left a different program).
+    gl.useProgram(this._program);
+    gl.uniform1i(this._uHdrOutput, 1);   // emit raw linear (may exceed 1.0)
+    gl.bindVertexArray(this._vao);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // --- Pass 2: Bloom extract (full-res HDR → half-res extract FBO) --------
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomExtractFbo);
+    gl.viewport(0, 0, halfW, halfH);
+    gl.useProgram(this._bloomExtractProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._hdrTex);
+    gl.uniform1i(this._uExtractScene!,     0);
+    gl.uniform1f(this._uExtractThreshold!, this._bloomThreshold);
+    gl.bindVertexArray(this._ppVao);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // --- Pass 3: Horizontal Gaussian blur (extract → blurH FBO) -------------
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomBlurHFbo);
+    gl.useProgram(this._bloomBlurProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._bloomExtractTex);
+    gl.uniform1i(this._uBlurSource!,     0);
+    gl.uniform1i(this._uBlurHorizontal!, 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // --- Pass 4: Vertical Gaussian blur (blurH → blurV FBO) -----------------
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomBlurVFbo);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._bloomBlurHTex);
+    gl.uniform1i(this._uBlurHorizontal!, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // --- Pass 5: Composite + Reinhard tonemap → display framebuffer ----------
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, cW, cH);
+    gl.useProgram(this._compositeProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._hdrTex);
+    gl.uniform1i(this._uCompositeScene!,    0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this._bloomBlurVTex);
+    gl.uniform1i(this._uCompositeBloom!,    1);
+    gl.uniform1f(this._uCompositeStrength!, this._bloomStrength);
+
+    // Bind background texture to unit 2 and inform the composite shader.
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, hasBg ? this._bgTex : null);
+    gl.uniform1i(this._uCompositeBg!,    2);
+    gl.uniform1i(this._uCompositeHasBg!, hasBg ? 1 : 0);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.bindVertexArray(null);
+
+    this._frame++;
+  }
+
+  /**
+   * Allocates (or re-allocates) an RGBA16F texture at the given pixel
+   * dimensions with linear filtering for smooth bloom sampling.
+   *
+   * @param tex    - Texture object to configure.
+   * @param width  - Width in pixels.
+   * @param height - Height in pixels.
+   */
+  private _allocateHdrTexture(tex: WebGLTexture, width: number, height: number): void {
+    const gl = this._gl;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // RGBA16F: 4-channel, 16-bit float — supports values > 1.0 for HDR glow.
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, width, height, 0, gl.RGBA, gl.FLOAT, null);
+    // Linear filtering gives smoother bloom blending than nearest-neighbour.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+
+  /**
+   * Attaches a texture to a framebuffer's `COLOR_ATTACHMENT0`.
+   *
+   * @param fbo - Framebuffer to configure.
+   * @param tex - Texture to attach as the colour render target.
+   */
+  private _attachTexToFbo(fbo: WebGLFramebuffer, tex: WebGLTexture): void {
+    const gl = this._gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /**
+   * Creates an empty `WebGLFramebuffer` object.
+   * Textures are attached (and re-attached on resize) via `_attachTexToFbo`.
+   *
+   * @returns The created `WebGLFramebuffer`.
+   * @throws If framebuffer creation fails.
+   */
+  private _createFbo(): WebGLFramebuffer {
+    const fbo = this._gl.createFramebuffer();
+    if (fbo === null) throw new Error('WebGLRenderer: gl.createFramebuffer() returned null.');
+    return fbo;
+  }
+
+  /**
+   * Creates a VAO for the post-processing fullscreen quad.
+   * Reuses `_vbo` (same geometry) but queries `a_position` from the
+   * bloom-extract programme so the attribute location is correct.
+   *
+   * @returns The created `WebGLVertexArrayObject`.
+   * @throws If VAO creation or attribute lookup fails.
+   */
+  private _createPPVao(): WebGLVertexArrayObject {
+    const gl  = this._gl;
+    const vao = gl.createVertexArray();
+    if (vao === null) throw new Error('WebGLRenderer: gl.createVertexArray() returned null (PP).');
+
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._vbo);
+
+    const loc = gl.getAttribLocation(this._bloomExtractProg!, 'a_position');
+    if (loc === -1) throw new Error('WebGLRenderer: "a_position" not found in bloom-extract programme.');
+
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+    return vao;
+  }
+
+  /**
+   * Returns the `WebGLUniformLocation` for a named uniform in the given
+   * programme, throwing if not found.  Used for post-processing programmes
+   * where uniforms live in a programme other than `this._program`.
+   *
+   * @param prog - The linked `WebGLProgram` to query.
+   * @param name - Uniform variable name in the GLSL source.
+   * @returns The `WebGLUniformLocation`.
+   * @throws If the uniform is not found in `prog`.
+   */
+  private _requireUniformIn(prog: WebGLProgram, name: string): WebGLUniformLocation {
+    const loc = this._gl.getUniformLocation(prog, name);
+    if (loc === null) {
+      throw new Error(`WebGLRenderer: uniform "${name}" not found in post-process programme.`);
+    }
+    return loc;
   }
 
   /**
