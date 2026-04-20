@@ -71,6 +71,39 @@ export interface Background {
 }
 
 // ---------------------------------------------------------------------------
+// WebGL background interface
+// ---------------------------------------------------------------------------
+
+/**
+ * Contract every WebGL background must satisfy.
+ *
+ * Implementations compile their own GLSL programme on first render (lazy init)
+ * and draw a fullscreen quad into the currently-bound framebuffer.
+ *
+ * The renderer calls `render()` once per frame between the bloom blur passes
+ * and the final composite pass so the background lands behind the simulation.
+ */
+export interface WebGLBackground {
+  /**
+   * Render one animation frame of this background into the current GL state.
+   *
+   * @param gl     - The WebGL2 context.
+   * @param width  - Viewport width in pixels.
+   * @param height - Viewport height in pixels.
+   * @param frame  - Monotonically increasing frame counter (starts at 0).
+   */
+  render(gl: WebGL2RenderingContext, width: number, height: number, frame: number): void;
+
+  /**
+   * OKLab tint applied to living cells so they visually belong to the
+   * environment.  `null` means no GPU-side tint override.
+   *
+   * Format: `[L, a, b]` in OKLab colour space.
+   */
+  readonly envTintOklab: readonly [number, number, number] | null;
+}
+
+// ---------------------------------------------------------------------------
 // Human-readable labels
 // ---------------------------------------------------------------------------
 
@@ -153,6 +186,7 @@ export async function createBackground(type: BackgroundType): Promise<Background
     }
   }
 }
+
 
 /**
  * Synchronous factory for testing and non-lazy contexts.
