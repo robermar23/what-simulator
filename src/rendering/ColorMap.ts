@@ -18,7 +18,7 @@
  */
 
 import { CellType } from '../simulation/GridState.js';
-import { hexToRgb, packRgba, scaleBrightness } from '../utils/colorUtils.js';
+import { hexToRgb, packRgba, scaleBrightness, linearToSrgb } from '../utils/colorUtils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -266,55 +266,81 @@ export const VARIANT_COUNT = 256;
  */
 export const VARIANT_PALETTE: Uint32Array = ((): Uint32Array => {
   /**
-   * Golden angle in degrees.  Each step in variantId space advances the hue
-   * by ~137.508°, distributing 256 hues evenly around the colour wheel
-   * without clustering.
+   * Golden angle in radians.  Each step advances the OKLab hue by ~137.508°,
+   * maximising perceptual distance between adjacent variant IDs.
    *
-   * Derivation: 360 × (1 − 1/φ) where φ ≈ 1.618 (golden ratio).
+   * Derivation: 2π × (1 − 1/φ) where φ ≈ 1.618 (golden ratio).
    */
-  const GOLDEN_ANGLE_DEG = 137.508;
+  const GOLDEN_ANGLE_RAD = 2.399963229; // 137.508° × π/180
+
+  /** Constant perceived lightness for all variants (OKLab L axis). */
+  const L_OK = 0.72;
+
+  /** Chroma radius in the OKLab a/b plane — controls colour saturation. */
+  const C_OK = 0.12;
 
   const palette = new Uint32Array(VARIANT_COUNT);
 
-  for (let v = 0; v < VARIANT_COUNT; v++) {
-    let r: number, g: number, b: number;
+  // Variant 0: base seed Life — keep the familiar vivid green #00ff88 so
+  // undiverged cells look identical to previous phases.
+  palette[0] = packRgba(0x00, 0xff, 0x88);
 
-    if (v === 0) {
-      // Variant 0 = base seed Life: vivid green #00ff88
-      r = 0x00; g = 0xff; b = 0x88;
-    } else {
-      // Golden-angle HSL distribution: S=85%, L=55%
-      const hue = (v * GOLDEN_ANGLE_DEG) % 360;
-      const s   = 0.85;
-      const l   = 0.55;
-      ({ r, g, b } = hslToRgb(hue, s, l));
-    }
-
+  for (let v = 1; v < VARIANT_COUNT; v++) {
+    // Distribute hue around the OKLab a/b plane using the golden angle.
+    // L is held constant so all 256 variants have equal perceived brightness —
+    // unlike HSL where orange/yellow hues appear brighter than blue/purple.
+    const hue = (v * GOLDEN_ANGLE_RAD) % (2 * Math.PI);
+    const { r, g, b } = oklabToSrgb(L_OK, C_OK * Math.cos(hue), C_OK * Math.sin(hue));
     palette[v] = packRgba(r, g, b);
   }
 
   return palette;
 })();
 
+// ---------------------------------------------------------------------------
+// OKLab colour space helpers (Phase 16b)
+//
+// OKLab (Björn Ottosson, 2020) is a perceptually uniform colour space where
+// equal Euclidean distances correspond to equal perceived colour differences
+// and the L axis truly represents lightness independent of hue.
+//
+// The GLSL equivalent lives in WebGLRenderer.ts (oklabToLinearRgb).
+// ---------------------------------------------------------------------------
+
 /**
- * Converts an HSL colour to integer RGB components [0, 255].
+ * Converts OKLab coordinates to a gamma-encoded sRGB colour (0–255 channels).
  *
- * @param h - Hue in degrees [0, 360).
- * @param s - Saturation in [0, 1].
- * @param l - Lightness in [0, 1].
- * @returns Object with `r`, `g`, `b` each in [0, 255].
+ * Steps:
+ *   OKLab → LMS (cube-root domain) → LMS (linear) → linear sRGB → sRGB [0,255]
+ *
+ * Out-of-gamut linear sRGB values are clamped to [0, 1] before encoding.
+ *
+ * @param L - Perceived lightness in [0, 1].
+ * @param a - Green–red chroma axis (approx. −0.5 … +0.5).
+ * @param b - Blue–yellow chroma axis (approx. −0.5 … +0.5).
+ * @returns Gamma-encoded sRGB colour with channels in [0, 255].
  */
-function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number): number => {
-    const k = (n + h / 30) % 12;
-    return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
-  };
-  return {
-    r: Math.round(f(0)  * 255),
-    g: Math.round(f(8)  * 255),
-    b: Math.round(f(4)  * 255),
-  };
+export function oklabToSrgb(L: number, a: number, b: number): { readonly r: number; readonly g: number; readonly b: number } {
+  // Step 1: OKLab → LMS (cube-root domain)
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+
+  // Step 2: Undo cube root → LMS in linear light
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+
+  // Step 3: LMS → linear sRGB (matrix from OKLab spec)
+  const rLin =  4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const gLin = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const bLin = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+
+  // Step 4: Linear sRGB → gamma-encoded sRGB [0, 255]; clamp out-of-gamut values.
+  const enc = (c: number): number =>
+    Math.round(linearToSrgb(Math.max(0, Math.min(1, c))) * 255);
+
+  return { r: enc(rLin), g: enc(gLin), b: enc(bLin) };
 }
 
 /**
@@ -354,23 +380,48 @@ export function variantColorFor(variantId: number, energy: number): number {
 /**
  * Returns the packed RGBA colour for a Life cell in `genome` render mode.
  *
- * Maps the 16-bit genome value to a hue in HSL space, creating a visible
- * colour gradient that shows genetic diversity across the colony.  The neutral
- * genome (0x7777) maps to the green midpoint; values below neutral shift toward
- * blue, values above shift toward yellow-red.
+ * Interpolates through OKLab so all three endpoints share equal perceived
+ * lightness — unlike the previous HSL approach where yellow/orange appeared
+ * brighter than blue at the same "lightness" value.
+ *
+ * OKLab endpoints:
+ *   - genome 0x0000 → blue  L=0.55, a=−0.05, b=−0.22
+ *   - genome ~0x8000 → green L=0.72, a=−0.17, b=+0.12  (neutral midpoint)
+ *   - genome 0xFFFF → red   L=0.55, a=+0.18, b=+0.10
+ *
+ * Energy scales the L axis so low-energy cells appear darker while hue/chroma
+ * are preserved — this is the perceptually correct way to dim an OKLab colour.
  *
  * @param genome - 16-bit packed genome (0x0000–0xFFFF).
- * @param energy - Cell energy in [0, 1]; modulates brightness (min 15%).
+ * @param energy - Cell energy in [0, 1]; modulates perceived lightness (min 15%).
  * @returns Packed RGBA 32-bit colour.
  */
 export function genomeColorFor(genome: number, energy: number): number {
-  // Normalise genome to [0, 1]; neutral 0x7777 = 0.4668 ≈ 0.47 → maps to ~168° (aqua/green).
-  const t          = genome / 0xFFFF;
-  // Map t → hue: 0→240° (blue), 0.47→120° (green/neutral), 1→0° (red).
-  const hue        = 240 - t * 240;
+  const t = genome / 0xFFFF;
+
+  // OKLab endpoints: blue ← neutral green → red
+  const blueL = 0.55;  const blueA = -0.05; const blueB = -0.22;
+  const midL  = 0.72;  const midA  = -0.17; const midB  =  0.12;
+  const redL  = 0.55;  const redA  =  0.18; const redB  =  0.10;
+
+  // Piecewise linear interpolation through OKLab (stays in perceptual space).
+  let L: number, a: number, b: number;
+  if (t < 0.5) {
+    const s = t * 2;
+    L = blueL + s * (midL - blueL);
+    a = blueA + s * (midA - blueA);
+    b = blueB + s * (midB - blueB);
+  } else {
+    const s = (t - 0.5) * 2;
+    L = midL + s * (redL - midL);
+    a = midA + s * (redA - midA);
+    b = midB + s * (redB - midB);
+  }
+
+  // Scale L for energy brightness (min 15%); hue and chroma are unchanged.
   const brightness = 0.15 + 0.85 * Math.max(0, Math.min(1, energy));
-  const { r, g, b } = hslToRgb(hue, 0.8, 0.5 * brightness + 0.3);
-  return packRgba(r, g, b);
+  const { r, g, b: bCh } = oklabToSrgb(L * brightness, a, b);
+  return packRgba(r, g, bCh);
 }
 
 /**
