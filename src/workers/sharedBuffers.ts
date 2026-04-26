@@ -104,6 +104,9 @@ export const CTRL_BYTES = CTRL_COUNT * Int32Array.BYTES_PER_ELEMENT; // 16 bytes
  *   genomeOffset, variantIdOffset, generationOffset,
  *   toxinResistOffset, nutrientAbsOffset, heatResistOffset,
  *   spreadBonusOffset, signalStrengthOffset
+ *
+ * Phase 19 motility fields (NEW):
+ *   vxOffset, vyOffset
  */
 export interface BufferSetLayout {
   // --- Round 1 (unchanged) -------------------------------------------------
@@ -133,6 +136,18 @@ export interface BufferSetLayout {
   spreadBonusOffset: number;
   /** Byte offset for `signalStrength` (Float32Array, `totalCells * 4` bytes). */
   signalStrengthOffset: number;
+
+  // --- Phase 19 motility fields (NEW) --------------------------------------
+  /**
+   * Byte offset for `vx` (Float32Array, `totalCells * 4` bytes).
+   * X-axis velocity in grid-units/tick for motile Life cells.
+   */
+  vxOffset: number;
+  /**
+   * Byte offset for `vy` (Float32Array, `totalCells * 4` bytes).
+   * Y-axis velocity in grid-units/tick for motile Life cells.
+   */
+  vyOffset: number;
 
   /** Total byte size of one buffer set (padded to 8-byte boundary). */
   byteSize: number;
@@ -223,6 +238,16 @@ export function computeBufferSetLayout(totalCells: number): BufferSetLayout {
   const signalStrengthOffset = cursor;
   cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
 
+  // --- Phase 19 motility buffers (NEW) -------------------------------------
+
+  // vx: 4 bytes per cell — X-axis velocity in grid-units/tick.
+  const vxOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // vy: 4 bytes per cell — Y-axis velocity in grid-units/tick.
+  const vyOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
   // Pad the whole set to an 8-byte boundary so two sets can be stacked.
   const byteSize = alignTo(cursor, 8);
 
@@ -239,6 +264,8 @@ export function computeBufferSetLayout(totalCells: number): BufferSetLayout {
     heatResistOffset,
     spreadBonusOffset,
     signalStrengthOffset,
+    vxOffset,
+    vyOffset,
     byteSize,
   };
 }
@@ -330,5 +357,8 @@ export function makeBufferViews(
     heatResist:     new Float32Array(sab, base + layout.heatResistOffset,     totalCells),
     spreadBonus:    new Float32Array(sab, base + layout.spreadBonusOffset,    totalCells),
     signalStrength: new Float32Array(sab, base + layout.signalStrengthOffset, totalCells),
+    // Phase 19 motility buffers
+    vx:             new Float32Array(sab, base + layout.vxOffset,             totalCells),
+    vy:             new Float32Array(sab, base + layout.vyOffset,             totalCells),
   };
 }

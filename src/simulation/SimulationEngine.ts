@@ -378,7 +378,13 @@ export class SimulationEngine {
       spreadBonus:    bkSpreadBonus,
       // --- Phase 10: signal used for apoptosis burst ---
       signalStrength: bkSignalStrength,
+      // --- Phase 19: motility velocity buffers ---
+      vx: bkVx,
+      vy: bkVy,
     } = back;
+
+    // Phase 19: read front velocity buffers for the post-loop motility pass.
+    const { vx: ftVx, vy: ftVy } = front;
 
     const {
       // Regular Life params
@@ -926,6 +932,207 @@ export class SimulationEngine {
         }
 
         continue;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 19: Motility & Chemotaxis pass.
+    //
+    // Runs AFTER the main loop so every cell's survival/death decision is
+    // already committed to the back buffer.  Two sequential sub-passes:
+    //
+    //   Sub-pass 1 — Velocity update (all surviving Life cells):
+    //     new_v = old_v × (1 − damping) blended with chemical-gradient bias.
+    //
+    //   Sub-pass 2 — Migration (motile cells only, first-writer-wins):
+    //     A cell whose spreadBonus > motilityThreshold and that passes a
+    //     motilityRate probability check attempts to move one step toward its
+    //     velocity vector.  The target must be Empty in BOTH front and back to
+    //     prevent overwriting newly-born children or cells migrating into it
+    //     from an earlier index.
+    //
+    // No heap allocation: x/y coordinates computed inline with % and |0.
+    // -----------------------------------------------------------------------
+    const { motilityRate, motilityThreshold, motilityDamping, chemotaxisMotilityFraction } = config;
+
+    if (motilityRate > 0) {
+
+      // Sub-pass 1: Update velocities for all surviving Life cells.
+      for (let i = 0; i < total; i++) {
+        if (bkType[i] !== CellType.Life) {
+          // Zero velocity for dead cells, empty cells, and non-Life types.
+          bkVx[i] = 0;
+          bkVy[i] = 0;
+          continue;
+        }
+
+        // Carry forward velocity with exponential damping (drag / cytoskeletal reset).
+        let vx = ftVx[i] * (1.0 - motilityDamping);
+        let vy = ftVy[i] * (1.0 - motilityDamping);
+
+        // Chemotaxis: bias velocity toward high-signal (nutrient) cells and
+        // away from toxin cells.  Uses front cellType and signalStrength so
+        // the chemical gradient is the one that was visible to the cell this tick.
+        if (chemotaxisMotilityFraction > 0) {
+          const nLen = this._fillNeighbors(i, width, height, useMoore);
+          const ix = i % width;
+          const iy = (i / width) | 0;
+          let bx = 0.0;
+          let by = 0.0;
+
+          for (let k = 0; k < nLen; k++) {
+            const ni    = this._neighborBuf[k];
+            const ntype = ftType[ni];
+            const nx = ni % width;
+            const ny = (ni / width) | 0;
+            const dx = nx - ix;
+            const dy = ny - iy;
+            let weight = 0.0;
+
+            if (ntype === CellType.Nutrient) {
+              // Strong positive attraction — move toward nutrients.
+              weight = 1.0;
+            } else if (ntype === CellType.Toxin) {
+              // Negative — flee toxin cells.
+              weight = -0.8;
+            } else {
+              // Gentle signal-gradient following (e.g. Colony-emitted signals).
+              weight = ftSignal[ni] * 0.3;
+            }
+            bx += dx * weight;
+            by += dy * weight;
+          }
+
+          // Blend persisted momentum with the chemical gradient.
+          vx = vx * (1.0 - chemotaxisMotilityFraction) + bx * chemotaxisMotilityFraction;
+          vy = vy * (1.0 - chemotaxisMotilityFraction) + by * chemotaxisMotilityFraction;
+        }
+
+        bkVx[i] = vx;
+        bkVy[i] = vy;
+      }
+
+      // Sub-pass 2: Migrate motile cells one step toward their velocity vector.
+      for (let i = 0; i < total; i++) {
+        // Only cells that:
+        //   a) Survived the main tick as Life in both front and back (not newborn).
+        //   b) Have a motile phenotype (spreadBonus above the threshold).
+        //   c) Pass the per-tick migration probability check.
+        if (
+          bkType[i]            !== CellType.Life ||
+          ftType[i]            !== CellType.Life ||
+          ftSpreadBonus[i]     <= motilityThreshold ||
+          Math.random()        >= motilityRate
+        ) {
+          continue;
+        }
+
+        const vx   = bkVx[i];
+        const vy   = bkVy[i];
+        const vMag = Math.sqrt(vx * vx + vy * vy);
+
+        // Below this threshold the cell is considered effectively stationary.
+        if (vMag < 0.1) continue;
+
+        const invMag = 1.0 / vMag;
+        const nLen   = this._fillNeighbors(i, width, height, useMoore);
+        const ix     = i % width;
+        const iy     = (i / width) | 0;
+        let bestNi   = -1;
+        let bestDot  = -Infinity;
+
+        for (let k = 0; k < nLen; k++) {
+          const ni    = this._neighborBuf[k];
+          const ntype = ftType[ni];
+
+          // Impassable obstacles: reflect velocity off the cell boundary normal.
+          // Normal points from the obstacle back toward us (negated approach direction).
+          if (
+            ntype === CellType.Wall       ||
+            ntype === CellType.Drain      ||
+            ntype === CellType.GravityWell||
+            ntype === CellType.Barrier    ||
+            ntype === CellType.Ice        ||
+            ntype === CellType.RadioWaste ||
+            ntype === CellType.Rewinder   ||
+            ntype === CellType.Colony
+          ) {
+            const nx = ni % width;
+            const ny = (ni / width) | 0;
+            const dx = nx - ix;
+            const dy = ny - iy;
+            // Axis-aligned reflection: flip the velocity component matching the
+            // blocked axis.  Diagonal (dx≠0 and dy≠0): negate both components.
+            if (dx !== 0 && dy === 0) {
+              bkVx[i] = -vx;
+            } else if (dy !== 0 && dx === 0) {
+              bkVy[i] = -vy;
+            } else {
+              bkVx[i] = -vx;
+              bkVy[i] = -vy;
+            }
+            continue;
+          }
+
+          // Target must be Empty in BOTH front and back (first-writer-wins):
+          //   - front Empty: not occupied before this tick.
+          //   - back  Empty: not claimed by a spread or an earlier migration.
+          if (ntype !== CellType.Empty || bkType[ni] !== CellType.Empty) {
+            continue;
+          }
+
+          // Choose the neighbour whose direction best aligns with the velocity.
+          const nx  = ni % width;
+          const ny  = (ni / width) | 0;
+          const dx  = nx - ix;
+          const dy  = ny - iy;
+          const dot = (dx * vx + dy * vy) * invMag;
+          if (dot > bestDot) {
+            bestDot = dot;
+            bestNi  = ni;
+          }
+        }
+
+        // No valid target in the velocity direction — skip this cell.
+        if (bestNi < 0 || bestDot <= 0) continue;
+
+        // Migrate: copy all cell state to the target and clear the source.
+        bkType[bestNi]        = CellType.Life;
+        bkEnergy[bestNi]      = bkEnergy[i];
+        bkAge[bestNi]         = bkAge[i];
+        bkFlags[bestNi]       = bkFlags[i];
+        bkGenome[bestNi]      = bkGenome[i];
+        bkVariantId[bestNi]   = bkVariantId[i];
+        bkGeneration[bestNi]  = bkGeneration[i];
+        bkToxinResist[bestNi] = bkToxinResist[i];
+        bkNutrientAbs[bestNi] = bkNutrientAbs[i];
+        bkHeatResist[bestNi]  = bkHeatResist[i];
+        bkSpreadBonus[bestNi] = bkSpreadBonus[i];
+        // Carry velocity to the destination so motion persists next tick.
+        bkVx[bestNi]          = bkVx[i];
+        bkVy[bestNi]          = bkVy[i];
+
+        // Erase source.
+        bkType[i]        = CellType.Empty;
+        bkEnergy[i]      = 0;
+        bkAge[i]         = 0;
+        bkFlags[i]       = 0;
+        bkGenome[i]      = 0;
+        bkVariantId[i]   = 0;
+        bkGeneration[i]  = 0;
+        bkToxinResist[i] = 0;
+        bkNutrientAbs[i] = 0;
+        bkHeatResist[i]  = 0;
+        bkSpreadBonus[i] = 0;
+        bkVx[i]          = 0;
+        bkVy[i]          = 0;
+      }
+    } else {
+      // Motility disabled — zero all velocity buffers so SAB stays clean for
+      // the render worker (flagellum rendering won't draw stale vectors).
+      for (let i = 0; i < total; i++) {
+        bkVx[i] = 0;
+        bkVy[i] = 0;
       }
     }
 

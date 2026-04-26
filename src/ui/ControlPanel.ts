@@ -401,6 +401,43 @@ const EVOLUTION_SLIDERS: readonly SliderSpec[] = [
       'survival → higher toxinResist tier) is passed to offspring. ' +
       '0 = pure Darwinian; 1 = full Lamarckian inheritance.',
   },
+
+  // --- Phase 19: Motility & Chemotaxis ----------------------------------------
+  {
+    label: 'Motility Rate',
+    key:   'motilityRate',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Probability [0–1] per tick that a motile Life cell (spreadBonus above ' +
+      'the Motility Threshold) attempts to migrate one cell in its velocity ' +
+      'direction. 0 disables motility entirely.',
+  },
+  {
+    label: 'Motility Threshold',
+    key:   'motilityThreshold',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Minimum spreadBonus [0–1] required for a Life cell to be considered ' +
+      'motile. Cells at or below this value are stationary regardless of ' +
+      'Motility Rate.',
+  },
+  {
+    label: 'Motility Damping',
+    key:   'motilityDamping',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Fraction of velocity removed per tick (fluid drag). 0 = ballistic ' +
+      '(velocity persists forever); 1 = zero persistence (velocity zeroed ' +
+      'each tick).',
+  },
+  {
+    label: 'Chemotaxis Fraction',
+    key:   'chemotaxisMotilityFraction',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Fraction of updated velocity derived from the chemical gradient ' +
+      'vs. persisted momentum. 0 = purely inertial; 1 = purely gradient-driven.',
+  },
 ];
 
 // ---------------------------------------------------------------------------

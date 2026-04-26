@@ -160,6 +160,17 @@ uniform usampler2D u_generation;
  */
 uniform sampler2D u_signalStrength;
 
+/**
+ * Phase 19: R32F texture — X-axis velocity (grid-units/tick) per cell.
+ * Sampled in lifeMorphology() to render the trailing flagellum arc.
+ */
+uniform sampler2D u_vx;
+
+/**
+ * Phase 19: R32F texture — Y-axis velocity (grid-units/tick) per cell.
+ */
+uniform sampler2D u_vy;
+
 /** Pixels per cell (matches AppState.cellSize). */
 uniform float u_cellSize;
 
@@ -509,7 +520,9 @@ vec4 lifeMorphology(
   uint  flags,
   uint  genomeVal,
   int   cellIdx,
-  vec2  uv
+  vec2  uv,
+  float vx,
+  float vy
 ) {
   vec2  c     = uv - 0.5;       // centred on origin, range [-0.5, 0.5]
   float r     = length(c);
@@ -596,6 +609,40 @@ vec4 lifeMorphology(
   rgb = mix(rgb, organColour, organMask);
 
   rgb *= divBoost;
+
+  // --- Phase 19: Flagellum arc (motile cells, aliveDetail > 0.5, vMag > 0.1) ---
+  //
+  // Renders a thin tapered arc trailing behind the cell in the direction
+  // opposite to its velocity vector.  Only visible at higher detail levels
+  // and when the cell is actually moving (vMag > 0.1 grid-units/tick).
+  float vMag = length(vec2(vx, vy));
+  if (vMag > 0.1) {
+    vec2  flagDir  = -normalize(vec2(vx, vy)); // trail points opposite to motion
+    float axial    = dot(c, flagDir);           // distance along flagellum axis
+    float lateral  = length(c - axial * flagDir);
+
+    // Only draw in the band between just past the membrane and the cell edge.
+    float flagStart = 0.24;
+    float flagEnd   = 0.48;
+    float t         = clamp((axial - flagStart) / (flagEnd - flagStart), 0.0, 1.0);
+    float axialMask = smoothstep(flagStart, flagStart + 0.04, axial) *
+                      (1.0 - smoothstep(flagEnd - 0.05, flagEnd, axial));
+
+    // Width tapers from 0.04 at the root to 0.01 at the tip.
+    float halfW       = mix(0.04, 0.01, t);
+    float lateralMask = 1.0 - smoothstep(halfW - 0.008, halfW, lateral);
+
+    float flagMask  = axialMask * lateralMask;
+    float speedFade = clamp((vMag - 0.1) / 0.9, 0.0, 1.0);
+    float flagAlpha = flagMask * speedFade;
+
+    if (flagAlpha > 0.001) {
+      // Brighter than the base colour so flagella pop against the background.
+      vec3 flagColour = baseRGB * 2.0;
+      rgb        = mix(rgb, flagColour, flagAlpha);
+      totalAlpha = max(totalAlpha, flagAlpha * 0.85);
+    }
+  }
 
   return vec4(rgb, totalAlpha);
 }
@@ -826,11 +873,14 @@ void main() {
   float alpha = (u_hdrOutput && cellType == 0u) ? 0.0 : 1.0;
 
   if (u_aliveDetail > 0.0 && u_cellSize >= 4.0 && isLife) {
-    uint genomeVal = texelFetch(u_genome, cellCoord, 0).r;
-    int  cellIdx   = cellCoord.y * u_gridWidth + cellCoord.x;
-    vec2 morphUV   = cellLocalUV();
+    uint  genomeVal = texelFetch(u_genome, cellCoord, 0).r;
+    int   cellIdx   = cellCoord.y * u_gridWidth + cellCoord.x;
+    vec2  morphUV   = cellLocalUV();
+    // Phase 19: sample velocity for flagellum rendering.
+    float vxVal     = texelFetch(u_vx, cellCoord, 0).r;
+    float vyVal     = texelFetch(u_vy, cellCoord, 0).r;
 
-    vec4 morph = lifeMorphology(cellRGB, energy, flags, genomeVal, cellIdx, morphUV);
+    vec4 morph = lifeMorphology(cellRGB, energy, flags, genomeVal, cellIdx, morphUV, vxVal, vyVal);
 
     // Blend flat colour → full morphology by aliveDetail amount.
     cellRGB = mix(cellRGB, morph.rgb / max(morph.a, 0.001), u_aliveDetail);
@@ -1181,6 +1231,10 @@ export class WebGLRenderer {
    * Used by the signal render mode to show the chemical signal field.
    */
   private readonly _signalStrengthTex: WebGLTexture;
+  /** Phase 19: R32F texture — X-axis velocity per cell. */
+  private readonly _vxTex: WebGLTexture;
+  /** Phase 19: R32F texture — Y-axis velocity per cell. */
+  private readonly _vyTex: WebGLTexture;
 
   // --- Uniform locations (cached once after compile) -------------------------
 
@@ -1211,6 +1265,10 @@ export class WebGLRenderer {
   private readonly _uTime!: WebGLUniformLocation;
   /** Phase 18: morphology detail level uniform [0,1]. */
   private readonly _uAliveDetail!: WebGLUniformLocation;
+  /** Phase 19: uniform location for the vx (X-axis velocity) R32F texture. */
+  private readonly _uVx!: WebGLUniformLocation;
+  /** Phase 19: uniform location for the vy (Y-axis velocity) R32F texture. */
+  private readonly _uVy!: WebGLUniformLocation;
 
   /**
    * Phase 18: morphology detail level [0, 1].
@@ -1381,6 +1439,9 @@ export class WebGLRenderer {
     this._uHdrOutput       = this._requireUniform('u_hdrOutput');
     this._uTime            = this._requireUniform('u_time');
     this._uAliveDetail     = this._requireUniform('u_aliveDetail');
+    // Phase 19: velocity texture samplers for flagellum rendering.
+    this._uVx              = this._requireUniform('u_vx');
+    this._uVy              = this._requireUniform('u_vy');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     // _vbo MUST be created before the HDR block below, because _createPPVao()
@@ -1448,6 +1509,9 @@ export class WebGLRenderer {
     this._genomeTex        = this._createTexture();
     this._generationTex    = this._createTexture();
     this._signalStrengthTex = this._createTexture();
+    // Phase 19: velocity textures (allocated empty; filled on first render).
+    this._vxTex             = this._createTexture();
+    this._vyTex             = this._createTexture();
 
     // --- Variant palette texture (256×1, RGBA, static) ----------------------
     // Build the palette as a flat RGBA Uint8Array (4 bytes per variant).
@@ -1766,6 +1830,30 @@ export class WebGLRenderer {
       buffers.signalStrength,
     );
 
+    // --- Upload vx texture (R32F, Phase 19) -----------------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._vxTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED,
+      gl.FLOAT,
+      buffers.vx,
+    );
+
+    // --- Upload vy texture (R32F, Phase 19) -----------------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._vyTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0, 0,
+      width, height,
+      gl.RED,
+      gl.FLOAT,
+      buffers.vy,
+    );
+
     // --- Draw -----------------------------------------------------------------
 
     gl.useProgram(this._program);
@@ -1809,6 +1897,16 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, this._signalStrengthTex);
     gl.uniform1i(this._uSignalStrength, 7);
+
+    // Bind vx texture to texture unit 8 (Phase 19).
+    gl.activeTexture(gl.TEXTURE8);
+    gl.bindTexture(gl.TEXTURE_2D, this._vxTex);
+    gl.uniform1i(this._uVx, 8);
+
+    // Bind vy texture to texture unit 9 (Phase 19).
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, this._vyTex);
+    gl.uniform1i(this._uVy, 9);
 
     // Per-frame uniforms.
     gl.uniform1f(this._uCellSize,      this._cellSize);
@@ -1892,6 +1990,9 @@ export class WebGLRenderer {
     this._allocateTexture(this._genomeTex,         width, height, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT);
     this._allocateTexture(this._generationTex,     width, height, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT);
     this._allocateTexture(this._signalStrengthTex, width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    // Phase 19: velocity textures (R32F).
+    this._allocateTexture(this._vxTex,             width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    this._allocateTexture(this._vyTex,             width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     // Note: _variantPaletteTex is 256×1 and never resizes — skip here.
 
     // --- HDR bloom textures (Phase 16c) --------------------------------------

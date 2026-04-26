@@ -374,6 +374,57 @@ export interface SimulationConfig {
    * Range: [0, 1].  Default: 0.3.
    */
   adaptiveInheritanceRate: number;
+
+  // --- Phase 19: Motility & Chemotaxis -------------------------------------
+
+  /**
+   * Probability [0, 1] per tick that a motile Life cell (spreadBonus above
+   * `motilityThreshold`) attempts to migrate one cell in its velocity direction.
+   *
+   * 0.0 disables motility entirely (default — preserves pre-Phase 19 behaviour).
+   * Higher values allow more frequent movement; set to 1.0 for near-constant
+   * migration of all motile cells.
+   *
+   * Range: [0, 1].  Default: 0.0 (disabled).
+   */
+  motilityRate: number;
+
+  /**
+   * Minimum `spreadBonus` phenotype value required for a Life cell to be
+   * considered motile (eligible for migration).
+   *
+   * Cells whose `spreadBonus` is at or below this threshold are sessile
+   * (stationary) regardless of `motilityRate`.  Raise this value to make
+   * motility an evolutionarily rare trait; lower it to allow all cells to move.
+   *
+   * Range: [0, 1].  Default: 0.3.
+   */
+  motilityThreshold: number;
+
+  /**
+   * Fraction of velocity removed per tick via fluid drag / cytoskeletal reset.
+   *
+   * Applied before chemotaxis so cells naturally decelerate if they stop
+   * receiving a chemical signal or bounce off walls.
+   *
+   * 0.0 = no damping (velocity persists forever — ballistic motion).
+   * 1.0 = full damping (velocity zeroed each tick — no persistence).
+   *
+   * Range: [0, 1].  Default: 0.2.
+   */
+  motilityDamping: number;
+
+  /**
+   * Fraction of the updated velocity derived from the chemical (signal)
+   * gradient versus the persisted momentum vector.
+   *
+   * At 0.0 the cell is purely inertial — chemical bias has no effect.
+   * At 1.0 the cell ignores prior momentum and points entirely toward the
+   * gradient peak each tick.
+   *
+   * Range: [0, 1].  Default: 0.5.
+   */
+  chemotaxisMotilityFraction: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +553,12 @@ export function defaultConfig(): SimulationConfig {
     signalDiffusion:         0.85,  // signal retention factor per tick (85% remains)
     quorumThreshold:         4,     // same-variant neighbours needed for colony mode
     adaptiveInheritanceRate: 0.3,   // probability stress-adaptation is inherited
+
+    // Phase 19: motility disabled by default — preserves pre-Phase 19 behaviour
+    motilityRate:               0.0,
+    motilityThreshold:          0.3,
+    motilityDamping:            0.2,
+    chemotaxisMotilityFraction: 0.5,
   };
 }
 
@@ -571,6 +628,10 @@ export const Presets = {
       signalDiffusion:             0.75,
       quorumThreshold:             5,
       adaptiveInheritanceRate:     0.15,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -618,6 +679,10 @@ export const Presets = {
       signalDiffusion:             0.80,
       quorumThreshold:             8,    // never enters colony mode
       adaptiveInheritanceRate:     0.1,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -668,6 +733,10 @@ export const Presets = {
       signalDiffusion:             0.50,
       quorumThreshold:             8,
       adaptiveInheritanceRate:     0.0,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -718,6 +787,10 @@ export const Presets = {
       signalDiffusion:             0.85,
       quorumThreshold:             4,
       adaptiveInheritanceRate:     0.30,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -768,6 +841,10 @@ export const Presets = {
       signalDiffusion:             0.90,
       quorumThreshold:             3,
       adaptiveInheritanceRate:     0.40,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -818,6 +895,10 @@ export const Presets = {
       signalDiffusion:             0.88,
       quorumThreshold:             2,   // colony mode kicks in early — kin clusters form
       adaptiveInheritanceRate:     0.25,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -868,6 +949,10 @@ export const Presets = {
       signalDiffusion:             0.80,
       quorumThreshold:             5,
       adaptiveInheritanceRate:     0.15,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -918,6 +1003,10 @@ export const Presets = {
       signalDiffusion:             0.92, // wide-ranging signal field
       quorumThreshold:             3,    // colony mode at just 3 neighbours
       adaptiveInheritanceRate:     0.25,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -968,6 +1057,10 @@ export const Presets = {
       signalDiffusion:             0.85,
       quorumThreshold:             4,
       adaptiveInheritanceRate:     0.50, // strong inheritance of resistance
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1022,6 +1115,10 @@ export const Presets = {
       signalDiffusion:             0.60, // short-range signals only
       quorumThreshold:             8,    // never enters colony mode
       adaptiveInheritanceRate:     0.10,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1073,6 +1170,10 @@ export const Presets = {
       signalDiffusion:             0.70,
       quorumThreshold:             8,    // no cooperation — purely selfish
       adaptiveInheritanceRate:     0.60, // strong inheritance of acquired resistance
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1124,6 +1225,10 @@ export const Presets = {
       signalDiffusion:             0.94, // wide signal field — whole colony communicates
       quorumThreshold:             3,    // colony mode activates at 3 same-variant neighbours
       adaptiveInheritanceRate:     0.50,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1175,6 +1280,10 @@ export const Presets = {
       signalDiffusion:             0.82,
       quorumThreshold:             5,    // stays in pioneer mode longer
       adaptiveInheritanceRate:     0.55,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1226,6 +1335,10 @@ export const Presets = {
       signalDiffusion:             0.78,
       quorumThreshold:             6,
       adaptiveInheritanceRate:     0.70, // strong Lamarckian — children born resistant
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1277,6 +1390,10 @@ export const Presets = {
       signalDiffusion:             0.88, // wide territorial signals
       quorumThreshold:             2,    // enters colony mode early — locks down territory
       adaptiveInheritanceRate:     0.35,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1328,6 +1445,10 @@ export const Presets = {
       signalDiffusion:             0.70, // short-range — localised decisions
       quorumThreshold:             8,    // never enters colony mode — always pioneer
       adaptiveInheritanceRate:     0.35,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1379,6 +1500,10 @@ export const Presets = {
       signalDiffusion:             0.96, // wide canopy signalling — grove coordination
       quorumThreshold:             3,    // colony mode at 3 neighbours — grove formation
       adaptiveInheritanceRate:     0.20,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1430,6 +1555,10 @@ export const Presets = {
       signalDiffusion:             0.90, // wide host alarm signals
       quorumThreshold:             6,    // host needs large group for defence
       adaptiveInheritanceRate:     0.40,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 
@@ -1481,6 +1610,10 @@ export const Presets = {
       signalDiffusion:             0.97, // near-maximum — global coordination
       quorumThreshold:             6,    // large clusters needed for colony mode
       adaptiveInheritanceRate:     0.30,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
     };
   },
 

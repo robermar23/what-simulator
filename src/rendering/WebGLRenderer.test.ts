@@ -92,6 +92,9 @@ function makeStubBuffers(cells: number): GridBuffers {
     heatResist:     new Float32Array(cells),
     spreadBonus:    new Float32Array(cells),
     signalStrength: new Float32Array(cells),
+    // Phase 19 motility buffers
+    vx:             new Float32Array(cells),
+    vy:             new Float32Array(cells),
   };
 }
 

@@ -2016,3 +2016,181 @@ describe('SimulationEngine — Phase 18 JUST_DIVIDED flag', () => {
     expect(parentFlags & CellFlags.JUST_DIVIDED).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 19 — Motility & Chemotaxis
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 19 motility', () => {
+  // Helper: set the genome such that spreadBonus is above the threshold.
+  // packGenome(tox, nut, heat, spread) — use maxed spread tier to get ~0.8 bonus.
+  const MOTILE_GENOME = packGenome(7, 7, 7, 15); // spread tier 15 → ~1.0 spreadBonus
+
+  it('velocity damps by (1 − motilityDamping) each tick', () => {
+    // Place a single Life cell with a pre-set velocity.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 1.0;
+    grid.front.genome[i]   = MOTILE_GENOME;
+    grid.front.vx[i]       = 1.0;
+    grid.front.vy[i]       = 0.0;
+
+    // Apply phenotype from genome so spreadBonus is above the threshold.
+    grid.front.spreadBonus[i] = getSpreadBonus(MOTILE_GENOME);
+
+    runOneTick(grid, engine, {
+      motilityRate:               1.0,
+      motilityThreshold:          0.0, // always motile
+      motilityDamping:            0.5, // 50% velocity retained
+      chemotaxisMotilityFraction: 0.0, // no chemical bias
+      energyDecayRate:            0.0,
+      spreadRate:                 0.0,
+      underpopulationLimit:       0,
+    });
+
+    // After damping, the cell at its new position should carry vx ≈ 0.5.
+    // The cell may or may not have migrated; find where the Life cell ended up.
+    let foundVx = NaN;
+    for (let j = 0; j < W * H; j++) {
+      if (grid.front.cellType[j] === CellType.Life) {
+        foundVx = grid.front.vx[j];
+        break;
+      }
+    }
+    // vx_new = 1.0 * (1 - 0.5) = 0.5  (before any chemotaxis displacement).
+    expect(foundVx).toBeCloseTo(0.5, 3);
+  });
+
+  it('motile cell migrates to adjacent empty cell when motilityRate=1', () => {
+    // Place a Life cell at the centre of a 5×5 grid (surrounded by empty cells).
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 1.0;
+    grid.front.genome[centre]   = MOTILE_GENOME;
+    // Pre-set a rightward velocity large enough to survive damping.
+    grid.front.vx[centre]       = 5.0;
+    grid.front.vy[centre]       = 0.0;
+    grid.front.spreadBonus[centre] = 1.0; // above any threshold
+
+    runOneTick(grid, engine, {
+      motilityRate:               1.0,  // guaranteed attempt
+      motilityThreshold:          0.0,  // always motile
+      motilityDamping:            0.0,  // no damping — velocity kept
+      chemotaxisMotilityFraction: 0.0,
+      energyDecayRate:            0.0,
+      spreadRate:                 0.0,
+      // Set reproduction threshold above max energy so no spreading occurs —
+      // otherwise spreadBonus adds to the effective spread rate and the cell
+      // reproduces before the migration pass, inflating the Life cell count.
+      reproductionThreshold:      2.0,
+      underpopulationLimit:       0,
+    });
+
+    // Exactly one Life cell should exist (the migrated cell).
+    let lifeCells = 0;
+    for (let j = 0; j < W * H; j++) {
+      if (grid.front.cellType[j] === CellType.Life) lifeCells++;
+    }
+    expect(lifeCells).toBe(1);
+    // The original centre must now be empty (migration occurred).
+    expect(grid.front.cellType[centre]).toBe(CellType.Empty);
+  });
+
+  it('migration is cancelled when the target cell is already occupied', () => {
+    // Fill all cells with Life except one corner — the motile cell has nowhere
+    // to go that is simultaneously empty in both front and back.
+    for (let j = 0; j < W * H; j++) {
+      grid.front.cellType[j] = CellType.Life;
+      grid.front.energy[j]   = 1.0;
+    }
+    // Leave the top-left empty.
+    grid.front.cellType[0] = CellType.Empty;
+    grid.front.energy[0]   = 0.0;
+
+    // The centre cell is motile and wants to move right — but (2*W+3) is Life.
+    const centre = 2 * W + 2;
+    grid.front.vx[centre]          = 5.0;
+    grid.front.vy[centre]          = 0.0;
+    grid.front.spreadBonus[centre] = 1.0;
+
+    runOneTick(grid, engine, {
+      motilityRate:               1.0,
+      motilityThreshold:          0.0,
+      motilityDamping:            0.0,
+      chemotaxisMotilityFraction: 0.0,
+      energyDecayRate:            0.0,
+      spreadRate:                 0.0,
+      underpopulationLimit:       0,
+      overpopulationLimit:        8,
+    });
+
+    // The centre cell could not migrate right — it must still be Life.
+    expect(grid.front.cellType[centre]).toBe(CellType.Life);
+  });
+
+  it('velocity reflected off a Wall neighbour', () => {
+    // Place a Life cell at (2,2) with a rightward velocity.
+    // Put a Wall at (2,3) — directly to the right.
+    const centre = 2 * W + 2;
+    const wallIdx = 2 * W + 3;
+    grid.front.cellType[centre]  = CellType.Life;
+    grid.front.energy[centre]    = 1.0;
+    grid.front.genome[centre]    = MOTILE_GENOME;
+    grid.front.spreadBonus[centre] = 1.0;
+    grid.front.vx[centre]        = 5.0; // strong rightward velocity
+    grid.front.vy[centre]        = 0.0;
+    grid.front.cellType[wallIdx] = CellType.Wall;
+
+    runOneTick(grid, engine, {
+      motilityRate:               1.0,
+      motilityThreshold:          0.0,
+      motilityDamping:            0.0,
+      chemotaxisMotilityFraction: 0.0,
+      energyDecayRate:            0.0,
+      spreadRate:                 0.0,
+      // Block reproduction so spreadBonus doesn't trigger spreading.
+      reproductionThreshold:      2.0,
+      underpopulationLimit:       0,
+    });
+
+    // The reflection sets bkVx[centre] = -5.0 BEFORE the migration step picks
+    // the best destination (the up-right diagonal also has dot > 0).  The cell
+    // may migrate, but the reflected velocity is always carried to the destination.
+    // Either way, the surviving Life cell must carry a negative vx.
+    let reflVx = NaN;
+    for (let j = 0; j < W * H; j++) {
+      if (grid.front.cellType[j] === CellType.Life) { reflVx = grid.front.vx[j]; break; }
+    }
+    expect(reflVx).toBeLessThan(0);
+  });
+
+  it('chemotaxisMotilityFraction=0 produces zero gradient bias', () => {
+    // Place a Life cell adjacent to a Nutrient cell.
+    // With chemotaxisMotilityFraction=0 the velocity update ignores it.
+    const centre   = 2 * W + 2;
+    const nutrient = 2 * W + 3; // right of centre
+    grid.front.cellType[centre]    = CellType.Life;
+    grid.front.energy[centre]      = 1.0;
+    grid.front.spreadBonus[centre] = 0.0; // below threshold → no migration attempt
+    // Seed a leftward velocity — with no chemotaxis this should stay leftward.
+    grid.front.vx[centre]  = -1.0;
+    grid.front.vy[centre]  =  0.0;
+    grid.front.cellType[nutrient] = CellType.Nutrient;
+    grid.front.energy[nutrient]   = 1.0;
+
+    runOneTick(grid, engine, {
+      motilityRate:               0.0, // migration off — only velocity update runs
+      motilityThreshold:          0.5,
+      motilityDamping:            0.0, // no damping — preserves sign
+      chemotaxisMotilityFraction: 0.0, // zero bias
+      energyDecayRate:            0.0,
+      spreadRate:                 0.0,
+      underpopulationLimit:       0,
+      nutrientBoost:              0.0, // prevent energy changes
+      nutrientDecayRate:          0.0,
+    });
+
+    // vx should remain negative — Nutrient did not attract the cell.
+    expect(grid.front.vx[centre]).toBeLessThanOrEqual(0);
+  });
+});

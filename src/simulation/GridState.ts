@@ -26,7 +26,11 @@
  *   spreadBonus    Float32Array  1 048 576 bytes (~1 MB)  × 2
  *   signalStrength Float32Array  1 048 576 bytes (~1 MB)  × 2
  *
- * Total at 512×512: ~16.3 MB — well within browser constraints.
+ * ## Phase 19 motility buffers (NEW)
+ *   vx             Float32Array  1 048 576 bytes (~1 MB)  × 2
+ *   vy             Float32Array  1 048 576 bytes (~1 MB)  × 2
+ *
+ * Total at 512×512: ~18.3 MB — well within browser constraints.
  */
 
 import {
@@ -233,6 +237,23 @@ export interface GridBuffers {
    * chemotaxis diffusion field seeded by Nutrient cells.
    */
   readonly signalStrength: Float32Array;
+
+  // --- Phase 19 motility buffers (NEW) --------------------------------------
+
+  /**
+   * X-axis velocity in grid-units/tick for motile Life cells.
+   * Non-zero only when `config.motilityRate > 0` and the cell's `spreadBonus`
+   * exceeds `config.motilityThreshold`.  Damped by `config.motilityDamping`
+   * each tick and clamped to ±1.0.  Used by the fragment shader to render the
+   * flagellum arc trailing behind moving cells.
+   */
+  readonly vx: Float32Array;
+
+  /**
+   * Y-axis velocity in grid-units/tick for motile Life cells.
+   * Symmetric to `vx` along the Y axis.
+   */
+  readonly vy: Float32Array;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +326,9 @@ export class GridState {
       heatResist:    new Float32Array(totalCells),
       spreadBonus:   new Float32Array(totalCells),
       signalStrength: new Float32Array(totalCells),
+      // Phase 19 motility buffers — zero-initialised (motility off by default)
+      vx:            new Float32Array(totalCells),
+      vy:            new Float32Array(totalCells),
     };
   }
 
@@ -340,6 +364,9 @@ export class GridState {
     this.back.heatResist.set(this.front.heatResist);
     this.back.spreadBonus.set(this.front.spreadBonus);
     this.back.signalStrength.set(this.front.signalStrength);
+    // Phase 19 motility buffers
+    this.back.vx.set(this.front.vx);
+    this.back.vy.set(this.front.vy);
   }
 
   /**
@@ -368,7 +395,7 @@ export class GridState {
     const {
       cellType, energy, genome, variantId, generation,
       toxinResist, nutrientAbs, heatResist, spreadBonus, signalStrength,
-      age, flags,
+      age, flags, vx, vy,
     } = this.front;
 
     for (let i = 0; i < this.totalCells; i++) {
@@ -399,6 +426,9 @@ export class GridState {
       }
       age[i]   = 0;
       flags[i] = 0;
+      // Phase 19: velocity always starts at zero (cells are initially stationary).
+      vx[i]    = 0;
+      vy[i]    = 0;
     }
   }
 
@@ -422,6 +452,9 @@ export class GridState {
       buf.heatResist.fill(0);
       buf.spreadBonus.fill(0);
       buf.signalStrength.fill(0);
+      // Phase 19 motility buffers
+      buf.vx.fill(0);
+      buf.vy.fill(0);
     }
   }
 
@@ -514,6 +547,10 @@ export class GridState {
       this.front.spreadBonus[index]  = 0;
     }
     this.front.signalStrength[index] = 0;
+
+    // Phase 19: zero velocity so painted cells start motionless.
+    this.front.vx[index] = 0;
+    this.front.vy[index] = 0;
   }
 
   /**
