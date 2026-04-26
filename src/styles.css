@@ -41,6 +41,28 @@
   --status-bar-height: 28px;
   --panel-width:       300px;
   --border-radius:     6px;
+
+  /* Preset panel — archetype accent colours (Round 5) */
+  --archetype-primitive:   #8b5e3c;
+  --archetype-aggressive:  #cc2233;
+  --archetype-cooperative: #2288aa;
+  --archetype-resilient:   #22aa66;
+  --archetype-chaotic:     #9933cc;
+
+  /* Environment category colours */
+  --category-biological: #2a8a44;
+  --category-geological: #8a6a2a;
+  --category-chemical:   #2a4a8a;
+  --category-physical:   #8a2a6a;
+  --category-abstract:   #4a2a8a;
+
+  /* Difficulty dots */
+  --difficulty-filled: #ffcc00;
+  --difficulty-empty:  #444;
+
+  /* Preset card layout */
+  --preset-card-gap:    8px;
+  --preset-card-radius: 8px;
 }
 
 /* --------------------------------------------------------------------------
@@ -971,4 +993,391 @@ details.panel-section[open] > summary.panel-heading::after {
   max-width: 100%;
   border-radius: var(--border-radius);
   background-color: #0a0a12;
+}
+
+/* ==========================================================================
+   Round 5 — PresetPanel / PresetCard / EnvironmentCard
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   PresetPanel outer wrapper
+   -------------------------------------------------------------------------- */
+
+/** Root element returned by PresetPanel.build(). */
+.preset-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* --------------------------------------------------------------------------
+   Tab bar
+   -------------------------------------------------------------------------- */
+
+/**
+ * Two-button tab bar above the Life / Environment card lists.
+ * Uses a CSS grid so both tabs share equal width regardless of label length.
+ */
+.preset-panel-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  overflow: hidden;
+}
+
+/** Individual tab button. */
+.preset-tab {
+  padding: var(--space-xs) var(--space-sm);
+  border: none;
+  background-color: var(--color-surface);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.preset-tab:hover {
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+/** Active tab — highlighted with primary accent. */
+.preset-tab--active {
+  background-color: var(--color-surface-2);
+  color: var(--color-primary);
+  border-block-end: 2px solid var(--color-primary);
+}
+
+/* --------------------------------------------------------------------------
+   Tab content pane
+   -------------------------------------------------------------------------- */
+
+/** Content pane for one tab. Visible by default; hidden via modifier class. */
+.preset-tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+/** Hidden tab content — removed from layout entirely. */
+.preset-tab-content--hidden {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+   Filter chips
+   -------------------------------------------------------------------------- */
+
+/**
+ * Wrapping flex row of filter chip buttons.
+ * Wraps to multiple lines when there are many chips and the panel is narrow.
+ */
+.preset-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-block: var(--space-xs);
+}
+
+/** Single filter chip button. */
+.filter-chip {
+  padding: 2px var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background-color: var(--color-surface);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.filter-chip:hover {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+/** Active filter chip. */
+.filter-chip--active {
+  background-color: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+/* --------------------------------------------------------------------------
+   Preset card list (scrollable)
+   -------------------------------------------------------------------------- */
+
+/**
+ * Scrollable vertical list of preset / environment cards.
+ * Max-height is capped so the panel doesn't grow too tall on small screens;
+ * the list scrolls independently.
+ */
+.preset-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--preset-card-gap);
+  max-height: 380px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  padding-inline-end: 2px; /* breathing room for scrollbar */
+}
+
+.preset-card-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.preset-card-list::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Preset card (shared by life and environment cards)
+   -------------------------------------------------------------------------- */
+
+/**
+ * Individual preset card article.
+ * Left-bordered with the archetype or category accent colour (set via
+ * data-archetype / data-category attribute selectors below).
+ */
+.preset-card,
+.env-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-inline-start-width: 3px; /* accent stripe on the left edge */
+  border-radius: var(--preset-card-radius);
+  background-color: var(--color-surface);
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.preset-card:hover,
+.env-card:hover {
+  background-color: var(--color-surface-2);
+}
+
+/** Hidden card — filtered out by the active chip. */
+.preset-card--hidden {
+  display: none;
+}
+
+/* --- Archetype accent border colours --------------------------------------- */
+
+.preset-card[data-archetype="primitive"]   { border-inline-start-color: var(--archetype-primitive);   }
+.preset-card[data-archetype="aggressive"]  { border-inline-start-color: var(--archetype-aggressive);  }
+.preset-card[data-archetype="cooperative"] { border-inline-start-color: var(--archetype-cooperative); }
+.preset-card[data-archetype="resilient"]   { border-inline-start-color: var(--archetype-resilient);   }
+.preset-card[data-archetype="chaotic"]     { border-inline-start-color: var(--archetype-chaotic);     }
+
+/* --- Category accent border colours ---------------------------------------- */
+
+.env-card[data-category="biological"] { border-inline-start-color: var(--category-biological); }
+.env-card[data-category="geological"] { border-inline-start-color: var(--category-geological); }
+.env-card[data-category="chemical"]   { border-inline-start-color: var(--category-chemical);   }
+.env-card[data-category="physical"]   { border-inline-start-color: var(--category-physical);   }
+.env-card[data-category="abstract"]   { border-inline-start-color: var(--category-abstract);   }
+
+/* --------------------------------------------------------------------------
+   Card header row
+   -------------------------------------------------------------------------- */
+
+/** Flex row containing badge (left) and difficulty stars (right). */
+.preset-card-header,
+.env-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+/* --------------------------------------------------------------------------
+   Archetype badge
+   -------------------------------------------------------------------------- */
+
+/** Pill badge showing the archetype name — colour-coded by archetype. */
+.preset-card-badge {
+  padding: 0 var(--space-sm);
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.preset-archetype-primitive   { background: color-mix(in srgb, var(--archetype-primitive)   20%, transparent); color: var(--archetype-primitive);   border: 1px solid var(--archetype-primitive);   }
+.preset-archetype-aggressive  { background: color-mix(in srgb, var(--archetype-aggressive)  20%, transparent); color: var(--archetype-aggressive);  border: 1px solid var(--archetype-aggressive);  }
+.preset-archetype-cooperative { background: color-mix(in srgb, var(--archetype-cooperative) 20%, transparent); color: var(--archetype-cooperative); border: 1px solid var(--archetype-cooperative); }
+.preset-archetype-resilient   { background: color-mix(in srgb, var(--archetype-resilient)   20%, transparent); color: var(--archetype-resilient);   border: 1px solid var(--archetype-resilient);   }
+.preset-archetype-chaotic     { background: color-mix(in srgb, var(--archetype-chaotic)     20%, transparent); color: var(--archetype-chaotic);     border: 1px solid var(--archetype-chaotic);     }
+
+/* --------------------------------------------------------------------------
+   Environment category badge + background type pill
+   -------------------------------------------------------------------------- */
+
+/** Category badge — colour-coded like archetype badges. */
+.env-card-badge {
+  padding: 0 var(--space-sm);
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.env-category-biological { background: color-mix(in srgb, var(--category-biological) 20%, transparent); color: var(--category-biological); border: 1px solid var(--category-biological); }
+.env-category-geological { background: color-mix(in srgb, var(--category-geological) 20%, transparent); color: var(--category-geological); border: 1px solid var(--category-geological); }
+.env-category-chemical   { background: color-mix(in srgb, var(--category-chemical)   20%, transparent); color: var(--category-chemical);   border: 1px solid var(--category-chemical);   }
+.env-category-physical   { background: color-mix(in srgb, var(--category-physical)   20%, transparent); color: var(--category-physical);   border: 1px solid var(--category-physical);   }
+.env-category-abstract   { background: color-mix(in srgb, var(--category-abstract)   20%, transparent); color: var(--category-abstract);   border: 1px solid var(--category-abstract);   }
+
+/** Subtle pill showing the background renderer type (Petri, Water, etc.). */
+.env-card-bg-pill {
+  padding: 0 var(--space-sm);
+  border-radius: 10px;
+  font-size: 9px;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Difficulty stars
+   -------------------------------------------------------------------------- */
+
+/**
+ * "★★★☆☆" difficulty rating — golden filled stars, dark empty stars.
+ * font-family fallback ensures the Unicode star glyphs render consistently.
+ */
+.preset-card-difficulty {
+  margin-inline-start: auto; /* push to the right edge of the header row */
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', sans-serif;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--difficulty-filled);
+  /* Empty star glyphs render in --color-text-muted colour below via filter. */
+}
+
+/* --------------------------------------------------------------------------
+   Card name
+   -------------------------------------------------------------------------- */
+
+.preset-card-name,
+.env-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+   Card description
+   -------------------------------------------------------------------------- */
+
+.preset-card-desc {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+  /* Clamp to two lines to keep cards compact. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   Suggested pairing line (EnvironmentCard only)
+   -------------------------------------------------------------------------- */
+
+.env-card-pairing {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.env-card-pairing-label {
+  white-space: nowrap;
+}
+
+/** Clickable life preset name inside the pairing line. */
+.env-card-pair-btn {
+  padding: 0 var(--space-xs);
+  border: 1px solid var(--color-primary-dim);
+  border-radius: 4px;
+  background: none;
+  color: var(--color-primary);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+
+.env-card-pair-btn:hover {
+  background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
+}
+
+/* --------------------------------------------------------------------------
+   Card Apply button
+   -------------------------------------------------------------------------- */
+
+/** Apply / Apply Environment button at the bottom of each card. */
+.preset-card-apply {
+  align-self: flex-start;
+  padding: 3px var(--space-sm);
+  border: 1px solid var(--color-primary-dim);
+  border-radius: var(--border-radius);
+  background-color: var(--color-surface-2);
+  color: var(--color-primary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s;
+}
+
+.preset-card-apply:hover {
+  background-color: var(--color-primary-dim);
+  color: #000;
+}
+
+.preset-card-apply:active {
+  opacity: 0.75;
+}
+
+/** Environment card apply button is full-width for visual emphasis. */
+.env-card-apply {
+  align-self: stretch;
+  text-align: center;
+}
+
+/* --------------------------------------------------------------------------
+   Environment action buttons row (Randomize / Clear)
+   -------------------------------------------------------------------------- */
+
+/**
+ * Row of action buttons below the environment card list.
+ * Uses a CSS grid so buttons share equal width.
+ */
+.preset-env-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-xs);
+  padding-block-start: var(--space-xs);
 }

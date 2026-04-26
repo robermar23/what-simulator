@@ -26,9 +26,9 @@
 
 import { appState, type DrawingTool } from '../state/AppState.js';
 import { bus } from '../state/EventBus.js';
-import { type SimulationConfig, Presets, LIFE_PRESETS } from '../simulation/config/SimulationConfig.js';
+import { type SimulationConfig, Presets } from '../simulation/config/SimulationConfig.js';
 import { BACKGROUND_LABELS, type BackgroundType } from '../rendering/BackgroundRenderer.js';
-import { ENVIRONMENT_PRESETS } from '../simulation/config/EnvironmentPresets.js';
+import { PresetPanel } from './PresetPanel.js';
 
 // ---------------------------------------------------------------------------
 // Slider descriptor type
@@ -1275,91 +1275,32 @@ export class ControlPanel {
   }
 
   /**
-   * Builds the combined Life Presets + Environment Presets section (Round 5).
+   * Builds the Presets section (Round 5).
    *
-   * Life Presets — grouped by archetype via `<optgroup>`, loaded from
-   * `LIFE_PRESETS` which carries full metadata for all 19 presets.
+   * Delegates to {@link PresetPanel} which renders a tabbed card-based panel:
+   *   [Life]         — all 19 life presets, filterable by archetype chip
+   *   [Environments] — all 10 environment presets, filterable by category chip
    *
-   * Environment Presets — a separate `<select>` below.  Selecting one fires
-   * `bus.emit('applyEnvironment', …)` which the App layer routes to the
-   * SimulationWorker (obstacle generation) and RenderWorker (background switch).
-   *
-   * @returns The combined presets section element.
+   * @returns The presets section element.
    */
   private _buildPresetsSection(): HTMLElement {
     const section = document.createElement('section');
     section.className = 'panel-section';
 
-    // -------------------------------------------------------------------------
-    // Life Presets sub-section
-    // -------------------------------------------------------------------------
+    const heading = document.createElement('h2');
+    heading.className   = 'panel-heading';
+    heading.textContent = 'Presets';
+    section.append(heading);
 
-    const lifeHeading = document.createElement('h2');
-    lifeHeading.className   = 'panel-heading';
-    lifeHeading.textContent = 'Life Presets';
-    section.append(lifeHeading);
-
-    // Difficulty star helper — e.g. "★★★☆☆" for difficulty 3.
-    const diffStars = (d: number): string =>
-      '★'.repeat(d) + '☆'.repeat(5 - d);
-
-    // Group presets by archetype for <optgroup> labels.
-    const archetypeOrder = [
-      'primitive', 'aggressive', 'cooperative', 'resilient', 'chaotic',
-    ] as const;
-    const archetypeLabels: Record<string, string> = {
-      primitive:   'Primitive',
-      aggressive:  'Aggressive',
-      cooperative: 'Cooperative',
-      resilient:   'Resilient',
-      chaotic:     'Chaotic',
-    };
-
-    const lifeSelect = document.createElement('select');
-    lifeSelect.className = 'preset-select';
-    lifeSelect.setAttribute('aria-label', 'Load a life preset');
-
-    // Placeholder option.
-    const lifePlaceholder = document.createElement('option');
-    lifePlaceholder.value       = '';
-    lifePlaceholder.textContent = '— select life preset —';
-    lifePlaceholder.disabled    = true;
-    lifePlaceholder.selected    = true;
-    lifeSelect.append(lifePlaceholder);
-
-    // Build one <optgroup> per archetype in display order.
-    for (const archetype of archetypeOrder) {
-      const group = document.createElement('optgroup');
-      group.label = archetypeLabels[archetype];
-
-      const matching = LIFE_PRESETS.filter(p => p.meta.archetype === archetype);
-      for (const preset of matching) {
-        const opt = document.createElement('option');
-        opt.value       = preset.key;
-        opt.textContent = `${diffStars(preset.meta.difficulty)}  ${preset.meta.name}`;
-        opt.title       = preset.meta.description;
-        group.append(opt);
-      }
-
-      if (group.children.length > 0) lifeSelect.append(group);
-    }
-
-    lifeSelect.addEventListener('change', () => {
-      const preset = LIFE_PRESETS.find(p => p.key === lifeSelect.value);
-      if (!preset) return;
-      appState.config = { ...preset.config };
-      this._syncSliders();
-      // Reset placeholder so user can re-select the same preset later.
-      lifeSelect.value = '';
-    });
-
-    section.append(lifeSelect);
+    // PresetPanel handles all preset application logic; it receives the
+    // _syncSliders callback so slider readouts update when a life preset loads.
+    const panel = new PresetPanel(() => this._syncSliders());
+    section.append(panel.build());
 
     // -------------------------------------------------------------------------
-    // Legacy quick-access (kept for keyboard/power-user workflows)
+    // Legacy quick-access dropdown — kept for keyboard / power-user workflows.
     // -------------------------------------------------------------------------
 
-    // Tiny helper label.
     const legacyLabel = document.createElement('p');
     legacyLabel.className   = 'preset-legacy-hint';
     legacyLabel.textContent = 'Quick load (classic):';
@@ -1397,120 +1338,6 @@ export class ControlPanel {
     });
 
     section.append(legacySelect);
-
-    // -------------------------------------------------------------------------
-    // Environment Presets sub-section
-    // -------------------------------------------------------------------------
-
-    const envHeading = document.createElement('h2');
-    envHeading.className   = 'panel-heading';
-    envHeading.style.marginTop = '12px';
-    envHeading.textContent = 'Environment Presets';
-    section.append(envHeading);
-
-    const envHint = document.createElement('p');
-    envHint.className   = 'preset-legacy-hint';
-    envHint.textContent = 'Generates obstacles + switches background. Reseeds life.';
-    section.append(envHint);
-
-    // Difficulty-grouped optgroups for environments.
-    const envCategoryOrder = [
-      'biological', 'geological', 'chemical', 'physical', 'abstract',
-    ] as const;
-    const envCategoryLabels: Record<string, string> = {
-      biological: 'Biological',
-      geological: 'Geological',
-      chemical:   'Chemical',
-      physical:   'Physical',
-      abstract:   'Abstract',
-    };
-
-    const envSelect = document.createElement('select');
-    envSelect.className = 'preset-select';
-    envSelect.setAttribute('aria-label', 'Apply an environment preset');
-
-    const envPlaceholder = document.createElement('option');
-    envPlaceholder.value       = '';
-    envPlaceholder.textContent = '— select environment —';
-    envPlaceholder.disabled    = true;
-    envPlaceholder.selected    = true;
-    envSelect.append(envPlaceholder);
-
-    for (const category of envCategoryOrder) {
-      const group = document.createElement('optgroup');
-      group.label = envCategoryLabels[category];
-
-      const matching = ENVIRONMENT_PRESETS.filter(e => e.category === category);
-      for (const env of matching) {
-        const opt = document.createElement('option');
-        opt.value       = env.key;
-        opt.textContent = `${diffStars(env.difficulty)}  ${env.name}`;
-        opt.title       = env.description;
-        group.append(opt);
-      }
-
-      if (group.children.length > 0) envSelect.append(group);
-    }
-
-    envSelect.addEventListener('change', () => {
-      const env = ENVIRONMENT_PRESETS.find(e => e.key === envSelect.value);
-      if (!env) return;
-
-      // Emit event — App routes this to SimWorker (obstacles) + RenderWorker (bg).
-      bus.emit('applyEnvironment', {
-        key:                 env.key,
-        backgroundType:      env.backgroundType,
-        spec:                env.obstacleSpec,
-        seedDensityOverride: env.seedDensityOverride,
-      });
-
-      // Reset placeholder.
-      envSelect.value = '';
-
-      // If there is a recommended life preset, auto-suggest it via a tooltip.
-      const lifePreset = LIFE_PRESETS.find(p => p.key === env.recommendedLifePreset);
-      if (lifePreset) {
-        envHint.textContent =
-          `Applied! Suggested life: "${lifePreset.meta.name}" ` +
-          `(${lifePreset.meta.archetype}, diff ${lifePreset.meta.difficulty}/5)`;
-      } else {
-        envHint.textContent = 'Environment applied — obstacles generating…';
-      }
-
-      // Restore hint text after 5 seconds.
-      setTimeout(() => {
-        envHint.textContent = 'Generates obstacles + switches background. Reseeds life.';
-      }, 5000);
-    });
-
-    section.append(envSelect);
-
-    // "Randomize obstacles" button — re-applies last selected env with new RNG.
-    const randomizeBtn = document.createElement('button');
-    randomizeBtn.className   = 'preset-btn';
-    randomizeBtn.textContent = 'Randomize Obstacles';
-    randomizeBtn.title       = 'Re-generate the current environment\'s obstacles with a new random seed';
-    let _lastEnvKey: string | null = null;
-
-    envSelect.addEventListener('change', () => {
-      _lastEnvKey = envSelect.value || _lastEnvKey;
-    });
-
-    randomizeBtn.addEventListener('click', () => {
-      const key = _lastEnvKey;
-      if (!key) return;
-      const env = ENVIRONMENT_PRESETS.find(e => e.key === key);
-      if (!env) return;
-      // Re-emit with the same spec — non-deterministic RNG produces new layout.
-      bus.emit('applyEnvironment', {
-        key:                 env.key,
-        backgroundType:      env.backgroundType,
-        spec:                { ...env.obstacleSpec, deterministic: false },
-        seedDensityOverride: env.seedDensityOverride,
-      });
-    });
-
-    section.append(randomizeBtn);
 
     return section;
   }
