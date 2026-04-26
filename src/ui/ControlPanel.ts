@@ -441,6 +441,109 @@ const EVOLUTION_SLIDERS: readonly SliderSpec[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Phase 20 — Chemical Ecology slider specs
+// ---------------------------------------------------------------------------
+
+/**
+ * Phase 20 — Chemical Ecology slider specs.
+ * Controls the 4-channel diffusible chemical system (N/W/P/A):
+ * secretion rates, multi-channel chemotaxis coefficients, diffusion/decay
+ * physics, quorum-sensing threshold, and activation energy bonus.
+ */
+const CHEMICAL_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Waste Secretion',
+    key:   'wasteSecretionRate',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Rate at which living cells release waste into the chemical field [0–1]. ' +
+      '0 = no waste produced; 1 = maximum secretion each tick. ' +
+      'Waste repels other cells via the Waste Avoidance coefficient.',
+  },
+  {
+    label: 'Pheromone Secretion',
+    key:   'pheromoneSecretionRate',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Rate at which living cells emit pheromone into the chemical field [0–1]. ' +
+      'Pheromone triggers quorum sensing when concentration exceeds the Quorum ' +
+      'Chem Threshold, and can attract or repel other cells.',
+  },
+  {
+    label: 'Nutrient Chemotaxis',
+    key:   'nutrientChemotaxis',
+    min: 0, max: 2, step: 0.01,
+    title:
+      'Strength of velocity bias toward rising nutrient-chemical gradient [0–2]. ' +
+      '0 = no response to nutrient gradient; positive values steer cells toward ' +
+      'nutrient-rich regions.',
+  },
+  {
+    label: 'Pheromone Chemotaxis',
+    key:   'pheromoneChemotaxis',
+    min: 0, max: 2, step: 0.01,
+    title:
+      'Strength of velocity bias toward rising pheromone gradient [0–2]. ' +
+      '0 = no response; positive values cluster cells by following pheromone ' +
+      'trails left by same-colony members.',
+  },
+  {
+    label: 'Waste Avoidance',
+    key:   'wasteAvoidance',
+    min: 0, max: 2, step: 0.01,
+    title:
+      'Strength of velocity bias away from rising waste gradient [0–2]. ' +
+      '0 = no avoidance; positive values cause cells to flee high-waste regions ' +
+      '(self-cleaning colony behaviour).',
+  },
+  {
+    label: 'Alarm Flight',
+    key:   'alarmFlight',
+    min: 0, max: 2, step: 0.01,
+    title:
+      'Strength of velocity bias away from rising alarm-chemical gradient [0–2]. ' +
+      'Dying cells emit alarm; living cells with high Alarm Flight scatter away ' +
+      'from death zones.',
+  },
+  {
+    label: 'Chem Diffusion',
+    key:   'chemicalDiffusionRate',
+    min: 0, max: 0.5, step: 0.005,
+    title:
+      'Per-tick fraction of each chemical that spreads to adjacent cells [0–0.5]. ' +
+      '0 = no diffusion (chemicals stay where secreted); 0.25 = rapid spreading ' +
+      'producing wide gradient fields.',
+  },
+  {
+    label: 'Chem Decay',
+    key:   'chemicalDecayRate',
+    min: 0, max: 0.1, step: 0.001,
+    title:
+      'Per-tick fraction of each chemical that degrades [0–0.1]. ' +
+      '0 = chemicals accumulate indefinitely; 0.02 = ~50-tick half-life. ' +
+      'Higher decay produces sharper, more localised gradients.',
+  },
+  {
+    label: 'Quorum Chem Threshold',
+    key:   'chemQuorumThreshold',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Pheromone concentration [0–1] required in a 5×5 neighbourhood to trigger ' +
+      'Quorum Active state. Quorum-active cells stop spreading, gain energy, and ' +
+      'coordinate biofilm formation. Distinct from the neighbour-count Quorum Threshold.',
+  },
+  {
+    label: 'Quorum Energy Bonus',
+    key:   'quorumActivationEnergy',
+    min: 0, max: 0.5, step: 0.005,
+    title:
+      'Energy added per tick to each Quorum-Active cell [0–0.5]. ' +
+      'Rewards cells that enter coordinated quorum state, simulating ' +
+      'cooperative resource sharing in dense biofilm colonies.',
+  },
+];
+
+// ---------------------------------------------------------------------------
 // ControlPanel class
 // ---------------------------------------------------------------------------
 
@@ -507,6 +610,9 @@ export class ControlPanel {
 
     // --- Evolution Behaviour section (Phase 15) ---------------------------
     panel.append(this._buildEvolutionBehaviorSection());
+
+    // --- Chemical Ecology section (Phase 20) ------------------------------
+    panel.append(this._buildChemicalEcologySection());
 
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
@@ -827,6 +933,39 @@ export class ControlPanel {
 
     biasRow.append(biasCheckbox, biasLabel);
     details.append(biasRow);
+
+    return details;
+  }
+
+  /**
+   * Builds the collapsible "Chemical Ecology" section (Phase 20).
+   *
+   * Contains sliders for the 4-channel diffusible chemical system:
+   * secretion rates, chemotaxis coefficients, diffusion/decay physics,
+   * quorum-sensing threshold, and activation energy bonus.
+   *
+   * @returns The built `<details>` element.
+   */
+  private _buildChemicalEcologySection(): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'panel-section collapsible';
+
+    const summary = document.createElement('summary');
+    summary.className   = 'panel-heading collapsible-heading';
+    summary.textContent = 'Chemical Ecology';
+    details.append(summary);
+
+    // Helper hint explaining the system at a glance.
+    const hint = document.createElement('p');
+    hint.className   = 'section-hint';
+    hint.textContent =
+      'Diffusible signals: Nutrient (N), Waste (W), Pheromone (P), Alarm (A). ' +
+      'Enable secretion rates first, then tune chemotaxis responses.';
+    details.append(hint);
+
+    for (const spec of CHEMICAL_SLIDERS) {
+      details.append(this._buildSlider(spec));
+    }
 
     return details;
   }
@@ -1230,23 +1369,47 @@ export class ControlPanel {
     renderModeSelect.className = 'preset-select';
     renderModeSelect.setAttribute('aria-label', 'Select visualisation mode');
 
-    // Build select options — map 'Cell Type' display option to no-special-mode.
-    const renderModeEntries: Array<{ mode: string; label: string }> = [
-      { mode: 'variantId',   label: 'Variant ID'  },
-      { mode: 'lifecycle',   label: 'Lifecycle'   },
-      { mode: 'genome',      label: 'Genome'      },
-      { mode: 'generation',  label: 'Generation'  },
-      { mode: 'fitness',     label: 'Fitness'     },
-      { mode: 'signal',      label: 'Signal'      },
-      { mode: 'morphology',  label: 'Morphology'  },
-      { mode: 'default',     label: 'Cell Type'   },
+    // Build select options grouped by category (Phase 20 adds Chemical Fields group).
+    const renderModeGroups: Array<{ label: string; entries: Array<{ mode: string; label: string }> }> = [
+      {
+        label: 'Cell View',
+        entries: [
+          { mode: 'default',    label: 'Cell Type'   },
+          { mode: 'lifecycle',  label: 'Lifecycle'   },
+          { mode: 'variantId',  label: 'Variant ID'  },
+          { mode: 'morphology', label: 'Morphology'  },
+        ],
+      },
+      {
+        label: 'Genetics',
+        entries: [
+          { mode: 'genome',     label: 'Genome'      },
+          { mode: 'generation', label: 'Generation'  },
+          { mode: 'fitness',    label: 'Fitness'     },
+          { mode: 'signal',     label: 'Signal'      },
+        ],
+      },
+      {
+        label: 'Chemical Fields',
+        entries: [
+          { mode: 'nutrient-field',  label: 'Nutrient Field'  },
+          { mode: 'waste-field',     label: 'Waste Field'     },
+          { mode: 'pheromone-field', label: 'Pheromone Field' },
+          { mode: 'alarm-field',     label: 'Alarm Field'     },
+        ],
+      },
     ];
 
-    for (const entry of renderModeEntries) {
-      const opt = document.createElement('option');
-      opt.value       = entry.mode;
-      opt.textContent = entry.label;
-      renderModeSelect.append(opt);
+    for (const group of renderModeGroups) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = group.label;
+      for (const entry of group.entries) {
+        const opt = document.createElement('option');
+        opt.value       = entry.mode;
+        opt.textContent = entry.label;
+        optgroup.append(opt);
+      }
+      renderModeSelect.append(optgroup);
     }
 
     // Initialise to current state.
@@ -1446,6 +1609,7 @@ export class ControlPanel {
     syncGroup(LIFE_SLIDERS);
     syncGroup(LIFECYCLE_SLIDERS);
     syncGroup(EVOLUTION_SLIDERS);
+    syncGroup(CHEMICAL_SLIDERS);
 
     // Sync the adaptiveMutationBias checkbox (boolean field, not in slider maps).
     if (this._adaptiveBiasCheckbox) {

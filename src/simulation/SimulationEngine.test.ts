@@ -2194,3 +2194,164 @@ describe('SimulationEngine — Phase 19 motility', () => {
     expect(grid.front.vx[centre]).toBeLessThanOrEqual(0);
   });
 });
+
+// Phase 20 — Chemical Ecology
+// -------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 20 chemical diffusion', () => {
+  it('chemNutrient diffuses from a seeded cell to neighbours in one tick', () => {
+    // Seed a high concentration in the centre cell, zero elsewhere.
+    const centre = 2 * W + 2;
+    grid.front.chemNutrient[centre] = 1.0;
+
+    runOneTick(grid, engine, {
+      chemicalDiffusionRate: 0.25,
+      chemicalDecayRate:     0.0,
+      // Disable all biological activity so only physics runs.
+      energyDecayRate:       0.0,
+      spreadRate:            0.0,
+      wasteSecretionRate:    0.0,
+      pheromoneSecretionRate: 0.0,
+    });
+
+    // Cardinal neighbours should have received concentration.
+    const right = 2 * W + 3;
+    const left  = 2 * W + 1;
+    const down  = 3 * W + 2;
+    const up    = 1 * W + 2;
+    expect(grid.front.chemNutrient[right]).toBeGreaterThan(0);
+    expect(grid.front.chemNutrient[left]).toBeGreaterThan(0);
+    expect(grid.front.chemNutrient[down]).toBeGreaterThan(0);
+    expect(grid.front.chemNutrient[up]).toBeGreaterThan(0);
+  });
+
+  it('chemNutrient decays to zero over ticks when decay rate is high', () => {
+    const centre = 2 * W + 2;
+    grid.front.chemNutrient[centre] = 1.0;
+
+    // Run 20 ticks with 50% decay and no diffusion.
+    for (let t = 0; t < 20; t++) {
+      runOneTick(grid, engine, {
+        chemicalDiffusionRate:  0.0,
+        chemicalDecayRate:      0.5,
+        energyDecayRate:        0.0,
+        spreadRate:             0.0,
+        wasteSecretionRate:     0.0,
+        pheromoneSecretionRate: 0.0,
+      });
+    }
+
+    // After 20 ticks at 50% decay, concentration should be negligible.
+    const total = Array.from(grid.front.chemNutrient as Float32Array).reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThan(0.01);
+  });
+});
+
+describe('SimulationEngine — Phase 20 chemical secretion', () => {
+  it('living Life cell secretes waste at wasteSecretionRate', () => {
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.8;
+
+    runOneTick(grid, engine, {
+      wasteSecretionRate:     0.5,
+      pheromoneSecretionRate: 0.0,
+      chemicalDiffusionRate:  0.0,
+      chemicalDecayRate:      0.0,
+      energyDecayRate:        0.0,
+      spreadRate:             0.0,
+    });
+
+    expect(grid.front.chemWaste[centre]).toBeGreaterThan(0);
+  });
+
+  it('living Life cell secretes pheromone at pheromoneSecretionRate', () => {
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.8;
+
+    runOneTick(grid, engine, {
+      pheromoneSecretionRate: 0.5,
+      wasteSecretionRate:     0.0,
+      chemicalDiffusionRate:  0.0,
+      chemicalDecayRate:      0.0,
+      energyDecayRate:        0.0,
+      spreadRate:             0.0,
+    });
+
+    expect(grid.front.chemPheromone[centre]).toBeGreaterThan(0);
+  });
+
+  it('dying cell (energy < 0.1 but still alive) emits alarm chemical', () => {
+    // The engine emits alarm in the secretion sub-pass for Life cells with
+    // energy < 0.1.  The cell must survive the tick (not actually die) so it
+    // is still classified as Life when secretion runs.  energyDecayRate must
+    // be small enough that energy stays positive.
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.05; // below 0.1 → alarm, but survives decay
+
+    // wasteSecretionRate > 0 is required to activate the Phase 20 chemistry
+    // block (hasPhase20Chem guard).  Setting it to a small value is the
+    // minimal trigger that also enables the secretion sub-pass where alarm runs.
+    runOneTick(grid, engine, {
+      energyDecayRate:        0.01, // 0.05 - 0.01 = 0.04 → survives
+      wasteSecretionRate:     0.01, // enables Phase 20 chemistry block
+      pheromoneSecretionRate: 0.0,
+      chemicalDiffusionRate:  0.0,
+      chemicalDecayRate:      0.0,
+      spreadRate:             0.0,
+    });
+
+    // Alarm should have been emitted for the low-energy living cell.
+    expect(grid.front.chemAlarm[centre]).toBeGreaterThan(0);
+  });
+});
+
+describe('SimulationEngine — Phase 20 quorum sensing', () => {
+  it('sets QUORUM_ACTIVE flag when pheromone exceeds chemQuorumThreshold', () => {
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre]     = CellType.Life;
+    grid.front.energy[centre]       = 0.8;
+    // Pre-load pheromone above threshold in the neighbourhood.
+    for (let j = 0; j < W * H; j++) {
+      grid.front.chemPheromone[j] = 1.0;
+    }
+
+    // pheromoneSecretionRate > 0 is required by the engine guard that enables
+    // the quorum-sensing sub-pass (pheromoneSecretionRate > 0 && threshold < 1).
+    runOneTick(grid, engine, {
+      chemQuorumThreshold:    0.5,   // pre-loaded concentration of 1.0 exceeds this
+      pheromoneSecretionRate: 0.001, // minimal non-zero value to enable quorum sub-pass
+      wasteSecretionRate:     0.0,
+      chemicalDiffusionRate:  0.0,
+      chemicalDecayRate:      0.0,
+      energyDecayRate:        0.0,
+      spreadRate:             0.0,
+    });
+
+    expect(grid.front.flags[centre] & CellFlags.QUORUM_ACTIVE).toBeTruthy();
+  });
+
+  it('does not set QUORUM_ACTIVE when pheromone is below threshold', () => {
+    const centre = 2 * W + 2;
+    grid.front.cellType[centre] = CellType.Life;
+    grid.front.energy[centre]   = 0.8;
+    // Low pheromone — well below threshold.
+    for (let j = 0; j < W * H; j++) {
+      grid.front.chemPheromone[j] = 0.01;
+    }
+
+    runOneTick(grid, engine, {
+      chemQuorumThreshold:    0.5,
+      pheromoneSecretionRate: 0.0,
+      wasteSecretionRate:     0.0,
+      chemicalDiffusionRate:  0.0,
+      chemicalDecayRate:      0.0,
+      energyDecayRate:        0.0,
+      spreadRate:             0.0,
+    });
+
+    expect(grid.front.flags[centre] & CellFlags.QUORUM_ACTIVE).toBeFalsy();
+  });
+});

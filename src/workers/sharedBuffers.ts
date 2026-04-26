@@ -149,6 +149,28 @@ export interface BufferSetLayout {
    */
   vyOffset: number;
 
+  // --- Phase 20 chemical ecology fields (NEW) ------------------------------
+  /**
+   * Byte offset for `chemNutrient` (Float32Array, `totalCells * 4` bytes).
+   * Nutrient chemical concentration [0, 1] — seeded by Nutrient cells.
+   */
+  chemNutrientOffset: number;
+  /**
+   * Byte offset for `chemWaste` (Float32Array, `totalCells * 4` bytes).
+   * Waste chemical concentration [0, 1] — secreted by Life cells.
+   */
+  chemWasteOffset: number;
+  /**
+   * Byte offset for `chemPheromone` (Float32Array, `totalCells * 4` bytes).
+   * Kin pheromone concentration [0, 1] — used for quorum sensing.
+   */
+  chemPheromoneOffset: number;
+  /**
+   * Byte offset for `chemAlarm` (Float32Array, `totalCells * 4` bytes).
+   * Alarm pheromone concentration [0, 1] — emitted by dying cells.
+   */
+  chemAlarmOffset: number;
+
   /** Total byte size of one buffer set (padded to 8-byte boundary). */
   byteSize: number;
 }
@@ -248,6 +270,24 @@ export function computeBufferSetLayout(totalCells: number): BufferSetLayout {
   const vyOffset = cursor;
   cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
 
+  // --- Phase 20 chemical ecology buffers (NEW) -----------------------------
+
+  // chemNutrient: 4 bytes per cell — nutrient chemical concentration [0, 1].
+  const chemNutrientOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // chemWaste: 4 bytes per cell — metabolic waste concentration [0, 1].
+  const chemWasteOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // chemPheromone: 4 bytes per cell — kin pheromone concentration [0, 1].
+  const chemPheromoneOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
+  // chemAlarm: 4 bytes per cell — alarm pheromone concentration [0, 1].
+  const chemAlarmOffset = cursor;
+  cursor += totalCells * Float32Array.BYTES_PER_ELEMENT;
+
   // Pad the whole set to an 8-byte boundary so two sets can be stacked.
   const byteSize = alignTo(cursor, 8);
 
@@ -266,6 +306,10 @@ export function computeBufferSetLayout(totalCells: number): BufferSetLayout {
     signalStrengthOffset,
     vxOffset,
     vyOffset,
+    chemNutrientOffset,
+    chemWasteOffset,
+    chemPheromoneOffset,
+    chemAlarmOffset,
     byteSize,
   };
 }
@@ -360,5 +404,10 @@ export function makeBufferViews(
     // Phase 19 motility buffers
     vx:             new Float32Array(sab, base + layout.vxOffset,             totalCells),
     vy:             new Float32Array(sab, base + layout.vyOffset,             totalCells),
+    // Phase 20 chemical ecology buffers
+    chemNutrient:  new Float32Array(sab, base + layout.chemNutrientOffset,  totalCells),
+    chemWaste:     new Float32Array(sab, base + layout.chemWasteOffset,     totalCells),
+    chemPheromone: new Float32Array(sab, base + layout.chemPheromoneOffset, totalCells),
+    chemAlarm:     new Float32Array(sab, base + layout.chemAlarmOffset,     totalCells),
   };
 }

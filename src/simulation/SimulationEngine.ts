@@ -381,10 +381,23 @@ export class SimulationEngine {
       // --- Phase 19: motility velocity buffers ---
       vx: bkVx,
       vy: bkVy,
+      // --- Phase 20: chemical ecology buffers (write target) ---
+      chemNutrient:  bkChemNutrient,
+      chemWaste:     bkChemWaste,
+      chemPheromone: bkChemPheromone,
+      chemAlarm:     bkChemAlarm,
     } = back;
 
     // Phase 19: read front velocity buffers for the post-loop motility pass.
     const { vx: ftVx, vy: ftVy } = front;
+
+    // Phase 20: read front chem buffers for diffusion source and gradient reads.
+    const {
+      chemNutrient:  ftChemNutrient,
+      chemWaste:     ftChemWaste,
+      chemPheromone: ftChemPheromone,
+      chemAlarm:     ftChemAlarm,
+    } = front;
 
     const {
       // Regular Life params
@@ -426,6 +439,17 @@ export class SimulationEngine {
       colonyBoost,
       // Phase 15: evolution behaviour parameters
       signalDiffusion,
+      // Phase 20: chemical ecology parameters
+      wasteSecretionRate,
+      pheromoneSecretionRate,
+      nutrientChemotaxis,
+      pheromoneChemotaxis,
+      wasteAvoidance,
+      alarmFlight,
+      chemicalDiffusionRate,
+      chemicalDecayRate,
+      chemQuorumThreshold,
+      quorumActivationEnergy,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -883,9 +907,14 @@ export class SimulationEngine {
         // --- Spread (reproduction) ----------------------------------------
         // Phase 5: Drain halves the effective spread rate.
         // Phase 10: stageSpreadMult already applied to cellSpreadRate above.
+        // Phase 20: QUORUM_ACTIVE (set last tick) suppresses spread to 10% —
+        //   biofilm cells invest energy in the colony rather than expansion.
+        const isInQuorum = (ftFlags[i] & CellFlags.QUORUM_ACTIVE) !== 0;
         const effectiveSpreadRate = adjacentDrain
           ? cellSpreadRate * 0.5
-          : cellSpreadRate;
+          : isInQuorum
+            ? cellSpreadRate * 0.1
+            : cellSpreadRate;
 
         // Phase 10: genome point-mutation rate is stage-dependent.
         //   Juvenile   → 0        (cannot mutate while establishing)
@@ -1006,6 +1035,34 @@ export class SimulationEngine {
           // Blend persisted momentum with the chemical gradient.
           vx = vx * (1.0 - chemotaxisMotilityFraction) + bx * chemotaxisMotilityFraction;
           vy = vy * (1.0 - chemotaxisMotilityFraction) + by * chemotaxisMotilityFraction;
+        }
+
+        // Phase 20: multi-channel chemical gradient bias.
+        // Uses cardinal-direction finite differences on front chem buffers (one-tick lag
+        // is physically realistic — cells respond to the gradient they sensed last tick).
+        // Only computed when any Phase 20 chemotaxis coefficient is non-zero.
+        if (nutrientChemotaxis !== 0 || pheromoneChemotaxis !== 0 || wasteAvoidance !== 0 || alarmFlight !== 0) {
+          const ix = i % width;
+          const iy = (i / width) | 0;
+          const r  = ix < width  - 1 ? i + 1     : i;
+          const l  = ix > 0          ? i - 1     : i;
+          const dn = iy < height - 1 ? i + width : i;
+          const up = iy > 0          ? i - width : i;
+
+          // Nutrient gradient attracts; waste + alarm gradients repel; pheromone attracts kin.
+          const dNx = ftChemNutrient[r]  - ftChemNutrient[l];
+          const dNy = ftChemNutrient[dn] - ftChemNutrient[up];
+          const dWx = ftChemWaste[r]     - ftChemWaste[l];
+          const dWy = ftChemWaste[dn]    - ftChemWaste[up];
+          const dPx = ftChemPheromone[r] - ftChemPheromone[l];
+          const dPy = ftChemPheromone[dn] - ftChemPheromone[up];
+          const dAx = ftChemAlarm[r]     - ftChemAlarm[l];
+          const dAy = ftChemAlarm[dn]    - ftChemAlarm[up];
+
+          vx += nutrientChemotaxis * dNx + pheromoneChemotaxis * dPx
+              - wasteAvoidance * dWx     - alarmFlight * dAx;
+          vy += nutrientChemotaxis * dNy + pheromoneChemotaxis * dPy
+              - wasteAvoidance * dWy     - alarmFlight * dAy;
         }
 
         bkVx[i] = vx;
@@ -1133,6 +1190,153 @@ export class SimulationEngine {
       for (let i = 0; i < total; i++) {
         bkVx[i] = 0;
         bkVy[i] = 0;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 20: Chemical Ecology passes.
+    //
+    // Three sequential sub-passes run AFTER Phase 19 so they see the final
+    // cell-type layout (post-migration) for this tick.
+    //
+    //   Sub-pass 1 — Diffusion + decay (all four channels):
+    //     Reads front chem buffers (previous tick state) and applies a
+    //     discrete Laplacian diffusion + exponential decay, writing to the
+    //     back chem buffers.  Using front as the source avoids read/write
+    //     aliasing — the front is stable for the whole tick.
+    //
+    //   Sub-pass 2 — Secretion:
+    //     Adds new chemical material to back chem buffers based on the
+    //     final cell types/energies committed to back by the main loop.
+    //
+    //   Sub-pass 3 — Quorum sensing:
+    //     Samples local pheromone (5×5 neighbourhood, scaled to [0,1]),
+    //     sets/clears QUORUM_ACTIVE flag, and applies the cooperative
+    //     energy bonus for quorum-active cells.
+    //
+    // All three sub-passes are skipped when all secretion rates are zero
+    // (default) so pre-Phase 20 configs pay zero cost.
+    // -----------------------------------------------------------------------
+
+    const hasPhase20Chem = wasteSecretionRate > 0 || pheromoneSecretionRate > 0;
+
+    if (hasPhase20Chem || chemicalDiffusionRate > 0) {
+      const retain = 1.0 - chemicalDecayRate; // fraction of chem that persists
+
+      // Sub-pass 1: Diffusion + decay — reads ftChem, writes bkChem.
+      for (let i = 0; i < total; i++) {
+        const ix = i % width;
+        const iy = (i / width) | 0;
+
+        // Cardinal neighbour indices (clamped at grid edges — no wrap-around).
+        const r  = ix < width  - 1 ? i + 1     : i;
+        const l  = ix > 0          ? i - 1     : i;
+        const dn = iy < height - 1 ? i + width : i;
+        const up = iy > 0          ? i - width : i;
+
+        // Discrete Laplacian: L(f) = f(r) + f(l) + f(d) + f(u) − 4·f(i).
+        // Scaled by diffRate so the update is: f_new = f × retain + diffRate × L(f).
+        const dN = ftChemNutrient[r]  + ftChemNutrient[l]  + ftChemNutrient[dn]  + ftChemNutrient[up]  - 4 * ftChemNutrient[i];
+        const dW = ftChemWaste[r]     + ftChemWaste[l]      + ftChemWaste[dn]     + ftChemWaste[up]     - 4 * ftChemWaste[i];
+        const dP = ftChemPheromone[r] + ftChemPheromone[l]  + ftChemPheromone[dn] + ftChemPheromone[up] - 4 * ftChemPheromone[i];
+        const dA = ftChemAlarm[r]     + ftChemAlarm[l]      + ftChemAlarm[dn]     + ftChemAlarm[up]     - 4 * ftChemAlarm[i];
+
+        bkChemNutrient[i]  = ftChemNutrient[i]  * retain + chemicalDiffusionRate * dN;
+        bkChemWaste[i]     = ftChemWaste[i]      * retain + chemicalDiffusionRate * dW;
+        bkChemPheromone[i] = ftChemPheromone[i]  * retain + chemicalDiffusionRate * dP;
+        bkChemAlarm[i]     = ftChemAlarm[i]      * retain + chemicalDiffusionRate * dA;
+      }
+
+      // Sub-pass 2: Secretion — adds new chemical to back buffers based on
+      // the committed cell layout.  Clamped to [0, 1] to prevent runaway.
+      for (let i = 0; i < total; i++) {
+        const cellType = bkType[i];
+
+        if (cellType === CellType.Nutrient) {
+          // Nutrient cells are point sources for the N channel.
+          const v = bkChemNutrient[i] + 0.15; // fixed strong emission
+          bkChemNutrient[i] = v > 1.0 ? 1.0 : v;
+        }
+
+        if (cellType === CellType.Life) {
+          const e = bkEnergy[i];
+
+          // Waste: proportional to energy consumed (active metabolism = more waste).
+          const newW = bkChemWaste[i] + e * wasteSecretionRate;
+          bkChemWaste[i] = newW > 1.0 ? 1.0 : newW;
+
+          // Pheromone: kin signal proportional to energy (healthy cells broadcast more).
+          const newP = bkChemPheromone[i] + e * pheromoneSecretionRate;
+          bkChemPheromone[i] = newP > 1.0 ? 1.0 : newP;
+
+          // Alarm: dying cells (energy < 0.1) broadcast danger.
+          if (e < 0.1) {
+            const alarmEmit = (0.1 - e) * 2.0; // stronger the lower the energy
+            const newA = bkChemAlarm[i] + alarmEmit;
+            bkChemAlarm[i] = newA > 1.0 ? 1.0 : newA;
+          }
+        }
+
+        // Clamp all channels to [0, 1] — diffusion can produce small negatives at edges.
+        if (bkChemNutrient[i]  < 0) bkChemNutrient[i]  = 0;
+        if (bkChemWaste[i]     < 0) bkChemWaste[i]     = 0;
+        if (bkChemPheromone[i] < 0) bkChemPheromone[i] = 0;
+        if (bkChemAlarm[i]     < 0) bkChemAlarm[i]     = 0;
+      }
+
+      // Sub-pass 3: Quorum sensing — samples local pheromone in a 5×5
+      // neighbourhood (25 cells max, scaled by 1/25 → [0, 1]).
+      // Sets QUORUM_ACTIVE on the cell's back flags and applies the cooperative
+      // energy bonus for this tick.
+      if (pheromoneSecretionRate > 0 && chemQuorumThreshold < 1.0) {
+        for (let i = 0; i < total; i++) {
+          if (bkType[i] !== CellType.Life) {
+            // Clear QUORUM_ACTIVE for non-Life cells.
+            bkFlags[i] &= ~CellFlags.QUORUM_ACTIVE;
+            continue;
+          }
+
+          // Sum pheromone in 5×5 Moore neighbourhood (radius 2).
+          const ix = i % width;
+          const iy = (i / width) | 0;
+          let localP = 0.0;
+          let sampleCount = 0;
+
+          for (let dy = -2; dy <= 2; dy++) {
+            const ny = iy + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (let dx = -2; dx <= 2; dx++) {
+              const nx = ix + dx;
+              if (nx < 0 || nx >= width) continue;
+              localP += bkChemPheromone[ny * width + nx];
+              sampleCount++;
+            }
+          }
+
+          // Scale to [0, 1] by dividing by sample count (accounts for edge cells).
+          const avgP = sampleCount > 0 ? localP / sampleCount : 0;
+
+          if (avgP >= chemQuorumThreshold) {
+            // Quorum detected: set flag, apply cooperative energy bonus.
+            bkFlags[i] |= CellFlags.QUORUM_ACTIVE;
+            const bonus = bkEnergy[i] + quorumActivationEnergy * 0.01;
+            bkEnergy[i] = bonus > 1.0 ? 1.0 : bonus;
+          } else {
+            // Below quorum: clear flag.
+            bkFlags[i] &= ~CellFlags.QUORUM_ACTIVE;
+          }
+        }
+      }
+    } else {
+      // Phase 20 chemistry inactive — zero all chem buffers each tick so the
+      // render worker sees clean fields (render modes 8–11 show nothing).
+      for (let i = 0; i < total; i++) {
+        bkChemNutrient[i]  = 0;
+        bkChemWaste[i]     = 0;
+        bkChemPheromone[i] = 0;
+        bkChemAlarm[i]     = 0;
+        // Also clear QUORUM_ACTIVE since there is no chemistry driving it.
+        bkFlags[i] &= ~CellFlags.QUORUM_ACTIVE;
       }
     }
 

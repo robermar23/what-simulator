@@ -30,7 +30,13 @@
  *   vx             Float32Array  1 048 576 bytes (~1 MB)  × 2
  *   vy             Float32Array  1 048 576 bytes (~1 MB)  × 2
  *
- * Total at 512×512: ~18.3 MB — well within browser constraints.
+ * ## Phase 20 chemical ecology buffers (NEW)
+ *   chemNutrient   Float32Array  1 048 576 bytes (~1 MB)  × 2
+ *   chemWaste      Float32Array  1 048 576 bytes (~1 MB)  × 2
+ *   chemPheromone  Float32Array  1 048 576 bytes (~1 MB)  × 2
+ *   chemAlarm      Float32Array  1 048 576 bytes (~1 MB)  × 2
+ *
+ * Total at 512×512: ~22.4 MB — well within browser constraints.
  */
 
 import {
@@ -138,6 +144,21 @@ export const CellFlags = {
    * to trigger a brief white flash that feeds the bloom pipeline.
    */
   JUST_DIVIDED:     0b1000_0000,
+
+  /**
+   * Phase 20 — Chemical Ecology: cell has detected a chemical quorum (local
+   * pheromone concentration exceeds `config.chemQuorumThreshold`).
+   *
+   * While active, the cell receives an energy bonus each tick
+   * (`quorumActivationEnergy × 0.01`) and its spread rate is suppressed to
+   * 10% of normal (biofilm formation).  The fragment shader phase-locks the
+   * pulse animation so quorum-active cells pulse in synchrony.
+   *
+   * Re-uses the SIGNALING bit (0b0010_0000) — SIGNALING was declared for
+   * pioneer-mode quorum in earlier phases but was never wired into the engine.
+   * Phase 20 gives it a concrete simulation role.
+   */
+  QUORUM_ACTIVE:    0b0010_0000,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -254,6 +275,37 @@ export interface GridBuffers {
    * Symmetric to `vx` along the Y axis.
    */
   readonly vy: Float32Array;
+
+  // --- Phase 20 chemical ecology buffers (NEW) ------------------------------
+
+  /**
+   * Nutrient chemical channel [0, 1] per cell.
+   * Seeded by Nutrient cells each tick; attracts Life cells via chemotaxis.
+   * Diffuses outward and decays according to `chemicalDiffusionRate` /
+   * `chemicalDecayRate`.
+   */
+  readonly chemNutrient: Float32Array;
+
+  /**
+   * Waste chemical channel [0, 1] per cell.
+   * Secreted by active Life cells proportional to energy consumed.
+   * High concentrations reduce the chemotaxis drive (repulsion).
+   */
+  readonly chemWaste: Float32Array;
+
+  /**
+   * Kin pheromone channel [0, 1] per cell.
+   * Secreted by Life cells weighted by their energy and variant identity.
+   * Used for quorum sensing (biofilm), kin attraction, and territory marking.
+   */
+  readonly chemPheromone: Float32Array;
+
+  /**
+   * Alarm pheromone channel [0, 1] per cell.
+   * Emitted by dying cells (energy < 0.1) and cells adjacent to Toxin.
+   * Drives alarm-flight velocity bias in neighbouring Life cells.
+   */
+  readonly chemAlarm: Float32Array;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +381,11 @@ export class GridState {
       // Phase 19 motility buffers — zero-initialised (motility off by default)
       vx:            new Float32Array(totalCells),
       vy:            new Float32Array(totalCells),
+      // Phase 20 chemical ecology buffers — zero-initialised (no chemistry by default)
+      chemNutrient:  new Float32Array(totalCells),
+      chemWaste:     new Float32Array(totalCells),
+      chemPheromone: new Float32Array(totalCells),
+      chemAlarm:     new Float32Array(totalCells),
     };
   }
 
@@ -367,6 +424,11 @@ export class GridState {
     // Phase 19 motility buffers
     this.back.vx.set(this.front.vx);
     this.back.vy.set(this.front.vy);
+    // Phase 20 chemical ecology buffers
+    this.back.chemNutrient.set(this.front.chemNutrient);
+    this.back.chemWaste.set(this.front.chemWaste);
+    this.back.chemPheromone.set(this.front.chemPheromone);
+    this.back.chemAlarm.set(this.front.chemAlarm);
   }
 
   /**
@@ -396,6 +458,7 @@ export class GridState {
       cellType, energy, genome, variantId, generation,
       toxinResist, nutrientAbs, heatResist, spreadBonus, signalStrength,
       age, flags, vx, vy,
+      chemNutrient, chemWaste, chemPheromone, chemAlarm,
     } = this.front;
 
     for (let i = 0; i < this.totalCells; i++) {
@@ -429,6 +492,11 @@ export class GridState {
       // Phase 19: velocity always starts at zero (cells are initially stationary).
       vx[i]    = 0;
       vy[i]    = 0;
+      // Phase 20: chemical concentrations start at zero — no chemistry on seed.
+      chemNutrient[i]  = 0;
+      chemWaste[i]     = 0;
+      chemPheromone[i] = 0;
+      chemAlarm[i]     = 0;
     }
   }
 
@@ -455,6 +523,11 @@ export class GridState {
       // Phase 19 motility buffers
       buf.vx.fill(0);
       buf.vy.fill(0);
+      // Phase 20 chemical ecology buffers
+      buf.chemNutrient.fill(0);
+      buf.chemWaste.fill(0);
+      buf.chemPheromone.fill(0);
+      buf.chemAlarm.fill(0);
     }
   }
 

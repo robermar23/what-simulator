@@ -95,6 +95,11 @@ function makeStubBuffers(cells: number): GridBuffers {
     // Phase 19 motility buffers
     vx:             new Float32Array(cells),
     vy:             new Float32Array(cells),
+    // Phase 20 chemical ecology buffers
+    chemNutrient:   new Float32Array(cells),
+    chemWaste:      new Float32Array(cells),
+    chemPheromone:  new Float32Array(cells),
+    chemAlarm:      new Float32Array(cells),
   };
 }
 

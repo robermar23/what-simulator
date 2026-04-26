@@ -425,6 +425,109 @@ export interface SimulationConfig {
    * Range: [0, 1].  Default: 0.5.
    */
   chemotaxisMotilityFraction: number;
+
+  // --- Phase 20: Chemical Ecology -------------------------------------------
+
+  /**
+   * Rate at which active Life cells secrete waste chemical per tick.
+   * Waste accumulation repels Life cells via `wasteAvoidance` chemotaxis.
+   * 0 disables waste secretion entirely.
+   *
+   * Range: [0, 0.1].  Default: 0.01.
+   */
+  wasteSecretionRate: number;
+
+  /**
+   * Rate at which active Life cells secrete kin pheromone per tick.
+   * Pheromone is used for quorum sensing and kin attraction.
+   * 0 disables pheromone secretion.
+   *
+   * Range: [0, 0.2].  Default: 0.05.
+   */
+  pheromoneSecretionRate: number;
+
+  /**
+   * Velocity bias magnitude applied toward high nutrient-chemical gradient.
+   * Larger values make cells swim aggressively toward Nutrient cells.
+   * Only active when `motilityRate > 0`.
+   *
+   * Range: [0, 2].  Default: 0.3.
+   */
+  nutrientChemotaxis: number;
+
+  /**
+   * Velocity bias magnitude applied toward high pheromone gradient.
+   * Drives kin clustering / swarm intelligence.
+   * Only active when `motilityRate > 0`.
+   *
+   * Range: [0, 2].  Default: 0.2.
+   */
+  pheromoneChemotaxis: number;
+
+  /**
+   * Velocity bias magnitude applied AWAY from high waste gradient.
+   * Cells flee their own metabolic waste, preventing self-poisoning.
+   * Only active when `motilityRate > 0`.
+   *
+   * Range: [0, 2].  Default: 0.15.
+   */
+  wasteAvoidance: number;
+
+  /**
+   * Velocity bias magnitude applied AWAY from high alarm-pheromone gradient.
+   * Dying cells emit alarm; nearby healthy cells flee in response.
+   * Only active when `motilityRate > 0`.
+   *
+   * Range: [0, 2].  Default: 0.4.
+   */
+  alarmFlight: number;
+
+  /**
+   * Fraction of chemical concentration that diffuses to each neighbour per tick.
+   * Applied to all four chemical channels (N, W, P, A) identically.
+   * Higher values spread gradients further but wash out local peaks.
+   * 0 disables diffusion (sharp pointwise secretion only).
+   *
+   * Range: [0, 0.25].  Default: 0.08.
+   */
+  chemicalDiffusionRate: number;
+
+  /**
+   * Fraction of chemical concentration that decays per tick.
+   * Balances secretion so chemicals reach a steady-state gradient.
+   * Higher values mean chemicals dissipate quickly; lower values allow
+   * long-range gradient formation.
+   *
+   * Range: [0, 0.2].  Default: 0.03.
+   */
+  chemicalDecayRate: number;
+
+  /**
+   * Local pheromone concentration threshold [0, 1] required to activate
+   * chemical quorum sensing on a Life cell.
+   *
+   * When the sum of pheromone in the cell's 5×5 neighbourhood (scaled to [0,1])
+   * exceeds this value, the cell enters quorum mode: spread suppressed to 10%,
+   * energy bonus applied, pulse phase synchronised.
+   *
+   * Distinct from `quorumThreshold` which counts same-variant neighbours for
+   * the pioneer/colony mode switch.
+   *
+   * Range: [0, 1].  Default: 0.6 (effectively disabled unless pheromone is high).
+   */
+  chemQuorumThreshold: number;
+
+  /**
+   * Energy bonus added per tick to Life cells in chemical quorum mode
+   * (`chemQuorumThreshold` exceeded).  Represents cooperative metabolism
+   * in dense biofilm — the collective harvests more energy than isolated cells.
+   *
+   * Applied as `quorumActivationEnergy × 0.01` per tick so the units match
+   * the `energyDecayRate` scale.
+   *
+   * Range: [1, 4].  Default: 1.5.
+   */
+  quorumActivationEnergy: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +662,18 @@ export function defaultConfig(): SimulationConfig {
     motilityThreshold:          0.3,
     motilityDamping:            0.2,
     chemotaxisMotilityFraction: 0.5,
+
+    // Phase 20: chemical ecology disabled by default — enable via sliders
+    wasteSecretionRate:         0.01,
+    pheromoneSecretionRate:     0.05,
+    nutrientChemotaxis:         0.3,
+    pheromoneChemotaxis:        0.2,
+    wasteAvoidance:             0.15,
+    alarmFlight:                0.4,
+    chemicalDiffusionRate:      0.08,
+    chemicalDecayRate:          0.03,
+    chemQuorumThreshold:        0.6,
+    quorumActivationEnergy:     1.5,
   };
 }
 
@@ -632,6 +747,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -683,6 +809,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -737,6 +874,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -791,6 +939,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -845,6 +1004,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -899,6 +1069,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -953,6 +1134,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1007,6 +1199,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1061,6 +1264,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1119,6 +1333,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1174,6 +1399,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1229,6 +1465,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1284,6 +1531,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1339,6 +1597,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1394,6 +1663,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1449,6 +1729,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1504,6 +1795,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1559,6 +1861,17 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
     };
   },
 
@@ -1614,6 +1927,289 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
+      // Phase 20: chemical ecology disabled by default — enable via sliders
+      wasteSecretionRate:          0.0,
+      pheromoneSecretionRate:      0.0,
+      nutrientChemotaxis:          0.0,
+      pheromoneChemotaxis:         0.0,
+      wasteAvoidance:              0.0,
+      alarmFlight:                 0.0,
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.6,
+      quorumActivationEnergy:      1.5,
+    };
+  },
+
+  // -------------------------------------------------------------------------
+  // Phase 20 — Chemical Ecology presets
+  // -------------------------------------------------------------------------
+
+  /**
+   * Swimming Bacteria — fast motile cells chasing nutrient gradients via
+   * multi-channel chemotaxis.  All four chemical channels active; cells swarm
+   * visibly toward food sources and flee waste zones.
+   */
+  swimmingBacteria(): SimulationConfig {
+    return {
+      spreadRate:                  0.35,
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.10,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.004,
+      juvenileThreshold:           20,
+      senescentThreshold:          300,
+      apoptosisBoost:              0.015,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.38,
+      variantEnergyDecayRate:      0.005,
+      variantReproductionThreshold: 0.10,
+      variantInitialEnergy:        0.88,
+      competitionStrength:         0.25,
+      toxinResistance:             0.1,
+      nutrientAbsorption:          1.0,
+      gravityResponse:             0.5,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.025,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              10,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.5,
+      signalDiffusion:             0.88,
+      quorumThreshold:             5,
+      adaptiveInheritanceRate:     0.3,
+      // Phase 19: high motility so cells visibly swim
+      motilityRate:                0.6,
+      motilityThreshold:           0.1,
+      motilityDamping:             0.15,
+      chemotaxisMotilityFraction:  0.7,
+      // Phase 20: full chemical ecology — nutrient gradient attracts, waste repels
+      wasteSecretionRate:          0.02,
+      pheromoneSecretionRate:      0.04,
+      nutrientChemotaxis:          0.8,
+      pheromoneChemotaxis:         0.2,
+      wasteAvoidance:              0.5,
+      alarmFlight:                 0.3,
+      chemicalDiffusionRate:       0.10,
+      chemicalDecayRate:           0.04,
+      chemQuorumThreshold:         0.7,
+      quorumActivationEnergy:      1.2,
+    };
+  },
+
+  /**
+   * Biofilm Colony — quorum-triggered biofilm formation.  Cells secrete
+   * pheromone; once local concentration exceeds the quorum threshold they
+   * stop spreading, synchronise their pulses, and gain a cooperative energy
+   * bonus — reproducing dense organised mats.
+   */
+  biofilmColony(): SimulationConfig {
+    return {
+      spreadRate:                  0.28, // moderate — waits for quorum before expanding
+      energyDecayRate:             0.003,
+      reproductionThreshold:       0.08,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.002,
+      juvenileThreshold:           40,
+      senescentThreshold:          600,
+      apoptosisBoost:              0.02,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.30,
+      variantEnergyDecayRate:      0.004,
+      variantReproductionThreshold: 0.08,
+      variantInitialEnergy:        0.88,
+      competitionStrength:         0.15,
+      toxinResistance:             0.0,
+      nutrientAbsorption:          1.0,
+      gravityResponse:             0.5,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              10,
+      mutagenBoost:                2.5,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.10,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.03,
+      colonyBoost:                 0.018,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.4,
+      signalDiffusion:             0.92,
+      quorumThreshold:             3,
+      adaptiveInheritanceRate:     0.3,
+      motilityRate:                0.0,
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
+      // Phase 20: dense pheromone field drives quorum — low threshold triggers early
+      wasteSecretionRate:          0.01,
+      pheromoneSecretionRate:      0.10,  // heavy pheromone emission — biofilm signal
+      nutrientChemotaxis:          0.2,
+      pheromoneChemotaxis:         0.1,
+      wasteAvoidance:              0.1,
+      alarmFlight:                 0.2,
+      chemicalDiffusionRate:       0.06,  // slower diffusion — local pheromone pools
+      chemicalDecayRate:           0.02,  // slow decay — gradient persists
+      chemQuorumThreshold:         0.4,   // low threshold — quorum activates early
+      quorumActivationEnergy:      2.0,   // rich cooperative energy bonus
+    };
+  },
+
+  /**
+   * Chemical Garden — maximal multi-channel chemistry, all four channels
+   * active at 2.5× normal rates.  Best viewed in render modes 8–11 to see
+   * the overlapping gradient landscapes.  Chemical overlay default on.
+   */
+  chemicalGarden(): SimulationConfig {
+    return {
+      spreadRate:                  0.40,
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.10,
+      initialEnergy:               0.85,
+      mutationRate:                0.0,
+      pointMutationRate:           0.005,
+      juvenileThreshold:           25,
+      senescentThreshold:          400,
+      apoptosisBoost:              0.020,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.42,
+      variantEnergyDecayRate:      0.005,
+      variantReproductionThreshold: 0.10,
+      variantInitialEnergy:        0.83,
+      competitionStrength:         0.20,
+      toxinResistance:             0.1,
+      nutrientAbsorption:          1.0,
+      gravityResponse:             0.5,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.025,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              8,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.015,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.5,
+      signalDiffusion:             0.90,
+      quorumThreshold:             4,
+      adaptiveInheritanceRate:     0.3,
+      motilityRate:                0.2,
+      motilityThreshold:           0.2,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.6,
+      // Phase 20: all chemical rates × 2.5 — rich multi-channel landscape
+      wasteSecretionRate:          0.025,
+      pheromoneSecretionRate:      0.125,
+      nutrientChemotaxis:          0.75,
+      pheromoneChemotaxis:         0.50,
+      wasteAvoidance:              0.375,
+      alarmFlight:                 1.00,
+      chemicalDiffusionRate:       0.12,
+      chemicalDecayRate:           0.05,
+      chemQuorumThreshold:         0.45,
+      quorumActivationEnergy:      1.8,
+    };
+  },
+
+  /**
+   * Swarm Intelligence — coordinated kin swarms driven by pheromone gradients.
+   * High pheromoneChemotaxis and low quorumThreshold ensure cells cluster
+   * into synchronised pulsing super-organisms.  Motility enabled so clusters
+   * visibly drift and merge.
+   */
+  swarmIntelligence(): SimulationConfig {
+    return {
+      spreadRate:                  0.32,
+      energyDecayRate:             0.003,
+      reproductionThreshold:       0.08,
+      initialEnergy:               0.92,
+      mutationRate:                0.0,
+      pointMutationRate:           0.003,
+      juvenileThreshold:           30,
+      senescentThreshold:          500,
+      apoptosisBoost:              0.015,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.35,
+      variantEnergyDecayRate:      0.004,
+      variantReproductionThreshold: 0.08,
+      variantInitialEnergy:        0.90,
+      competitionStrength:         0.20,
+      toxinResistance:             0.0,
+      nutrientAbsorption:          1.0,
+      gravityResponse:             0.5,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.020,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              10,
+      mutagenBoost:                2.5,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.10,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.020,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.6,
+      signalDiffusion:             0.95,  // wide signal field — colony-scale coordination
+      quorumThreshold:             2,     // quorum triggers early — kin clusters form fast
+      adaptiveInheritanceRate:     0.35,
+      // Phase 19: slow drift allows clusters to cohese without scattering
+      motilityRate:                0.3,
+      motilityThreshold:           0.15,
+      motilityDamping:             0.25,
+      chemotaxisMotilityFraction:  0.8,   // highly responsive to pheromone gradient
+      // Phase 20: pheromone-dominant — kin attraction and quorum are the key forces
+      wasteSecretionRate:          0.008,
+      pheromoneSecretionRate:      0.12,  // heavy pheromone — kin clustering signal
+      nutrientChemotaxis:          0.3,
+      pheromoneChemotaxis:         0.70,  // primary driver — cells seek kin
+      wasteAvoidance:              0.15,
+      alarmFlight:                 0.5,
+      chemicalDiffusionRate:       0.09,
+      chemicalDecayRate:           0.025, // slow decay — pheromone trails persist
+      chemQuorumThreshold:         0.20,  // very low — quorum activates readily
+      quorumActivationEnergy:      2.5,   // strong cooperative energy reward
     };
   },
 
@@ -1840,5 +2436,52 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
       recommendedEnvironment: 'deepSeaVents',
     },
     config: Presets.neuralNetworkColony(),
+  },
+
+  // --- Phase 20 — Chemical Ecology presets -----------------------------------
+
+  {
+    key: 'swimmingBacteria',
+    meta: {
+      name:                   'Swimming Bacteria',
+      description:            'Fast motile cells chasing nutrient gradients via multi-channel chemotaxis. Watch swarms visibly navigate toward food and flee waste zones.',
+      difficulty:             2,
+      archetype:              'resilient',
+      recommendedEnvironment: 'chemicalBog',
+    },
+    config: Presets.swimmingBacteria(),
+  },
+  {
+    key: 'biofilmColony',
+    meta: {
+      name:                   'Biofilm Colony',
+      description:            'Quorum-triggered biofilm formation. Cells secrete pheromone until density tips the threshold — then pulses synchronise and a cooperative mat forms.',
+      difficulty:             2,
+      archetype:              'cooperative',
+      recommendedEnvironment: 'pristinePetri',
+    },
+    config: Presets.biofilmColony(),
+  },
+  {
+    key: 'chemicalGarden',
+    meta: {
+      name:                   'Chemical Garden',
+      description:            'Dense multi-channel chemistry at 2.5× intensity. Switch to render modes 8–11 to see the overlapping gradient landscapes glowing like bioluminescence.',
+      difficulty:             1,
+      archetype:              'primitive',
+      recommendedEnvironment: 'chemicalBog',
+    },
+    config: Presets.chemicalGarden(),
+  },
+  {
+    key: 'swarmIntelligence',
+    meta: {
+      name:                   'Swarm Intelligence',
+      description:            'Coordinated kin swarms via pheromone gradients and low quorum threshold. Clusters drift, merge, and pulse in synchrony like a single organism.',
+      difficulty:             3,
+      archetype:              'cooperative',
+      recommendedEnvironment: 'huntingGrounds',
+    },
+    config: Presets.swarmIntelligence(),
   },
 ];

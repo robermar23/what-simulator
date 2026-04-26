@@ -171,6 +171,34 @@ uniform sampler2D u_vx;
  */
 uniform sampler2D u_vy;
 
+/**
+ * Phase 20: R32F texture — nutrient chemical concentration [0, 1] per cell.
+ * Seeded by Nutrient cells; diffuses and decays each tick.
+ * Visualised in render mode 8 as a blue→green heat map.
+ */
+uniform sampler2D u_chemNutrient;
+
+/**
+ * Phase 20: R32F texture — waste chemical concentration [0, 1] per cell.
+ * Secreted by active Life cells proportional to energy consumption.
+ * Visualised in render mode 9 as a yellow→red heat map.
+ */
+uniform sampler2D u_chemWaste;
+
+/**
+ * Phase 20: R32F texture — kin pheromone concentration [0, 1] per cell.
+ * Secreted by Life cells; drives quorum sensing and kin attraction.
+ * Visualised in render mode 10 as a purple gradient.
+ */
+uniform sampler2D u_chemPheromone;
+
+/**
+ * Phase 20: R32F texture — alarm pheromone concentration [0, 1] per cell.
+ * Emitted by dying cells; triggers alarm-flight in neighbours.
+ * Visualised in render mode 11 as an urgent orange glow.
+ */
+uniform sampler2D u_chemAlarm;
+
 /** Pixels per cell (matches AppState.cellSize). */
 uniform float u_cellSize;
 
@@ -185,13 +213,18 @@ uniform bool u_showGridLines;
 
 /**
  * Active render mode:
- *   0 = default    (cellType + energy)
- *   1 = lifecycle  (Life cells coloured by JUVENILE / SENESCENT flags)
- *   2 = variantId  (Life cells coloured by lineage palette)
- *   3 = genome     (Life cells coloured by 16-bit genome value)
- *   4 = generation (Life cells coloured by generation count)
- *   5 = fitness    (Life cells coloured by energy as fitness proxy)
- *   6 = signal     (all cells overlaid with signalStrength cyan glow)
+ *   0 = default         (cellType + energy)
+ *   1 = lifecycle       (Life cells coloured by JUVENILE / SENESCENT flags)
+ *   2 = variantId       (Life cells coloured by lineage palette)
+ *   3 = genome          (Life cells coloured by 16-bit genome value)
+ *   4 = generation      (Life cells coloured by generation count)
+ *   5 = fitness         (Life cells coloured by energy as fitness proxy)
+ *   6 = signal          (all cells overlaid with signalStrength cyan glow)
+ *   7 = morphology      (Phase 18 anatomy without energy tinting)
+ *   8 = nutrient-field  (Phase 20 chemNutrient heat map: blue → green)
+ *   9 = waste-field     (Phase 20 chemWaste heat map: yellow → red)
+ *  10 = pheromone-field (Phase 20 chemPheromone heat map: black → purple)
+ *  11 = alarm-field     (Phase 20 chemAlarm heat map: black → orange)
  */
 uniform int u_renderMode;
 
@@ -917,6 +950,53 @@ void main() {
     cellRGB = mix(cellRGB, cyanGlow, sig);
   }
 
+  // ---- Phase 20: Chemical field render modes (8–11) --------------------------
+  //
+  // Each mode samples one chemical channel and displays a full-canvas heat map
+  // over the base cell colour.  The mapping uses two-stop colour interpolation
+  // in linear light space so the gradient is perceptually smooth.
+  //
+  // Mode  8 — Nutrient field  : 0 → #0a0d0f (substrate dark), 1 → #00ff88 (life green)
+  // Mode  9 — Waste field     : 0 → #0a0d0f,                   1 → #ff6030 (alarm red)
+  // Mode 10 — Pheromone field : 0 → #0a0d0f,                   1 → #cc44ff (violet)
+  // Mode 11 — Alarm field     : 0 → #0a0d0f,                   1 → #ffaa00 (amber)
+  //
+  // The base cell rendering (cellRGB) is blended in at low opacity so the grid
+  // structure remains visible, letting the viewer correlate chemistry with cells.
+  if (u_renderMode >= 8 && u_renderMode <= 11) {
+    float chemVal = 0.0;
+    vec3  chemHigh = vec3(0.0);
+
+    if (u_renderMode == 8) {
+      chemVal  = texelFetch(u_chemNutrient,  cellCoord, 0).r;
+      // Life-green (#00ff88) linearised: sRGB (0, 1, 0.533) → linear
+      chemHigh = srgbToLinearVec(vec3(0.0, 1.0, 0.533));
+    } else if (u_renderMode == 9) {
+      chemVal  = texelFetch(u_chemWaste,     cellCoord, 0).r;
+      // Alarm red (#ff6030) linearised
+      chemHigh = srgbToLinearVec(vec3(1.0, 0.376, 0.188));
+    } else if (u_renderMode == 10) {
+      chemVal  = texelFetch(u_chemPheromone, cellCoord, 0).r;
+      // GFP violet (#cc44ff) linearised
+      chemHigh = srgbToLinearVec(vec3(0.800, 0.267, 1.0));
+    } else {
+      chemVal  = texelFetch(u_chemAlarm,     cellCoord, 0).r;
+      // Amber (#ffaa00) linearised
+      chemHigh = srgbToLinearVec(vec3(1.0, 0.667, 0.0));
+    }
+
+    chemVal = clamp(chemVal, 0.0, 1.0);
+
+    // Substrate dark (#0a0d0f) as the zero-concentration baseline.
+    vec3 chemLow  = srgbToLinearVec(vec3(0.039, 0.051, 0.059));
+    // Gamma-curve the chemical value so low concentrations are more visible.
+    float vis = pow(chemVal, 0.45);
+    vec3 chemRGB = mix(chemLow, chemHigh, vis);
+
+    // Blend in the underlying cell structure at 20% opacity so the grid is legible.
+    cellRGB = mix(chemRGB, cellRGB, 0.20);
+  }
+
   // ---- Grid-line overlay (Phase 6 feature, replicated in WebGL) -------------
   //
   // Draw a subtle white overlay at cell boundaries.  The boundary is defined
@@ -1236,6 +1316,15 @@ export class WebGLRenderer {
   /** Phase 19: R32F texture — Y-axis velocity per cell. */
   private readonly _vyTex: WebGLTexture;
 
+  /** Phase 20: R32F texture — nutrient chemical concentration per cell. */
+  private readonly _chemNutrientTex: WebGLTexture;
+  /** Phase 20: R32F texture — waste chemical concentration per cell. */
+  private readonly _chemWasteTex: WebGLTexture;
+  /** Phase 20: R32F texture — kin pheromone concentration per cell. */
+  private readonly _chemPheromoneTex: WebGLTexture;
+  /** Phase 20: R32F texture — alarm pheromone concentration per cell. */
+  private readonly _chemAlarmTex: WebGLTexture;
+
   // --- Uniform locations (cached once after compile) -------------------------
 
   private readonly _uCellType!: WebGLUniformLocation;
@@ -1269,6 +1358,14 @@ export class WebGLRenderer {
   private readonly _uVx!: WebGLUniformLocation;
   /** Phase 19: uniform location for the vy (Y-axis velocity) R32F texture. */
   private readonly _uVy!: WebGLUniformLocation;
+  /** Phase 20: uniform location for the chemNutrient R32F texture. */
+  private readonly _uChemNutrient!: WebGLUniformLocation;
+  /** Phase 20: uniform location for the chemWaste R32F texture. */
+  private readonly _uChemWaste!: WebGLUniformLocation;
+  /** Phase 20: uniform location for the chemPheromone R32F texture. */
+  private readonly _uChemPheromone!: WebGLUniformLocation;
+  /** Phase 20: uniform location for the chemAlarm R32F texture. */
+  private readonly _uChemAlarm!: WebGLUniformLocation;
 
   /**
    * Phase 18: morphology detail level [0, 1].
@@ -1442,6 +1539,11 @@ export class WebGLRenderer {
     // Phase 19: velocity texture samplers for flagellum rendering.
     this._uVx              = this._requireUniform('u_vx');
     this._uVy              = this._requireUniform('u_vy');
+    // Phase 20: chemical ecology texture samplers.
+    this._uChemNutrient    = this._requireUniform('u_chemNutrient');
+    this._uChemWaste       = this._requireUniform('u_chemWaste');
+    this._uChemPheromone   = this._requireUniform('u_chemPheromone');
+    this._uChemAlarm       = this._requireUniform('u_chemAlarm');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     // _vbo MUST be created before the HDR block below, because _createPPVao()
@@ -1512,6 +1614,11 @@ export class WebGLRenderer {
     // Phase 19: velocity textures (allocated empty; filled on first render).
     this._vxTex             = this._createTexture();
     this._vyTex             = this._createTexture();
+    // Phase 20: chemical ecology textures (allocated empty; filled on first render).
+    this._chemNutrientTex  = this._createTexture();
+    this._chemWasteTex     = this._createTexture();
+    this._chemPheromoneTex = this._createTexture();
+    this._chemAlarmTex     = this._createTexture();
 
     // --- Variant palette texture (256×1, RGBA, static) ----------------------
     // Build the palette as a flat RGBA Uint8Array (4 bytes per variant).
@@ -1609,14 +1716,18 @@ export class WebGLRenderer {
     this._aliveDetail = Math.max(0, Math.min(1, value));
   }
 
-  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' {
-    if (this._renderMode === 1) return 'lifecycle';
-    if (this._renderMode === 2) return 'variantId';
-    if (this._renderMode === 3) return 'genome';
-    if (this._renderMode === 4) return 'generation';
-    if (this._renderMode === 5) return 'fitness';
-    if (this._renderMode === 6) return 'signal';
-    if (this._renderMode === 7) return 'morphology';
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' | 'nutrient-field' | 'waste-field' | 'pheromone-field' | 'alarm-field' {
+    if (this._renderMode === 1)  return 'lifecycle';
+    if (this._renderMode === 2)  return 'variantId';
+    if (this._renderMode === 3)  return 'genome';
+    if (this._renderMode === 4)  return 'generation';
+    if (this._renderMode === 5)  return 'fitness';
+    if (this._renderMode === 6)  return 'signal';
+    if (this._renderMode === 7)  return 'morphology';
+    if (this._renderMode === 8)  return 'nutrient-field';
+    if (this._renderMode === 9)  return 'waste-field';
+    if (this._renderMode === 10) return 'pheromone-field';
+    if (this._renderMode === 11) return 'alarm-field';
     return 'default';
   }
 
@@ -1625,15 +1736,19 @@ export class WebGLRenderer {
    *
    * @param mode - New render mode string.
    */
-  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology') {
-    if (mode === 'lifecycle')        { this._renderMode = 1; }
-    else if (mode === 'variantId')   { this._renderMode = 2; }
-    else if (mode === 'genome')      { this._renderMode = 3; }
-    else if (mode === 'generation')  { this._renderMode = 4; }
-    else if (mode === 'fitness')     { this._renderMode = 5; }
-    else if (mode === 'signal')      { this._renderMode = 6; }
-    else if (mode === 'morphology')  { this._renderMode = 7; }
-    else                             { this._renderMode = 0; }
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' | 'nutrient-field' | 'waste-field' | 'pheromone-field' | 'alarm-field') {
+    if (mode === 'lifecycle')          { this._renderMode = 1; }
+    else if (mode === 'variantId')     { this._renderMode = 2; }
+    else if (mode === 'genome')        { this._renderMode = 3; }
+    else if (mode === 'generation')    { this._renderMode = 4; }
+    else if (mode === 'fitness')       { this._renderMode = 5; }
+    else if (mode === 'signal')        { this._renderMode = 6; }
+    else if (mode === 'morphology')    { this._renderMode = 7; }
+    else if (mode === 'nutrient-field')   { this._renderMode = 8; }
+    else if (mode === 'waste-field')      { this._renderMode = 9; }
+    else if (mode === 'pheromone-field')  { this._renderMode = 10; }
+    else if (mode === 'alarm-field')      { this._renderMode = 11; }
+    else                               { this._renderMode = 0; }
   }
 
   /**
@@ -1854,6 +1969,22 @@ export class WebGLRenderer {
       buffers.vy,
     );
 
+    // --- Upload chemNutrient texture (R32F, Phase 20) --------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._chemNutrientTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, buffers.chemNutrient);
+
+    // --- Upload chemWaste texture (R32F, Phase 20) ----------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._chemWasteTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, buffers.chemWaste);
+
+    // --- Upload chemPheromone texture (R32F, Phase 20) ------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._chemPheromoneTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, buffers.chemPheromone);
+
+    // --- Upload chemAlarm texture (R32F, Phase 20) ----------------------------
+    gl.bindTexture(gl.TEXTURE_2D, this._chemAlarmTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, buffers.chemAlarm);
+
     // --- Draw -----------------------------------------------------------------
 
     gl.useProgram(this._program);
@@ -1907,6 +2038,26 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE9);
     gl.bindTexture(gl.TEXTURE_2D, this._vyTex);
     gl.uniform1i(this._uVy, 9);
+
+    // Bind chemNutrient texture to texture unit 10 (Phase 20).
+    gl.activeTexture(gl.TEXTURE10);
+    gl.bindTexture(gl.TEXTURE_2D, this._chemNutrientTex);
+    gl.uniform1i(this._uChemNutrient, 10);
+
+    // Bind chemWaste texture to texture unit 11 (Phase 20).
+    gl.activeTexture(gl.TEXTURE11);
+    gl.bindTexture(gl.TEXTURE_2D, this._chemWasteTex);
+    gl.uniform1i(this._uChemWaste, 11);
+
+    // Bind chemPheromone texture to texture unit 12 (Phase 20).
+    gl.activeTexture(gl.TEXTURE12);
+    gl.bindTexture(gl.TEXTURE_2D, this._chemPheromoneTex);
+    gl.uniform1i(this._uChemPheromone, 12);
+
+    // Bind chemAlarm texture to texture unit 13 (Phase 20).
+    gl.activeTexture(gl.TEXTURE13);
+    gl.bindTexture(gl.TEXTURE_2D, this._chemAlarmTex);
+    gl.uniform1i(this._uChemAlarm, 13);
 
     // Per-frame uniforms.
     gl.uniform1f(this._uCellSize,      this._cellSize);
@@ -1993,6 +2144,11 @@ export class WebGLRenderer {
     // Phase 19: velocity textures (R32F).
     this._allocateTexture(this._vxTex,             width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     this._allocateTexture(this._vyTex,             width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    // Phase 20: chemical ecology textures (R32F) — one per channel.
+    this._allocateTexture(this._chemNutrientTex,  width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    this._allocateTexture(this._chemWasteTex,     width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    this._allocateTexture(this._chemPheromoneTex, width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    this._allocateTexture(this._chemAlarmTex,     width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     // Note: _variantPaletteTex is 256×1 and never resizes — skip here.
 
     // --- HDR bloom textures (Phase 16c) --------------------------------------
