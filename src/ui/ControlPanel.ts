@@ -1067,7 +1067,7 @@ export class ControlPanel {
     input.type      = 'range';
     input.id        = 'cell-size-slider';
     input.min       = '1';
-    input.max       = '8';
+    input.max       = '32';
     input.step      = '1';
     input.value     = String(appState.cellSize);
     input.className = 'slider';
@@ -1201,6 +1201,7 @@ export class ControlPanel {
       { mode: 'generation',  label: 'Generation'  },
       { mode: 'fitness',     label: 'Fitness'     },
       { mode: 'signal',      label: 'Signal'      },
+      { mode: 'morphology',  label: 'Morphology'  },
       { mode: 'default',     label: 'Cell Type'   },
     ];
 
@@ -1229,6 +1230,35 @@ export class ControlPanel {
 
     renderModeRow.append(renderModeLabel, renderModeSelect);
     section.append(renderModeRow);
+
+    // --- Phase 18: Morphology detail slider ------------------------------------
+    // Controls u_aliveDetail in the WebGL shader.  Visible at all zoom levels but
+    // only has visual effect when cell-size >= 4px (enforced in the shader too).
+    const detailRow = document.createElement('div');
+    detailRow.className = 'toggle-row';
+    detailRow.title     = 'Morphology detail (WebGL only). 0 = flat squares, 1 = full cell anatomy with membrane, nucleus, organelles and animations.';
+
+    const detailLabel = document.createElement('label');
+    detailLabel.htmlFor     = 'alive-detail-slider';
+    detailLabel.textContent = 'Cell Detail';
+    detailLabel.className   = 'toggle-label';
+
+    const detailSlider = document.createElement('input');
+    detailSlider.type      = 'range';
+    detailSlider.id        = 'alive-detail-slider';
+    detailSlider.min       = '0';
+    detailSlider.max       = '1';
+    detailSlider.step      = '0.05';
+    detailSlider.value     = '1';
+    detailSlider.className = 'slider';
+    detailSlider.setAttribute('aria-label', 'Cell morphology detail level');
+
+    detailSlider.addEventListener('input', () => {
+      bus.emit('aliveDetailChange', { value: parseFloat(detailSlider.value) });
+    });
+
+    detailRow.append(detailLabel, detailSlider);
+    section.append(detailRow);
 
     // --- Environment background selector (Phase 14) ----------------------------
     // Lets the user choose a procedural background rendered behind the sim canvas.

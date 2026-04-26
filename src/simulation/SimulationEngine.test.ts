@@ -1953,3 +1953,66 @@ describe('SimulationEngine — Phase 10 apoptosis', () => {
     expect(g.front.energy[nb]).toBeCloseTo(energyBefore, 5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 18 — JUST_DIVIDED flag
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 18 JUST_DIVIDED flag', () => {
+  // Use a tiny 3×3 grid so the lone cell always has empty neighbours.
+  const W3 = 3;
+  const H3 = 3;
+  let g3: GridState;
+  let e3: SimulationEngine;
+
+  beforeEach(() => {
+    g3 = new GridState(W3, H3);
+    e3 = new SimulationEngine(W3, H3);
+  });
+
+  it('JUST_DIVIDED has value 0x80', () => {
+    expect(CellFlags.JUST_DIVIDED).toBe(0x80);
+  });
+
+  it('sets JUST_DIVIDED on parent after spread', () => {
+    const centre = 1 * W3 + 1; // middle cell
+    g3.front.cellType[centre] = CellType.Life;
+    g3.front.energy[centre]   = 1.0;
+
+    runOneTick(g3, e3, {
+      spreadRate:           1.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      juvenileThreshold:    0,
+    });
+
+    // runOneTick already swapped — front now has post-tick state.
+    const parentFlags = g3.front.flags[centre];
+    expect(parentFlags & CellFlags.JUST_DIVIDED).toBe(CellFlags.JUST_DIVIDED);
+  });
+
+  it('clears JUST_DIVIDED exactly one tick later', () => {
+    const centre = 1 * W3 + 1;
+    g3.front.cellType[centre] = CellType.Life;
+    g3.front.energy[centre]   = 1.0;
+
+    // Tick 1: spread occurs, flag is set (runOneTick swaps internally).
+    runOneTick(g3, e3, {
+      spreadRate:           1.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      juvenileThreshold:    0,
+    });
+
+    // Tick 2: all cells are now Life with no empty neighbours — flag must clear.
+    runOneTick(g3, e3, {
+      spreadRate:           0.0,
+      energyDecayRate:      0.0,
+      underpopulationLimit: 0,
+      juvenileThreshold:    0,
+    });
+
+    const parentFlags = g3.front.flags[centre];
+    expect(parentFlags & CellFlags.JUST_DIVIDED).toBe(0);
+  });
+});

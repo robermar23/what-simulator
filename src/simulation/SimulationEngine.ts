@@ -693,8 +693,10 @@ export class SimulationEngine {
           continue;
         }
 
-        // Clear DORMANT and old lifecycle flags; will reapply below.
-        let newFlags = ftFlags[i] & ~(CellFlags.DORMANT | CellFlags.JUVENILE | CellFlags.SENESCENT);
+        // Clear DORMANT, lifecycle flags, and the one-tick JUST_DIVIDED flash.
+        let newFlags = ftFlags[i] & ~(
+          CellFlags.DORMANT | CellFlags.JUVENILE | CellFlags.SENESCENT | CellFlags.JUST_DIVIDED
+        );
         bkFlags[i] = newFlags;
 
         // --- Fire: instant death ------------------------------------------
@@ -1233,6 +1235,10 @@ export class SimulationEngine {
         } else {
           this._stats.liveCells++;
         }
+
+        // Phase 18: mark parent as "just divided" so the shader flashes it
+        // white for one tick.  OR-assign so other flags are preserved.
+        bkFlags[parentIdx] |= CellFlags.JUST_DIVIDED;
       }
     }
   }

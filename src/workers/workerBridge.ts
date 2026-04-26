@@ -248,7 +248,9 @@ export type RenderMode =
   | 'lifecycle'
   | 'generation'
   | 'fitness'
-  | 'signal';
+  | 'signal'
+  /** Phase 18: fixed green base + full sub-cell morphology anatomy. */
+  | 'morphology';
 
 /**
  * All messages the main thread can post to the RenderWorker.
@@ -313,6 +315,12 @@ export type RenderWorkerInMsg =
       /** Environment tint `[r, g, b, alpha]` — blended into Life cell colours. */
       tint: readonly [number, number, number, number];
     }
+  /**
+   * Phase 18: set the morphology detail level on the WebGL renderer.
+   * 0 = flat squares, 1 = full sub-cell anatomy.
+   * Ignored by the Canvas 2D renderer.
+   */
+  | { type: 'aliveDetailChange'; value: number }
   ;
 
 // ---------------------------------------------------------------------------

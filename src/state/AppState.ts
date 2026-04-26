@@ -325,10 +325,10 @@ export class AppState {
   /**
    * Changes the canvas cell size (pixels per cell).
    *
-   * @param value - New cell size (1–8).
+   * @param value - New cell size (1–32).
    */
   set cellSize(value: number) {
-    const clamped = Math.max(1, Math.min(8, value));
+    const clamped = Math.max(1, Math.min(32, value));
     if (this._cellSize === clamped) return;
     this._cellSize = clamped;
     bus.emit('cellSizeChange', { cellSize: clamped });

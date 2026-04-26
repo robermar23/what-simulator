@@ -200,6 +200,19 @@ uniform vec4 u_envTint;
  */
 uniform bool u_hdrOutput;
 
+/**
+ * Phase 18: monotonically increasing frame counter for time-based animation
+ * (membrane pulse, death breakdown).  Wraps at 2^31.
+ */
+uniform int u_time;
+
+/**
+ * Phase 18: sub-cell morphology detail level [0, 1].
+ * 0 = flat legacy squares; 1 = full circular cell with nucleus / organelles.
+ * Only active when u_cellSize >= 4.0 (sub-pixel detail is invisible below that).
+ */
+uniform float u_aliveDetail;
+
 // --- Output -----------------------------------------------------------------
 out vec4 outColor;
 
@@ -459,6 +472,135 @@ float obstacleNoiseMag(uint t) {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 18 — Sub-cell morphology helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Simple value-noise hash — maps a vec2 seed to a pseudo-random float [0, 1].
+ * Used for per-cell deterministic variation (organelle jitter, membrane break).
+ *
+ * @param p - 2D seed value.
+ * @returns Pseudo-random float in [0, 1].
+ */
+float hash1_morph(vec2 p) {
+  p = fract(p * vec2(127.1, 311.7));
+  p += dot(p, p.yx + 19.19);
+  return fract((p.x + p.y) * p.x);
+}
+
+/**
+ * Computes per-cell sub-cell morphology for Life cells and returns an rgba vec4.
+ *
+ * Called only when aliveDetail > 0.0 and cellSize >= 4.0.
+ * Produces a circular cell body with membrane ring, nucleus, organelle dots,
+ * energy pulse animation, division flash, and death membrane breakdown.
+ *
+ * baseRGB   - colour from active render mode in linear light.
+ * energy    - cell energy [0, 1].
+ * flags     - bitmask: JUVENILE bit 3, SENESCENT bit 4, JUST_DIVIDED bit 7.
+ * genomeVal - 16-bit genome used for nucleus offset and organelle positions.
+ * cellIdx   - flat index for per-cell phase stagger.
+ * uv        - sub-cell UV in [0,1]^2 top-left origin.
+ * Returns vec4(rgb, alpha); alpha < 1 in corners so background shows through.
+ */
+vec4 lifeMorphology(
+  vec3  baseRGB,
+  float energy,
+  uint  flags,
+  uint  genomeVal,
+  int   cellIdx,
+  vec2  uv
+) {
+  vec2  c     = uv - 0.5;       // centred on origin, range [-0.5, 0.5]
+  float r     = length(c);
+  float angle = atan(c.y, c.x); // [-π, π]
+
+  bool isJuvenile  = (flags &  8u) != 0u;
+  bool isSenescent = (flags & 16u) != 0u;
+  bool justDivided = (flags & 128u) != 0u; // JUST_DIVIDED = 0x80
+
+  // --- Energy pulse (per-cell phase stagger via golden-angle offset) ---
+  float cellPhase = float(cellIdx) * 0.37;
+  float pulseFreq = isJuvenile ? 2.0 : (isSenescent ? 0.4 : 1.0);
+  float pulse     = 0.5 + 0.5 * sin(float(u_time) * 0.06 * pulseFreq + cellPhase);
+
+  // --- Membrane ring ---
+  // GLSL ES 3.0: smoothstep(e0,e1,x) is undefined when e0 >= e1.
+  // All circle masks use the "1 - smoothstep(inner, outer, r)" form so
+  // edge0 < edge1 is always guaranteed.
+  float memOuter  = 0.46;
+  float memInner  = 0.34;
+  // Outer alpha fade: 1 inside (r < memOuter-0.025), 0 outside (r > memOuter).
+  float memOuterMask = 1.0 - smoothstep(memOuter - 0.025, memOuter, r);
+  // Inner alpha fade: 0 inside (r < memInner), 1 outside (r > memInner+0.025).
+  float memInnerMask = smoothstep(memInner, memInner + 0.025, r);
+  float memMask = memOuterMask * memInnerMask;
+
+  // Death breakdown: membrane dissolves into arcs at low energy.
+  float breakNoise = hash1_morph(vec2(angle * 1.16, float(genomeVal) * 0.00015));
+  float memFade    = smoothstep(0.0, 0.25, energy) + 0.3 * breakNoise;
+  memMask         *= mix(1.0, memFade, step(energy, 0.09));
+
+  // --- Cell body (soft circle, radius pulses with energy) ---
+  float bodyR    = 0.42 + 0.03 * pulse * energy;
+  // 1 at centre, fades to 0 between (bodyR - 0.09) and (bodyR + 0.04).
+  float bodyMask = 1.0 - smoothstep(bodyR - 0.09, bodyR + 0.04, r);
+
+  // --- Nucleus ---
+  // Position slightly off-centre, direction seeded from genome bits.
+  float nox = float((genomeVal >> 12u) & 7u) / 14.0 * 0.16 - 0.08;
+  float noy = float((genomeVal >>  9u) & 7u) / 14.0 * 0.16 - 0.08;
+  float nR  = length(c - vec2(nox, noy));
+  // Senescent nucleus is larger and slightly fragmented (two overlapping lobes).
+  float nucSize = isSenescent ? 0.155 : 0.095;
+  float nucMask = 1.0 - smoothstep(nucSize - 0.02, nucSize, nR);
+  if (isSenescent) {
+    // Second lobe offset from first — simulates nuclear envelope breakdown.
+    float nR2 = length(c - vec2(nox + 0.09, noy - 0.05));
+    nucMask = max(nucMask, 1.0 - smoothstep(0.05, 0.07, nR2));
+  }
+
+  // --- Organelles (3 bright dots, positions from genome nibbles) ---
+  float organMask = 0.0;
+  for (int oi = 0; oi < 3; oi++) {
+    float ox = float((genomeVal >> uint(oi * 4))      & 15u) / 15.0 * 0.28 - 0.14;
+    float oy = float((genomeVal >> uint(oi * 4 + 8))  & 15u) / 15.0 * 0.28 - 0.14;
+    float oR = length(c - vec2(ox, oy));
+    organMask += 1.0 - smoothstep(0.035, 0.055, oR);
+  }
+  organMask = min(organMask, 1.0);
+
+  // --- Colour layers (all in linear light) ---
+  // Membrane: slightly brighter ring than the cell body.
+  vec3 memColour    = baseRGB * 1.55;
+  // Body interior: slightly darker than the base colour.
+  vec3 bodyColour   = baseRGB * 0.72;
+  // Nucleus: dark reddish-brown (DNA-stain aesthetic), independent of base.
+  vec3 nucColour    = srgbToLinearVec(vec3(0.20, 0.05, 0.10));
+  if (isSenescent) nucColour *= 0.5; // darkened for aged cells
+  // Organelles: small bright flecks matching the base hue.
+  vec3 organColour  = baseRGB * 1.25;
+
+  // Division flash: boost everything to well above display-white so bloom fires.
+  float divBoost = justDivided ? 2.8 : 1.0;
+
+  // --- Alpha: smooth circular boundary so background shows through corners ---
+  // Use the outer membrane edge as the cell silhouette.
+  float totalAlpha = max(bodyMask, memMask * 0.95);
+
+  // Composite layers front-to-back (nucleus/organelles over body over membrane).
+  vec3 rgb = vec3(0.0);
+  rgb = mix(rgb, bodyColour,  bodyMask);
+  rgb = mix(rgb, memColour,   memMask);
+  rgb = mix(rgb, nucColour,   nucMask);
+  rgb = mix(rgb, organColour, organMask);
+
+  rgb *= divBoost;
+
+  return vec4(rgb, totalAlpha);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -570,6 +712,14 @@ void main() {
     vec3 hi   = srgbToLinearVec(vec3(1.0,  0.867, 0.0));   // vivid gold  linearised
     cellRGB = mix(lo, hi, fit);
 
+  } else if (u_renderMode == 7 && isLife) {
+    // ---- Morphology render mode (Phase 18) — anatomy baseline ---------------
+    // Uses a fixed bright cellular-green base so sub-cell structure is readable
+    // regardless of genome or variant.  Energy still modulates brightness so
+    // dying cells visibly dim.
+    float bright = 0.25 + 0.75 * clamp(energy, 0.0, 1.0);
+    cellRGB = srgbToLinearVec(vec3(0.0, 1.0, 0.533)) * bright; // #00ff88
+
   } else {
     // ---- Default render mode: cellType + energy → colour -------------------
     // In HDR mode use boosted emissive values; otherwise standard linearised sRGB.
@@ -664,6 +814,49 @@ void main() {
     }
   }
 
+  // ---- Phase 18: Sub-cell morphology (Life cells, aliveDetail > 0, cellSize >= 4) ----
+  //
+  // Replaces the flat coloured-square look with circular cells that have an
+  // outer membrane ring, soft body, nucleus, organelle dots, pulse animation,
+  // division flash, and a breaking membrane when energy is low.
+  //
+  // The morphology result has per-fragment alpha < 1 in the cell corners, so
+  // when u_hdrOutput is true the background composites through the gaps,
+  // giving colonies the "cells on a slide" look.
+  float alpha = (u_hdrOutput && cellType == 0u) ? 0.0 : 1.0;
+
+  if (u_aliveDetail > 0.0 && u_cellSize >= 4.0 && isLife) {
+    uint genomeVal = texelFetch(u_genome, cellCoord, 0).r;
+    int  cellIdx   = cellCoord.y * u_gridWidth + cellCoord.x;
+    vec2 morphUV   = cellLocalUV();
+
+    vec4 morph = lifeMorphology(cellRGB, energy, flags, genomeVal, cellIdx, morphUV);
+
+    // Blend flat colour → full morphology by aliveDetail amount.
+    cellRGB = mix(cellRGB, morph.rgb / max(morph.a, 0.001), u_aliveDetail);
+
+    // In HDR mode: override alpha so cell corners are transparent.
+    if (u_hdrOutput) {
+      alpha = mix(1.0, morph.a, u_aliveDetail);
+    }
+  }
+
+  // ---- Phase 18: Extracellular matrix on empty cells (non-HDR only) ----------
+  //
+  // Adds a barely-visible fibrous texture to empty cells so the empty space
+  // reads as biological gel rather than void.  Not needed in HDR mode because
+  // the background shader provides richer visuals behind transparent cells.
+  if (cellType == 0u && !u_hdrOutput && u_aliveDetail > 0.5) {
+    vec2  mUV   = cellLocalUV();
+    // Two-axis crosshatch using the existing hash utility, time-drifted slowly.
+    float drift = float(u_time) * 0.0004;
+    float fx    = hash1_morph(vec2(mUV.x * 5.0 + drift, mUV.y * 3.0));
+    float fy    = hash1_morph(vec2(mUV.x * 3.0, mUV.y * 5.0 + drift));
+    float mat   = (fx + fy) * 0.5 * 0.06 * u_aliveDetail;
+    // Very faint cool green-grey — extracellular medium colour.
+    cellRGB = srgbToLinearVec(vec3(0.039, 0.047, 0.039)) + vec3(mat);
+  }
+
   // ---- Signal overlay (Phase 12) — applied in signal render mode ------------
   // Blends the cell's computed colour with vivid cyan (#00eeff) proportional
   // to the cell's signalStrength.  This reveals Colony chemical signal fields.
@@ -702,7 +895,6 @@ void main() {
   // linear values so the composite shader can tonemap HDR → LDR.  Empty cells
   // are output as fully transparent (alpha 0) so the background texture shows
   // through during the composite pass.  In direct mode apply sRGB encoding.
-  float alpha = (u_hdrOutput && cellType == 0u) ? 0.0 : 1.0;
   outColor = u_hdrOutput
       ? vec4(cellRGB, alpha)
       : vec4(linearToSrgbVec(clamp(cellRGB, 0.0, 1.0)), 1.0);
@@ -1015,6 +1207,17 @@ export class WebGLRenderer {
   private readonly _uEnvTint!:    WebGLUniformLocation;
   /** Uniform location for the HDR output flag (Phase 16c). */
   private readonly _uHdrOutput!:  WebGLUniformLocation;
+  /** Phase 18: frame counter uniform — drives pulse/flash animations in GLSL. */
+  private readonly _uTime!: WebGLUniformLocation;
+  /** Phase 18: morphology detail level uniform [0,1]. */
+  private readonly _uAliveDetail!: WebGLUniformLocation;
+
+  /**
+   * Phase 18: morphology detail level [0, 1].
+   * 0 = flat squares, 1 = full circular cell anatomy.
+   * Only has visual effect when cellSize >= 4px.
+   */
+  private _aliveDetail = 1.0;
 
   /** Current environment tint `[r, g, b, alpha]` — r/g/b normalised to [0,1]. */
   private _envTintVec: readonly [number, number, number, number] = [0, 0, 0, 0];
@@ -1108,6 +1311,14 @@ export class WebGLRenderer {
   /** Grid height in cells — tracked to detect resize. */
   private _gridHeight = 0;
 
+  /**
+   * Maximum safe canvas dimension in pixels.
+   * Capped at 4096 regardless of GL MAX_TEXTURE_SIZE so the bloom pipeline
+   * stays within budget at any cell-size zoom level.  Queried once at
+   * construction time.
+   */
+  private _maxTexDim = 4096;
+
   // ---------------------------------------------------------------------------
   // Constructor
   // ---------------------------------------------------------------------------
@@ -1138,6 +1349,14 @@ export class WebGLRenderer {
     }
     this._gl = gl;
 
+    // Query the GPU's maximum texture dimension and cap it at 4096.
+    // Running the HDR bloom pipeline at sizes beyond 4096px costs 16×+ the
+    // fragment work of a 1024px canvas and causes frame-rate collapse.
+    this._maxTexDim = Math.min(
+      gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      4096,
+    );
+
     // Disable premultiplied alpha — our colours are already straight RGBA.
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
 
@@ -1160,6 +1379,8 @@ export class WebGLRenderer {
     this._uRenderMode      = this._requireUniform('u_renderMode');
     this._uEnvTint         = this._requireUniform('u_envTint');
     this._uHdrOutput       = this._requireUniform('u_hdrOutput');
+    this._uTime            = this._requireUniform('u_time');
+    this._uAliveDetail     = this._requireUniform('u_aliveDetail');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     // _vbo MUST be created before the HDR block below, because _createPPVao()
@@ -1304,13 +1525,34 @@ export class WebGLRenderer {
    * - `'fitness'`    — Life cells coloured by energy as fitness proxy (Phase 12).
    * - `'signal'`     — All cells overlaid with signal strength glow (Phase 12).
    */
-  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' {
+  /**
+   * Phase 18: morphology detail level [0, 1].
+   * At 0 cells render as flat coloured squares; at 1 they show circular bodies,
+   * membranes, nuclei, organelles, pulse animation, and division flashes.
+   *
+   * @returns Current detail level.
+   */
+  get aliveDetail(): number {
+    return this._aliveDetail;
+  }
+
+  /**
+   * Sets the morphology detail level.  Takes effect on the next render call.
+   *
+   * @param value - Clamped to [0, 1].
+   */
+  set aliveDetail(value: number) {
+    this._aliveDetail = Math.max(0, Math.min(1, value));
+  }
+
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' {
     if (this._renderMode === 1) return 'lifecycle';
     if (this._renderMode === 2) return 'variantId';
     if (this._renderMode === 3) return 'genome';
     if (this._renderMode === 4) return 'generation';
     if (this._renderMode === 5) return 'fitness';
     if (this._renderMode === 6) return 'signal';
+    if (this._renderMode === 7) return 'morphology';
     return 'default';
   }
 
@@ -1319,14 +1561,15 @@ export class WebGLRenderer {
    *
    * @param mode - New render mode string.
    */
-  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal') {
-    if (mode === 'lifecycle')   { this._renderMode = 1; }
-    else if (mode === 'variantId')  { this._renderMode = 2; }
-    else if (mode === 'genome')     { this._renderMode = 3; }
-    else if (mode === 'generation') { this._renderMode = 4; }
-    else if (mode === 'fitness')    { this._renderMode = 5; }
-    else if (mode === 'signal')     { this._renderMode = 6; }
-    else                            { this._renderMode = 0; }
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology') {
+    if (mode === 'lifecycle')        { this._renderMode = 1; }
+    else if (mode === 'variantId')   { this._renderMode = 2; }
+    else if (mode === 'genome')      { this._renderMode = 3; }
+    else if (mode === 'generation')  { this._renderMode = 4; }
+    else if (mode === 'fitness')     { this._renderMode = 5; }
+    else if (mode === 'signal')      { this._renderMode = 6; }
+    else if (mode === 'morphology')  { this._renderMode = 7; }
+    else                             { this._renderMode = 0; }
   }
 
   /**
@@ -1573,6 +1816,8 @@ export class WebGLRenderer {
     gl.uniform1i(this._uGridHeight,    height);
     gl.uniform1i(this._uShowGridLines, this._showGridLines ? 1 : 0);
     gl.uniform1i(this._uRenderMode,    this._renderMode);
+    gl.uniform1i(this._uTime,          this._frame);
+    gl.uniform1f(this._uAliveDetail,   this._aliveDetail);
 
     // Upload environment tint — r/g/b normalised to [0,1] for the shader.
     const [tr, tg, tb, ta] = this._envTintVec;
@@ -1580,7 +1825,7 @@ export class WebGLRenderer {
 
     // Dispatch to the appropriate render path.
     if (this._bloomEnabled && this._hdrFbo !== null) {
-      this._drawHDRPipeline(width, height);
+      this._drawHDRPipeline();
     } else {
       // Direct path: render scene straight to the 8-bit display framebuffer.
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1618,8 +1863,13 @@ export class WebGLRenderer {
     this._gridHeight = height;
 
     const gl       = this._gl;
-    const canvasW  = width  * this._cellSize;
-    const canvasH  = height * this._cellSize;
+    // Cap canvas pixels so the HDR bloom pipeline never exceeds _maxTexDim.
+    // At large cellSizes (e.g. 32px × 512 grid = 16 384px) the uncapped size
+    // would exceed GPU texture limits and cause catastrophic perf / white screen.
+    // The fragment shader maps fragCoord → cellCoord via division by u_cellSize,
+    // so capping just means fewer cells are visible — correct pan-in behaviour.
+    const canvasW  = Math.min(width  * this._cellSize, this._maxTexDim);
+    const canvasH  = Math.min(height * this._cellSize, this._maxTexDim);
 
     // Resize the canvas (both HTMLCanvasElement and OffscreenCanvas have these
     // writable properties).
@@ -1860,10 +2110,8 @@ export class WebGLRenderer {
    * Pass 4 — vertical   9-tap Gaussian blur (half-res).
    * Pass 5 — composite scene + bloom, Reinhard tonemap, sRGB encode → display.
    *
-   * @param width  - Grid width in cells.
-   * @param height - Grid height in cells.
    */
-  private _drawHDRPipeline(width: number, height: number): void {
+  private _drawHDRPipeline(): void {
     // Guard: resources are fully present (should always be true when _bloomEnabled).
     if (
       this._hdrFbo          === null || this._hdrTex          === null ||
@@ -1875,8 +2123,9 @@ export class WebGLRenderer {
     ) return;
 
     const gl     = this._gl;
-    const cW     = width  * this._cellSize;
-    const cH     = height * this._cellSize;
+    // Use the canvas's actual pixel dimensions — already capped by _resize.
+    const cW     = this._canvas.width;
+    const cH     = this._canvas.height;
     const halfW  = Math.max(1, Math.floor(cW / 2));
     const halfH  = Math.max(1, Math.floor(cH / 2));
 

@@ -294,7 +294,7 @@ export class DrawingTools {
    * Handles the scroll-wheel event for zoom.
    *
    * Scrolling up → zoom in (increase cellSize); scrolling down → zoom out.
-   * `cellSize` is clamped to [1, 8] by `AppState.cellSize` setter.
+   * `cellSize` is clamped to [1, 32] by `AppState.cellSize` setter.
    * Phase 6.
    *
    * @param e - WheelEvent.

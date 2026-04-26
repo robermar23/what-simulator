@@ -283,6 +283,15 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       renderer.envTint = msg.tint;
       break;
 
+    // --- aliveDetailChange (Phase 18) ----------------------------------------
+    case 'aliveDetailChange':
+      // Only the WebGL renderer exposes the aliveDetail property; the Canvas 2D
+      // renderer renders flat squares regardless, so we silently skip it.
+      if (renderer instanceof WebGLRenderer) {
+        renderer.aliveDetail = msg.value;
+      }
+      break;
+
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {
       // `convertToBlob` is available on OffscreenCanvas.

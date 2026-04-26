@@ -589,3 +589,74 @@ describe('WebGLRenderer bloom API (Phase 16c)', () => {
     )?.set).toBe('function');
   });
 });
+
+// ---------------------------------------------------------------------------
+// FRAG_SRC — Phase 18 morphology uniforms + sub-cell anatomy
+// ---------------------------------------------------------------------------
+
+describe('FRAG_SRC Phase 18 morphology (shader assertions)', () => {
+  it('declares u_time uniform for animation', () => {
+    expect(FRAG_SRC).toContain('uniform int u_time;');
+  });
+
+  it('declares u_aliveDetail uniform for detail level', () => {
+    expect(FRAG_SRC).toContain('uniform float u_aliveDetail;');
+  });
+
+  it('declares the lifeMorphology helper function', () => {
+    expect(FRAG_SRC).toContain('vec4 lifeMorphology(');
+  });
+
+  it('lifeMorphology draws a membrane ring via smoothstep annulus', () => {
+    // memMask is the annulus computed with two smoothstep calls.
+    expect(FRAG_SRC).toContain('memMask');
+    expect(FRAG_SRC).toContain('smoothstep(memOuter');
+  });
+
+  it('lifeMorphology handles division flash via JUST_DIVIDED flag (0x80 = 128)', () => {
+    // JUST_DIVIDED = 0x80 = 128 — stored as decimal literal in GLSL.
+    expect(FRAG_SRC).toContain('128u');
+  });
+
+  it('morphology block is gated on u_aliveDetail > 0.0 and u_cellSize >= 4.0', () => {
+    expect(FRAG_SRC).toContain('u_aliveDetail > 0.0 && u_cellSize >= 4.0');
+  });
+
+  it('morphology blends flat colour into morph via mix + u_aliveDetail', () => {
+    expect(FRAG_SRC).toContain('mix(cellRGB, morph.rgb / max(morph.a, 0.001), u_aliveDetail)');
+  });
+
+  it('render mode 7 uses the fixed cellular-green base colour', () => {
+    // sRGB #00FF88 ≈ vec3(0.0, 1.0, 0.533) — the morphology mode base.
+    expect(FRAG_SRC).toContain('u_renderMode == 7');
+    expect(FRAG_SRC).toContain('0.533');
+  });
+
+  it('extracellular matrix block runs on empty cells in non-HDR mode', () => {
+    expect(FRAG_SRC).toContain('cellType == 0u && !u_hdrOutput && u_aliveDetail > 0.5');
+  });
+
+  it('no duplicate float alpha declaration exists in main()', () => {
+    // Count occurrences — must be exactly one declaration.
+    const matches = (FRAG_SRC.match(/float alpha\s*=/g) ?? []).length;
+    expect(matches).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WebGLRenderer — Phase 18 aliveDetail API (prototype checks)
+// ---------------------------------------------------------------------------
+
+describe('WebGLRenderer aliveDetail API (Phase 18)', () => {
+  it('prototype has aliveDetail getter', () => {
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'aliveDetail',
+    )?.get).toBe('function');
+  });
+
+  it('prototype has aliveDetail setter', () => {
+    expect(typeof Object.getOwnPropertyDescriptor(
+      WebGLRenderer.prototype, 'aliveDetail',
+    )?.set).toBe('function');
+  });
+});

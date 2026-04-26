@@ -127,6 +127,13 @@ export const CellFlags = {
   SIGNALING:        0b0010_0000,
   /** NEW (Round 2): Cell has survived at least one obstacle stress event. */
   ADAPTED:          0b0100_0000,
+  /**
+   * Phase 18: cell reproduced this tick (spread into at least one neighbour).
+   * Set on the PARENT cell by `_trySpread`; cleared at the start of the next
+   * tick so it is visible for exactly one tick.  Used by the fragment shader
+   * to trigger a brief white flash that feeds the bloom pipeline.
+   */
+  JUST_DIVIDED:     0b1000_0000,
 } as const;
 
 // ---------------------------------------------------------------------------

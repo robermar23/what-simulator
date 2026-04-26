@@ -117,6 +117,15 @@ export interface EventMap {
   };
 
   /**
+   * Phase 18: fired when the morphology detail slider changes.
+   * Consumed by App, which forwards it to the RenderWorker.
+   */
+  aliveDetailChange: {
+    /** New detail level in [0, 1]. */
+    value: number;
+  };
+
+  /**
    * Fired every `censusInterval` ticks when the SimulationWorker broadcasts
    * a population snapshot (Phase 11).
    * Consumed by the ControlPanel Evolution section to update variant counts.

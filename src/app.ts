@@ -522,6 +522,13 @@ export class App {
       this._renderWorker.postMessage(msg);
     });
 
+    // Phase 18: alive-detail slider — forward to the render worker so the
+    // WebGL renderer updates its u_aliveDetail uniform on the next frame.
+    bus.on('aliveDetailChange', ({ value }) => {
+      const msg: RenderWorkerInMsg = { type: 'aliveDetailChange', value };
+      this._renderWorker.postMessage(msg);
+    });
+
     // Background change (Phase 14) — forward to the render worker so it
     // toggles transparent-empty-cell rendering to show the background through.
     bus.on('backgroundChange', ({ type }) => {
