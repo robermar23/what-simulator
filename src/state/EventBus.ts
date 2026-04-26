@@ -138,6 +138,29 @@ export interface EventMap {
     type: BackgroundType;
   };
 
+  /**
+   * Round 5: fired when the user clicks "Apply Environment" on a preset card.
+   * Consumed by App, which forwards the obstacle spec to the SimulationWorker
+   * and the background type to the RenderWorker.
+   */
+  applyEnvironment: {
+    /** Key of the environment preset being applied. */
+    key: string;
+    /** Background type to activate on the renderer. */
+    backgroundType: BackgroundType;
+    /** Declarative obstacle layout to generate. */
+    spec: import('../simulation/generators/types.js').ObstacleSpec;
+    /** Life seed density override (or the current UI density if null). */
+    seedDensityOverride: number | null;
+  };
+
+  /**
+   * Round 5: fired when the SimulationWorker has finished applying an
+   * environment preset (obstacles placed, life re-seeded).
+   * Consumed by the UI to re-enable controls.
+   */
+  environmentApplied: Record<string, never>;
+
 }
 
 // ---------------------------------------------------------------------------

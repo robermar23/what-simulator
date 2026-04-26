@@ -401,6 +401,14 @@ export class App {
           livingVariants: variantRegistry.livingCount,
         });
         break;
+
+      case 'environmentApplied':
+        // Round 5: obstacle generation and life re-seeding are complete.
+        // Invalidate the render worker's dirty-region cache so the new layout
+        // is fully redrawn on the next frame.
+        this._renderWorker.postMessage({ type: 'invalidate' } as RenderWorkerInMsg);
+        bus.emit('environmentApplied', {});
+        break;
     }
   }
 
@@ -524,6 +532,37 @@ export class App {
         tint: ENVIRONMENT_TINTS[type],
       };
       this._renderWorker.postMessage(msg);
+    });
+
+    // Round 5: environment preset application.
+    // 1. Switch the renderer background immediately (visual feedback).
+    // 2. Pause the sim, tell the SimWorker to generate obstacles + re-seed.
+    // 3. The SimWorker posts 'environmentApplied' when done (handled above).
+    bus.on('applyEnvironment', ({ backgroundType, spec, seedDensityOverride }) => {
+      // Switch background immediately so the user sees feedback while
+      // the obstacle generator runs in the worker.
+      const bgMsg: RenderWorkerInMsg = {
+        type:             'backgroundChange',
+        backgroundActive: backgroundType !== 'none',
+        backgroundType,
+        tint:             ENVIRONMENT_TINTS[backgroundType],
+      };
+      this._renderWorker.postMessage(bgMsg);
+
+      // Pause the sim loop during environment generation to prevent races.
+      appState.running = false;
+
+      // Reset variant registry for the fresh life seed.
+      variantRegistry.bootstrap();
+
+      const density = seedDensityOverride ?? appState.initialDensity;
+      const envMsg: SimWorkerInMsg = {
+        type:          'applyEnvironment',
+        spec,
+        seedDensity:   density,
+        initialEnergy: appState.config.initialEnergy,
+      };
+      this._simWorker.postMessage(envMsg);
     });
   }
 }

@@ -423,6 +423,40 @@ body {
   outline-offset: 1px;
 }
 
+/* Round 5: small hint text below preset selectors */
+.preset-legacy-hint {
+  font-size: 10px;
+  color: var(--color-text-dim, #888);
+  margin: 4px 0 2px;
+  line-height: 1.4;
+}
+
+/* Round 5: secondary action button (Randomize Obstacles, etc.) */
+.preset-btn {
+  margin-top: 6px;
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.preset-btn:hover {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #000;
+}
+
+.preset-btn:active {
+  opacity: 0.75;
+}
+
 /* --------------------------------------------------------------------------
    Drawing tool button group (Phase 2)
    -------------------------------------------------------------------------- */

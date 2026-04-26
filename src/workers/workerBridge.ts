@@ -28,6 +28,7 @@
 
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
 import { type BackgroundType }   from '../rendering/BackgroundRenderer.js';
+import { type ObstacleSpec }     from '../simulation/generators/types.js';
 
 // ---------------------------------------------------------------------------
 // Round 2 — Population genetics types
@@ -128,7 +129,26 @@ export type SimWorkerInMsg =
    * Round 2: highlight all cells belonging to the given variantId on the
    * main canvas (dims all other life cells).  Pass `null` to clear.
    */
-  | { type: 'highlightVariant'; variantId: number | null };
+  | { type: 'highlightVariant'; variantId: number | null }
+  /**
+   * Round 5: apply an environment preset to the grid.
+   *
+   * The worker:
+   *   1. Clears all non-life obstacle cells.
+   *   2. Runs `generateObstacles(spec, ...)` to place the new obstacle layout.
+   *   3. Re-seeds life at `seedDensity`.
+   *   4. Posts an `environmentApplied` response when complete.
+   *
+   * `backgroundType` is forwarded by `app.ts` to the RenderWorker via a
+   * separate `backgroundChange` message — the SimulationWorker does not own
+   * the renderer.
+   */
+  | {
+      type:            'applyEnvironment';
+      spec:            ObstacleSpec;
+      seedDensity:     number;
+      initialEnergy:   number;
+    };
 
 // ---------------------------------------------------------------------------
 // SimulationWorker → main thread
@@ -186,7 +206,14 @@ export type SimWorkerOutMsg =
       tick:          number;
       /** Peak population this variant ever reached. */
       peakPop:       number;
-    };
+    }
+  /**
+   * Round 5: posted by the SimulationWorker once an `applyEnvironment`
+   * request has been fully processed (obstacles placed, life re-seeded,
+   * SAB updated).  The main thread uses this to re-enable the UI and
+   * trigger an `invalidate` on the RenderWorker.
+   */
+  | { type: 'environmentApplied' };
 
 // ---------------------------------------------------------------------------
 // Main thread → RenderWorker
