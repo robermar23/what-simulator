@@ -419,6 +419,26 @@ export class GridState {
   }
 
   /**
+   * Removes all obstacle cells from the front buffer, leaving Life, LifeVariant,
+   * and Empty cells untouched.
+   *
+   * Called before applying an environment preset so that any previously painted
+   * obstacles are cleared before the new layout is generated.  The back buffer
+   * is synchronised on the next `copyFrontToBack()` call at the start of the
+   * following tick.
+   */
+  clearObstacles(): void {
+    const { cellType } = this.front;
+    for (let i = 0; i < this.totalCells; i++) {
+      const ct = cellType[i];
+      // Keep only Empty (0), Life (1), and LifeVariant (10) — clear everything else.
+      if (ct !== CellType.Empty && ct !== CellType.Life && ct !== CellType.LifeVariant) {
+        cellType[i] = CellType.Empty;
+      }
+    }
+  }
+
+  /**
    * Writes a single cell directly into the front buffer.
    * Used by the drawing tools to paint cells while the simulation runs.
    *

@@ -377,6 +377,61 @@ export interface SimulationConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Preset metadata & LifePreset bundle type
+// ---------------------------------------------------------------------------
+
+/**
+ * Display metadata attached to every named life preset.
+ * Drives the UI card (name, description, difficulty badge, archetype tag).
+ */
+export interface PresetMeta {
+  /** Short display name shown in the UI card — max 28 characters. */
+  readonly name: string;
+
+  /**
+   * One or two sentence description of the life strategy and what to observe.
+   * Shown as a tooltip / expanded description in the preset panel.
+   */
+  readonly description: string;
+
+  /**
+   * Survival difficulty: 1 = very forgiving, 5 = frequently goes extinct.
+   * Guides users toward appropriate challenge levels.
+   */
+  readonly difficulty: 1 | 2 | 3 | 4 | 5;
+
+  /**
+   * Biology-inspired archetype used to group presets in the UI.
+   *  - `primitive`    — simple, slow, ancient life strategies
+   *  - `aggressive`   — fast-spreading, burn-and-conquer strategies
+   *  - `cooperative`  — quorum-driven, signal-coordinated colonies
+   *  - `resilient`    — stress-tolerant, adaptive, survives hostile environments
+   *  - `chaotic`      — high mutation, unpredictable, evolving rapidly
+   */
+  readonly archetype: 'primitive' | 'aggressive' | 'cooperative' | 'resilient' | 'chaotic';
+
+  /**
+   * Key of the recommended environment preset for this organism.
+   * Used by the UI "Apply Recommended Environment" shortcut.
+   * Must match a key in `ENVIRONMENT_PRESETS`.
+   */
+  readonly recommendedEnvironment: string;
+}
+
+/**
+ * A fully-described named life preset: UI metadata + complete SimulationConfig.
+ * Every field of SimulationConfig is explicitly set — no hidden defaults.
+ */
+export interface LifePreset {
+  /** Stable camelCase key used for serialisation and EventBus references. */
+  readonly key: string;
+  /** UI metadata (name, description, difficulty, archetype). */
+  readonly meta: PresetMeta;
+  /** Complete simulation configuration for this organism. */
+  readonly config: SimulationConfig;
+}
+
+// ---------------------------------------------------------------------------
 // Default configuration
 // ---------------------------------------------------------------------------
 
@@ -451,214 +506,1206 @@ export function defaultConfig(): SimulationConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Preset configs
+// Preset configs (legacy functional API — retained for backwards compat)
 // ---------------------------------------------------------------------------
 
 /**
- * Named preset configurations.  Each preset returns a full `SimulationConfig`
- * so it can be applied by replacing the current config wholesale.
+ * Named preset factory functions.
+ * Each returns a complete `SimulationConfig` that can be applied wholesale.
+ * All fields are set explicitly so no parameter silently inherits the default.
+ *
+ * For UI use, prefer the {@link LIFE_PRESETS} array which bundles each preset
+ * with display metadata.  These functions are kept so existing call sites
+ * (`Presets.plague()`) continue to work without changes.
  */
 export const Presets = {
+
+  // -------------------------------------------------------------------------
+  // Classic presets (fully-specified for Round 5)
+  // -------------------------------------------------------------------------
+
   /**
    * Slow, careful spread — life clings on but barely expands.
    * Good for watching sparse clusters stabilise.
    */
   slowBurn(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:      0.15,
-      energyDecayRate: 0.02,
-      initialEnergy:   0.6,
+      spreadRate:                  0.15, // crawling expansion
+      energyDecayRate:             0.02, // high metabolic cost — barely survives
+      reproductionThreshold:       0.30, // needs substantial energy to reproduce
+      initialEnergy:               0.60, // starts with limited reserves
+      mutationRate:                0.0,  // legacy variant mutation off
+      pointMutationRate:           0.002, // very rare genome change
+      juvenileThreshold:           50,   // long juvenile phase
+      senescentThreshold:          800,  // long-lived cells
+      apoptosisBoost:              0.01, // minimal recycling signal
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,    // crowding death disabled
+      underpopulationLimit:        0,    // isolation death disabled
+      variantSpreadRate:           0.20, // variant equally slow
+      variantEnergyDecayRate:      0.025,
+      variantReproductionThreshold: 0.30,
+      variantInitialEnergy:        0.55,
+      competitionStrength:         0.1,  // minimal competition
+      toxinResistance:             0.1,
+      nutrientAbsorption:          0.8,
+      gravityResponse:             0.5,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              15,
+      mutagenBoost:                2.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.2,
+      signalDiffusion:             0.75,
+      quorumThreshold:             5,
+      adaptiveInheritanceRate:     0.15,
     };
   },
 
-  /**
-   * Aggressive spread — life floods the board in seconds.
-   */
+  /** Aggressive spread — life floods the board in seconds. */
   plague(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:           0.9,
-      energyDecayRate:      0.001,
-      reproductionThreshold: 0.05,
-      initialEnergy:        1.0,
+      spreadRate:                  0.90, // near-maximum replication
+      energyDecayRate:             0.001, // barely any decay — immortal-feeling
+      reproductionThreshold:       0.05, // reproduces at near-death energy
+      initialEnergy:               1.00,
+      mutationRate:                0.0,
+      pointMutationRate:           0.003,
+      juvenileThreshold:           5,    // matures instantly
+      senescentThreshold:          2000, // never senesces
+      apoptosisBoost:              0.005,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.95,
+      variantEnergyDecayRate:      0.001,
+      variantReproductionThreshold: 0.05,
+      variantInitialEnergy:        1.00,
+      competitionStrength:         0.5,
+      toxinResistance:             0.0,
+      nutrientAbsorption:          1.0,
+      gravityResponse:             1.0,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              5,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.1,  // blind flood — no gradient following
+      signalDiffusion:             0.80,
+      quorumThreshold:             8,    // never enters colony mode
+      adaptiveInheritanceRate:     0.1,
     };
   },
 
   /**
-   * Mimics classic Conway's Game of Life rules as closely as possible using
-   * the energy model (energy decay is set to near-zero so cells survive
-   * indefinitely; over/under-population thresholds do the culling).
+   * Mimics classic Conway's Game of Life rules using the energy model.
+   * Energy decay is near-zero; over/under-population thresholds do the culling.
    */
   classicGameOfLife(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:           1.0,
-      energyDecayRate:      0.0001,
-      reproductionThreshold: 0.01,
-      initialEnergy:        1.0,
-      overpopulationLimit:  3,  // dies with > 3 neighbours
-      underpopulationLimit: 2,  // dies with < 2 neighbours
-      neighbourhoodMode:    'moore',
+      spreadRate:                  1.00,
+      energyDecayRate:             0.0001, // near-zero — cells survive indefinitely
+      reproductionThreshold:       0.01,
+      initialEnergy:               1.00,
+      mutationRate:                0.0,
+      pointMutationRate:           0.0,   // no genome mutation — pure GoL rules
+      juvenileThreshold:           0,     // no juvenile phase
+      senescentThreshold:          9999,  // no senescence
+      apoptosisBoost:              0.0,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         3,    // dies with > 3 neighbours
+      underpopulationLimit:        2,    // dies with < 2 neighbours
+      variantSpreadRate:           1.00,
+      variantEnergyDecayRate:      0.0001,
+      variantReproductionThreshold: 0.01,
+      variantInitialEnergy:        1.00,
+      competitionStrength:         0.0,
+      toxinResistance:             0.0,
+      nutrientAbsorption:          1.0,
+      gravityResponse:             0.0,  // gravity irrelevant for pure GoL
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              10,
+      mutagenBoost:                1.0,  // no boost — genome is static
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.0,
+      signalDiffusion:             0.50,
+      quorumThreshold:             8,
+      adaptiveInheritanceRate:     0.0,
     };
   },
 
   /**
-   * Balanced ecosystem — life grows at a moderate pace, mutations produce a
-   * competing Variant B, and the obstacle parameters are tuned so nutrients,
-   * toxins, and drains all play a meaningful role.  Good starting point for
-   * exploring all obstacle types together.
+   * Balanced ecosystem — moderate growth, mutation produces Variant B,
+   * obstacles all play a meaningful role.  Good all-round starting point.
    */
   ecosystemBalance(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      // Moderate spread — neither floods nor dies out quickly.
-      spreadRate:           0.35,
-      energyDecayRate:      0.004,
-      reproductionThreshold: 0.15,
-      initialEnergy:        0.85,
-
-      // Mutation enabled — Variant B appears after several hundred ticks.
-      mutationRate:         0.002,
-      variantSpreadRate:    0.4,
-      variantEnergyDecayRate: 0.006,
-      competitionStrength:  0.2,
-
-      // Partial toxin resistance and strong nutrient absorption create
-      // interesting hotspots on mixed terrain.
-      toxinResistance:    0.3,
-      nutrientAbsorption: 1.0,
-      gravityResponse:    0.8,
-
-      // Obstacle tuning — balanced intensity so each obstacle type is visible.
-      toxinStrength:     0.04,
-      toxinDurability:   15,
-      nutrientBoost:     0.015,
-      nutrientDecayRate: 0.0005,
-      drainRate:         0.008,
-      gravityStrength:   0.6,
-      barrierLifetime:   300,
-      fireBurnRate:      0.004,
+      spreadRate:                  0.35,
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.15,
+      initialEnergy:               0.85,
+      mutationRate:                0.002, // legacy: Variant B appears after ~500 ticks
+      pointMutationRate:           0.004,
+      juvenileThreshold:           30,
+      senescentThreshold:          500,
+      apoptosisBoost:              0.020,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.40,
+      variantEnergyDecayRate:      0.006,
+      variantReproductionThreshold: 0.15,
+      variantInitialEnergy:        0.80,
+      competitionStrength:         0.20,
+      toxinResistance:             0.30, // partial resistance — hotspots matter
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.80,
+      toxinStrength:               0.04,
+      toxinDurability:             15,
+      nutrientBoost:               0.015,
+      nutrientDecayRate:           0.0005,
+      barrierLifetime:             300,
+      gravityStrength:             0.60,
+      drainRate:                   0.008,
+      fireBurnRate:                0.004,
+      censusInterval:              10,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.10,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.015,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.30,
+      signalDiffusion:             0.85,
+      quorumThreshold:             4,
+      adaptiveInheritanceRate:     0.30,
     };
   },
 
-  // --- Phase 15: Round 2 evolution presets ---------------------------------
-
   /**
-   * Natural Selection — high mutation, antibiotic-resistant strains emerge.
-   *
-   * Paint an Antibiotic band across the grid midline after loading, then watch
-   * the population on the far side evolve resistance over ~300 ticks.
-   * Adaptive mutation bias is enabled so fitness-improving mutations are
-   * preferentially retained.
+   * Natural Selection — antibiotic-resistant strains emerge under pressure.
+   * Paint an Antibiotic band across the midline, then watch resistance evolve.
    */
   naturalSelection(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:              0.40,
-      energyDecayRate:         0.003,
-      pointMutationRate:       0.008,
-      adaptiveMutationBias:    true,
-      juvenileThreshold:       25,
-      senescentThreshold:      350,
-      apoptosisBoost:          0.025,
-      chemotaxisWeight:        0.5,
-      signalDiffusion:         0.90,
-      quorumThreshold:         3,
-      adaptiveInheritanceRate: 0.4,
-      antibioticStrength:      0.18,
-      antibioticDecayRate:     0.0005, // slow depletion — pressure lasts longer
+      spreadRate:                  0.40,
+      energyDecayRate:             0.003,
+      reproductionThreshold:       0.12,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.008, // elevated for visible evolution
+      juvenileThreshold:           25,
+      senescentThreshold:          350,
+      apoptosisBoost:              0.025,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.45,
+      variantEnergyDecayRate:      0.004,
+      variantReproductionThreshold: 0.12,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.30,
+      toxinResistance:             0.10,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.80,
+      toxinStrength:               0.05,
+      toxinDurability:             12,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              8,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.18, // strong antibiotic pressure
+      antibioticDecayRate:         0.0005, // slow depletion — pressure lasts longer
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        true,  // fitness-improving flips 3× more likely
+      chemotaxisWeight:            0.50,
+      signalDiffusion:             0.90,
+      quorumThreshold:             3,
+      adaptiveInheritanceRate:     0.40,
     };
   },
 
   /**
-   * Coevolution — two competing variants locked in an evolutionary arms race.
-   *
-   * Starts with high competition and kin selection; distinct lineages form
-   * territorial boundaries within ~500 ticks.  Variants with higher spread
-   * tiers dominate open space; toxin-resistant strains win near toxin patches.
+   * Coevolution — two competing variants in an evolutionary arms race.
+   * Distinct lineages form territorial boundaries within ~500 ticks.
    */
   coevolution(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:              0.50,
-      energyDecayRate:         0.004,
-      pointMutationRate:       0.006,
-      competitionStrength:     0.5,
-      variantSpreadRate:       0.55,
-      variantEnergyDecayRate:  0.005,
-      senescentThreshold:      300,
-      apoptosisBoost:          0.03,
-      quorumThreshold:         2,   // colony mode kicks in early
-      signalDiffusion:         0.88,
-      censusInterval:          5,   // finer-grained chart updates
+      spreadRate:                  0.50,
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.10,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.006,
+      juvenileThreshold:           20,
+      senescentThreshold:          300,
+      apoptosisBoost:              0.030,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.55,
+      variantEnergyDecayRate:      0.005,
+      variantReproductionThreshold: 0.10,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.50, // strong inter-variant competition
+      toxinResistance:             0.15,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.75,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              5,    // finer-grained chart updates
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.35,
+      signalDiffusion:             0.88,
+      quorumThreshold:             2,   // colony mode kicks in early — kin clusters form
+      adaptiveInheritanceRate:     0.25,
     };
   },
 
   /**
    * Mutagenic Chaos — maximum genome diversity, minimal selective pressure.
-   *
-   * The entire grid is bathed in Mutagen-equivalent mutation pressure.
-   * Genome entropy stays near maximum — no single lineage can consolidate.
-   * Useful for observing pure genetic drift without directional selection.
+   * Genome entropy stays near maximum; no single lineage consolidates.
    */
   mutagenicChaos(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:              0.45,
-      energyDecayRate:         0.003,
-      pointMutationRate:       0.035, // very high: ~3.5% per reproduction
-      adaptiveMutationBias:    false, // pure random drift — no directed bias
-      mutagenBoost:            8.0,
-      mutagenDecayRate:        0.0005, // mutagen lasts longer
-      juvenileThreshold:       10,
-      senescentThreshold:      200,
-      censusInterval:          5,
+      spreadRate:                  0.45,
+      energyDecayRate:             0.003,
+      reproductionThreshold:       0.10,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.035, // very high: ~3.5% per reproduction
+      juvenileThreshold:           10,    // fast cycles — short generations
+      senescentThreshold:          200,
+      apoptosisBoost:              0.020,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.50,
+      variantEnergyDecayRate:      0.004,
+      variantReproductionThreshold: 0.10,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.30,
+      toxinResistance:             0.20,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.70,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              5,
+      mutagenBoost:                8.0,   // very high mutagen sensitivity
+      mutagenDecayRate:            0.0005, // mutagen lasts longer
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        false, // pure random drift
+      chemotaxisWeight:            0.20,
+      signalDiffusion:             0.80,
+      quorumThreshold:             5,
+      adaptiveInheritanceRate:     0.15,
     };
   },
 
   /**
-   * Stable Colony — quorum dominates, low mutation, dense cooperative clusters.
-   *
-   * Life quickly saturates available space and locks into colony mode.
-   * Minimal mutation means the population is nearly homogenous — one or two
-   * dominant variants hold territory indefinitely.  Colony cells scattered on
-   * the grid provide permanent energy hubs that anchor territorial boundaries.
+   * Stable Colony — quorum dominates; dense cooperative clusters form.
+   * Nearly homogenous — one or two dominant variants hold territory indefinitely.
    */
   stableColony(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:              0.30,
-      energyDecayRate:         0.002,
-      pointMutationRate:       0.001, // very low — minimal divergence
-      quorumThreshold:         3,     // colony mode at just 3 neighbours
-      colonyBoost:             0.025, // strong cooperative energy bonus
-      signalDiffusion:         0.92,  // wide-ranging signal field
-      apoptosisBoost:          0.04,  // recycled nutrients sustain interior colonies
-      senescentThreshold:      600,   // long lifespan — stable, slow-cycling colonies
+      spreadRate:                  0.30,
+      energyDecayRate:             0.002,
+      reproductionThreshold:       0.15,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.001, // very low — minimal divergence
+      juvenileThreshold:           40,
+      senescentThreshold:          600,  // long lifespan — stable, slow-cycling
+      apoptosisBoost:              0.040, // recycled nutrients sustain interior
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.35,
+      variantEnergyDecayRate:      0.003,
+      variantReproductionThreshold: 0.15,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.15,
+      toxinResistance:             0.20,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.80,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              10,
+      mutagenBoost:                2.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.10,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.06,  // moderate rewinding keeps genome stable
+      colonyBoost:                 0.025, // strong cooperative energy bonus
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.40,
+      signalDiffusion:             0.92, // wide-ranging signal field
+      quorumThreshold:             3,    // colony mode at just 3 neighbours
+      adaptiveInheritanceRate:     0.25,
     };
   },
 
   /**
    * Radiation Wasteland — only highly resistant genomes survive long term.
-   *
-   * The entire grid is periodically blasted by RadioWaste-equivalent damage.
-   * Populations with low toxin-resist tiers die out within 200 ticks; only
-   * strains that evolve high toxinResist phenotypes persist.  Strong selection
-   * pressure makes resistance evolution observable in real time.
+   * Only strains that evolve high toxinResist phenotypes persist.
    */
   radiationWasteland(): SimulationConfig {
     return {
-      ...defaultConfig(),
-      spreadRate:              0.55,
-      energyDecayRate:         0.006,
-      pointMutationRate:       0.012, // elevated to ensure resistance can evolve
-      adaptiveMutationBias:    true,  // bias toward resistance mutations
-      adaptiveInheritanceRate: 0.5,   // strong inheritance of resistance
-      radioWasteDamage:        0.025, // high radiation damage per tick
-      mutagenBoost:            5.0,   // radiation also mutagenises survivors
-      senescentThreshold:      250,   // short lifespans — fast generational turnover
-      juvenileThreshold:       15,
+      spreadRate:                  0.55,
+      energyDecayRate:             0.006,
+      reproductionThreshold:       0.12,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.012, // elevated — resistance must evolve
+      juvenileThreshold:           15,    // short generations — fast turnover
+      senescentThreshold:          250,
+      apoptosisBoost:              0.025,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.60,
+      variantEnergyDecayRate:      0.007,
+      variantReproductionThreshold: 0.12,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.35,
+      toxinResistance:             0.10, // starts low — must evolve resistance
+      nutrientAbsorption:          0.80,
+      gravityResponse:             0.60,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.02,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.005,
+      censusInterval:              8,
+      mutagenBoost:                5.0,   // radiation also mutagenises survivors
+      mutagenDecayRate:            0.001,
+      radioWasteDamage:            0.025, // high radiation damage per tick
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        true,  // bias toward resistance mutations
+      chemotaxisWeight:            0.30,
+      signalDiffusion:             0.85,
+      quorumThreshold:             4,
+      adaptiveInheritanceRate:     0.50, // strong inheritance of resistance
     };
   },
+
+  // -------------------------------------------------------------------------
+  // Round 5: New organism archetypes (fully-specified, all 41 fields)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Ancient Prokaryote — pre-Cambrian microbial mat.
+   * Slow, Von Neumann diffusion, near-zero mutation, very long-lived.
+   */
+  ancientProkaryote(): SimulationConfig {
+    return {
+      spreadRate:                  0.20, // diffusion-limited, not aggressive
+      energyDecayRate:             0.002, // very efficient — long-lived
+      reproductionThreshold:       0.12, // low bar — minimal energy to divide
+      initialEnergy:               0.75,
+      mutationRate:                0.0,
+      pointMutationRate:           0.001, // rare mutation — stable genome
+      juvenileThreshold:           50,   // long juvenile phase
+      senescentThreshold:          1200, // very long-lived cells
+      apoptosisBoost:              0.010, // minimal recycling signal
+      neighbourhoodMode:           'vonNeumann', // orthogonal diffusion only
+      overpopulationLimit:         8,    // crowding death disabled
+      underpopulationLimit:        0,    // isolation death disabled
+      variantSpreadRate:           0.22,
+      variantEnergyDecayRate:      0.003,
+      variantReproductionThreshold: 0.12,
+      variantInitialEnergy:        0.70,
+      competitionStrength:         0.05, // minimal competition — peaceful coexistence
+      toxinResistance:             0.15,
+      nutrientAbsorption:          0.70, // primitive — can't fully exploit nutrients
+      gravityResponse:             0.30, // largely ignores physical forces
+      toxinStrength:               0.04,
+      toxinDurability:             8,
+      nutrientBoost:               0.015,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             300,
+      gravityStrength:             0.3,
+      drainRate:                   0.008,
+      fireBurnRate:                0.005,
+      censusInterval:              15,
+      mutagenBoost:                1.5,  // low sensitivity to mutagenic pressure
+      mutagenDecayRate:            0.003,
+      radioWasteDamage:            0.010, // radiation is highly damaging
+      antibioticStrength:          0.15,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.03,
+      colonyBoost:                 0.008,
+      adaptiveMutationBias:        false, // pure random drift
+      chemotaxisWeight:            0.10, // minimal nutrient-seeking
+      signalDiffusion:             0.60, // short-range signals only
+      quorumThreshold:             8,    // never enters colony mode
+      adaptiveInheritanceRate:     0.10,
+    };
+  },
+
+  /**
+   * Viral Storm — RNA virus outbreak dynamics.
+   * Ultra-fast replication, high mutation, short lifecycle.
+   * Saturates the grid then burns out. Pair with Antibiotic Gauntlet environment.
+   */
+  viralStorm(): SimulationConfig {
+    return {
+      spreadRate:                  0.95, // near-maximum replication rate
+      energyDecayRate:             0.025, // rapid burnout — live fast, die young
+      reproductionThreshold:       0.02, // reproduces even at near-death
+      initialEnergy:               1.00,
+      mutationRate:                0.0,
+      pointMutationRate:           0.020, // high: antigen drift
+      juvenileThreshold:           5,    // matures almost instantly
+      senescentThreshold:          80,   // very short lifespan
+      apoptosisBoost:              0.005,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         5,    // crowding death creates wave dynamics
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.85, // resistant variant spreads fast
+      variantEnergyDecayRate:      0.018,
+      variantReproductionThreshold: 0.02,
+      variantInitialEnergy:        1.00,
+      competitionStrength:         0.70, // variant aggressively displaces base life
+      toxinResistance:             0.10,
+      nutrientAbsorption:          0.60, // blind spread — no exploitation
+      gravityResponse:             0.20,
+      toxinStrength:               0.05,
+      toxinDurability:             5,    // toxins get consumed quickly
+      nutrientBoost:               0.015,
+      nutrientDecayRate:           0.002,
+      barrierLifetime:             100,
+      gravityStrength:             0.3,
+      drainRate:                   0.015,
+      fireBurnRate:                0.005,
+      censusInterval:              3,    // fine-grained for outbreak curves
+      mutagenBoost:                4.0,
+      mutagenDecayRate:            0.001,
+      radioWasteDamage:            0.010,
+      antibioticStrength:          0.20, // antibiotics are the primary threat
+      antibioticDecayRate:         0.0008,
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.005,
+      adaptiveMutationBias:        true,  // immune evasion bias
+      chemotaxisWeight:            0.05, // blind spread — no targeting
+      signalDiffusion:             0.70,
+      quorumThreshold:             8,    // no cooperation — purely selfish
+      adaptiveInheritanceRate:     0.60, // strong inheritance of acquired resistance
+    };
+  },
+
+  /**
+   * Biofilm Architect — bacterial biofilm formation.
+   * Strong quorum sensing, signal gradients drive territory, cooperative energy.
+   * Watch for the transition from Pioneer to Colony mode across the grid.
+   */
+  biofilmArchitect(): SimulationConfig {
+    return {
+      spreadRate:                  0.28, // moderate — waits for quorum
+      energyDecayRate:             0.003,
+      reproductionThreshold:       0.18,
+      initialEnergy:               0.85,
+      mutationRate:                0.0,
+      pointMutationRate:           0.002,
+      juvenileThreshold:           40,   // long establishment phase
+      senescentThreshold:          800,  // long-lived mature cells
+      apoptosisBoost:              0.045, // dense recycling feeds frontier expansion
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.32,
+      variantEnergyDecayRate:      0.004,
+      variantReproductionThreshold: 0.18,
+      variantInitialEnergy:        0.80,
+      competitionStrength:         0.20,
+      toxinResistance:             0.25,
+      nutrientAbsorption:          1.00, // maximum nutrient uptake
+      gravityResponse:             0.90, // follows gravity wells to resources
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.025,
+      nutrientDecayRate:           0.0008,
+      barrierLifetime:             300,
+      gravityStrength:             0.6,
+      drainRate:                   0.010,
+      fireBurnRate:                0.004,
+      censusInterval:              8,
+      mutagenBoost:                2.5,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.030, // colony cells generously feed neighbours
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.70, // strong nutrient gradient following
+      signalDiffusion:             0.94, // wide signal field — whole colony communicates
+      quorumThreshold:             3,    // colony mode activates at 3 same-variant neighbours
+      adaptiveInheritanceRate:     0.50,
+    };
+  },
+
+  /**
+   * Evolutionary Sprinter — optimised for rapid evolution under selection pressure.
+   * High mutation, strong adaptive bias, fast generation turnover.
+   * Demonstrates Fisher's fundamental theorem in ~200 ticks.
+   */
+  evolutionarySprinter(): SimulationConfig {
+    return {
+      spreadRate:                  0.42,
+      energyDecayRate:             0.006, // moderate pressure — survival not trivial
+      reproductionThreshold:       0.12,
+      initialEnergy:               0.88,
+      mutationRate:                0.0,
+      pointMutationRate:           0.018, // 1.8% per reproduction — diversity engine
+      juvenileThreshold:           12,   // fast maturation — short generations
+      senescentThreshold:          150,  // rapid generational turnover
+      apoptosisBoost:              0.030, // recycling fuels next generation
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.50,
+      variantEnergyDecayRate:      0.007,
+      variantReproductionThreshold: 0.12,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.40, // fitter variant displaces wild type
+      toxinResistance:             0.10, // starts low — must evolve
+      nutrientAbsorption:          0.90,
+      gravityResponse:             0.70,
+      toxinStrength:               0.05,
+      toxinDurability:             8,
+      nutrientBoost:               0.022,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             150,
+      gravityStrength:             0.5,
+      drainRate:                   0.010,
+      fireBurnRate:                0.005,
+      censusInterval:              4,    // fine-grained resistance curves
+      mutagenBoost:                3.5,
+      mutagenDecayRate:            0.0015,
+      radioWasteDamage:            0.010,
+      antibioticStrength:          0.15, // antibiotic drives resistance evolution
+      antibioticDecayRate:         0.0005, // lasts long enough to create selection
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        true,  // fitness-improving flips 3× more likely
+      chemotaxisWeight:            0.60, // seeks nutrients to maximise fitness
+      signalDiffusion:             0.82,
+      quorumThreshold:             5,    // stays in pioneer mode longer
+      adaptiveInheritanceRate:     0.55,
+    };
+  },
+
+  /**
+   * Extremophile — thrives in conditions that kill normal cells.
+   * High toxin and radiation resistance, low nutrient requirement.
+   * Models archaea in hydrothermal vents, acid baths, or high-radiation zones.
+   */
+  extremophile(): SimulationConfig {
+    return {
+      spreadRate:                  0.22, // slow — extremophiles are not fast colonisers
+      energyDecayRate:             0.001, // ultra-efficient metabolism
+      reproductionThreshold:       0.20, // needs to be well-fed before dividing
+      initialEnergy:               0.80,
+      mutationRate:                0.0,
+      pointMutationRate:           0.003,
+      juvenileThreshold:           60,   // very cautious growth phase
+      senescentThreshold:          1500, // exceptionally long-lived
+      apoptosisBoost:              0.015,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.25,
+      variantEnergyDecayRate:      0.0015,
+      variantReproductionThreshold: 0.20,
+      variantInitialEnergy:        0.75,
+      competitionStrength:         0.15,
+      toxinResistance:             0.75, // high innate resistance
+      nutrientAbsorption:          0.50, // adapted to low-nutrient conditions
+      gravityResponse:             0.40, // less susceptible to physical forces
+      toxinStrength:               0.03, // toxins are weaker against this organism
+      toxinDurability:             20,
+      nutrientBoost:               0.010, // extracts less from nutrients (adapted to scarcity)
+      nutrientDecayRate:           0.0005,
+      barrierLifetime:             400,
+      gravityStrength:             0.4,
+      drainRate:                   0.006,
+      fireBurnRate:                0.005,
+      censusInterval:              12,
+      mutagenBoost:                1.20, // mostly immune to external mutagenic exposure
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.002, // radiation has reduced impact
+      antibioticStrength:          0.08, // partially resistant to antibiotics
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.03,
+      colonyBoost:                 0.010,
+      adaptiveMutationBias:        true,  // bias toward stress-resistance mutations
+      chemotaxisWeight:            0.30,
+      signalDiffusion:             0.78,
+      quorumThreshold:             6,
+      adaptiveInheritanceRate:     0.70, // strong Lamarckian — children born resistant
+    };
+  },
+
+  /**
+   * Territorial Conquistador — aggressive expansion through high spread,
+   * strong competition, early colony consolidation, and chemotaxis to block
+   * rival access to nutrients.
+   */
+  territorialConquistador(): SimulationConfig {
+    return {
+      spreadRate:                  0.65, // fast initial expansion
+      energyDecayRate:             0.005,
+      reproductionThreshold:       0.10,
+      initialEnergy:               0.92,
+      mutationRate:                0.0,
+      pointMutationRate:           0.005,
+      juvenileThreshold:           20,   // fast maturity — born fighters
+      senescentThreshold:          300,
+      apoptosisBoost:              0.040, // dying cells fuel the frontier
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         6,    // crowding death enforces territory boundaries
+      underpopulationLimit:        1,    // can't survive alone — drives clustering
+      variantSpreadRate:           0.72, // variant even more aggressive
+      variantEnergyDecayRate:      0.007, // higher cost for higher aggression
+      variantReproductionThreshold: 0.10,
+      variantInitialEnergy:        0.90,
+      competitionStrength:         0.70, // displaces rivals aggressively
+      toxinResistance:             0.20,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.85,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.022,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.7,
+      drainRate:                   0.010,
+      fireBurnRate:                0.004,
+      censusInterval:              6,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.018, // cooperative support for territorial consolidation
+      adaptiveMutationBias:        true,  // evolves toward more competitive phenotypes
+      chemotaxisWeight:            0.80, // races to nutrients before rivals
+      signalDiffusion:             0.88, // wide territorial signals
+      quorumThreshold:             2,    // enters colony mode early — locks down territory
+      adaptiveInheritanceRate:     0.35,
+    };
+  },
+
+  /**
+   * Nomadic Scavenger — constantly moving toward nutrients, evading threats.
+   * Never builds stable colonies — high chemotaxis, always in pioneer mode.
+   * Thrives in complex environments with scattered resource patches.
+   */
+  nomadicScavenger(): SimulationConfig {
+    return {
+      spreadRate:                  0.50,
+      energyDecayRate:             0.008, // nomadic lifestyle is expensive
+      reproductionThreshold:       0.15,
+      initialEnergy:               0.95,
+      mutationRate:                0.0,
+      pointMutationRate:           0.006,
+      juvenileThreshold:           8,    // near-instant maturity — always on the move
+      senescentThreshold:          120,  // short lifespan — constant turnover
+      apoptosisBoost:              0.035, // recycled energy propels next generation
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.55,
+      variantEnergyDecayRate:      0.009,
+      variantReproductionThreshold: 0.15,
+      variantInitialEnergy:        0.90,
+      competitionStrength:         0.30,
+      toxinResistance:             0.40, // moderate — survives brief toxin exposure
+      nutrientAbsorption:          1.00, // maximum uptake when nutrients found
+      gravityResponse:             0.85, // follows gravity wells strategically
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.025,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.6,
+      drainRate:                   0.010,
+      fireBurnRate:                0.005,
+      censusInterval:              8,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.010, // minimal — doesn't build infrastructure
+      adaptiveMutationBias:        true,
+      chemotaxisWeight:            0.90, // maximum nutrient gradient following
+      signalDiffusion:             0.70, // short-range — localised decisions
+      quorumThreshold:             8,    // never enters colony mode — always pioneer
+      adaptiveInheritanceRate:     0.35,
+    };
+  },
+
+  /**
+   * Jurassic Megaflora — slow-growing large organisms with long lifecycles.
+   * Overpopulation-limited like plant competition; Von Neumann spread.
+   * Grove formation via quorum; apoptosis enriches the forest floor.
+   */
+  jurassicMegaflora(): SimulationConfig {
+    return {
+      spreadRate:                  0.12, // trees don't rush
+      energyDecayRate:             0.001, // ultra-low — decades-long lifespan
+      reproductionThreshold:       0.50, // only reproduces when fully established
+      initialEnergy:               0.70, // seeds start with moderate energy
+      mutationRate:                0.0,
+      pointMutationRate:           0.001, // rare mutation — stable species
+      juvenileThreshold:           150,  // long juvenile phase — saplings
+      senescentThreshold:          3000, // ancient old-growth
+      apoptosisBoost:              0.060, // fallen tree enriches forest floor
+      neighbourhoodMode:           'vonNeumann', // orthogonal root/canopy spread
+      overpopulationLimit:         4,    // dense canopy prevents new growth
+      underpopulationLimit:        1,    // cannot survive alone — needs a grove
+      variantSpreadRate:           0.14,
+      variantEnergyDecayRate:      0.0012,
+      variantReproductionThreshold: 0.50,
+      variantInitialEnergy:        0.65,
+      competitionStrength:         0.25,
+      toxinResistance:             0.20,
+      nutrientAbsorption:          1.00, // maximum nutrient use
+      gravityResponse:             1.00, // maximum gravity-well seeking (sun/water)
+      toxinStrength:               0.04,
+      toxinDurability:             15,
+      nutrientBoost:               0.020,
+      nutrientDecayRate:           0.0005,
+      barrierLifetime:             500,
+      gravityStrength:             0.8,
+      drainRate:                   0.005,
+      fireBurnRate:                0.003, // fire burns slowly through tough wood
+      censusInterval:              20,
+      mutagenBoost:                2.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.010,
+      antibioticStrength:          0.08,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.015,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.50, // moderate nutrient seeking
+      signalDiffusion:             0.96, // wide canopy signalling — grove coordination
+      quorumThreshold:             3,    // colony mode at 3 neighbours — grove formation
+      adaptiveInheritanceRate:     0.20,
+    };
+  },
+
+  /**
+   * Parasitic Overload — Variant B is a parasite on Variant A (the host).
+   * High competition, Variant B has extreme aggression, minimal cooperation.
+   * Watch host and parasite populations cycle like Lotka-Volterra predator-prey.
+   */
+  parasiticOverload(): SimulationConfig {
+    return {
+      spreadRate:                  0.35, // host spreads cautiously
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.12,
+      initialEnergy:               0.88,
+      mutationRate:                0.0,
+      pointMutationRate:           0.008, // both mutate to adapt to each other
+      juvenileThreshold:           20,
+      senescentThreshold:          300,
+      apoptosisBoost:              0.020,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.80, // parasite spreads aggressively
+      variantEnergyDecayRate:      0.020, // parasite burns fast — needs constant host
+      variantReproductionThreshold: 0.05, // parasite reproduces at near-zero energy
+      variantInitialEnergy:        1.00,
+      competitionStrength:         0.85, // near-overwhelming parasite pressure
+      toxinResistance:             0.20, // host has partial toxin resistance
+      nutrientAbsorption:          0.80,
+      gravityResponse:             0.60,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.020,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.010,
+      fireBurnRate:                0.005,
+      censusInterval:              5,    // fine-grained host/parasite chart
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.010,
+      adaptiveMutationBias:        true,  // arms-race dynamics
+      chemotaxisWeight:            0.30, // parasite seeks host density, not nutrients
+      signalDiffusion:             0.90, // wide host alarm signals
+      quorumThreshold:             6,    // host needs large group for defence
+      adaptiveInheritanceRate:     0.40,
+    };
+  },
+
+  /**
+   * Neural Network Colony — cells cooperate via extremely wide signal fields
+   * to form coordinated macro-structures.  Large clusters required for colony mode.
+   * Exhibits coordinated border expansion waves once enough cells synchronise.
+   */
+  neuralNetworkColony(): SimulationConfig {
+    return {
+      spreadRate:                  0.40, // moderate — signal-coordinated expansion
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.15,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.004, // low — stable genome for coordination
+      juvenileThreshold:           35,
+      senescentThreshold:          600,  // stable long-lived interior cells
+      apoptosisBoost:              0.050, // apoptosis triggers coordinated frontier wave
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         7,    // near-disabled — dense packing allowed
+      underpopulationLimit:        2,    // needs peers to survive
+      variantSpreadRate:           0.45,
+      variantEnergyDecayRate:      0.005,
+      variantReproductionThreshold: 0.15,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.20,
+      toxinResistance:             0.25,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.80,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.022,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             250,
+      gravityStrength:             0.6,
+      drainRate:                   0.010,
+      fireBurnRate:                0.004,
+      censusInterval:              5,    // watch coordination emerge in charts
+      mutagenBoost:                2.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.10,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.08, // rewinders keep population homogenous
+      colonyBoost:                 0.025, // colony cells are energy hubs
+      adaptiveMutationBias:        false, // coordination, not adaptation
+      chemotaxisWeight:            0.80, // strong gradient following
+      signalDiffusion:             0.97, // near-maximum — global coordination
+      quorumThreshold:             6,    // large clusters needed for colony mode
+      adaptiveInheritanceRate:     0.30,
+    };
+  },
+
 } as const;
+
+// ---------------------------------------------------------------------------
+// LIFE_PRESETS — structured array with metadata for the UI preset panel
+// ---------------------------------------------------------------------------
+
+/**
+ * All named life presets, each bundled with display metadata.
+ *
+ * The UI iterates this array to render preset cards, apply filtering by
+ * archetype, and show difficulty badges.  Order determines display order:
+ * classic presets first, then Round 5 organism archetypes.
+ */
+export const LIFE_PRESETS: readonly LifePreset[] = [
+  {
+    key: 'slowBurn',
+    meta: {
+      name:                   'Slow Burn',
+      description:            'Life clings on but barely expands. Good for watching sparse clusters stabilise under high metabolic cost.',
+      difficulty:             3,
+      archetype:              'primitive',
+      recommendedEnvironment: 'pristinePetri',
+    },
+    config: Presets.slowBurn(),
+  },
+  {
+    key: 'plague',
+    meta: {
+      name:                   'Plague',
+      description:            'Floods the board in seconds. Near-zero decay and maximum spread rate — the definitive stress test for obstacles.',
+      difficulty:             1,
+      archetype:              'aggressive',
+      recommendedEnvironment: 'theVoid',
+    },
+    config: Presets.plague(),
+  },
+  {
+    key: 'classicGameOfLife',
+    meta: {
+      name:                   'Classic Game of Life',
+      description:            'Conway\'s Game of Life rules mapped to the energy model. Overpopulation and underpopulation do the culling.',
+      difficulty:             2,
+      archetype:              'primitive',
+      recommendedEnvironment: 'pristinePetri',
+    },
+    config: Presets.classicGameOfLife(),
+  },
+  {
+    key: 'ecosystemBalance',
+    meta: {
+      name:                   'Ecosystem Balance',
+      description:            'Moderate growth with mutation producing a competing Variant B. Best starting point for exploring all obstacle types.',
+      difficulty:             2,
+      archetype:              'cooperative',
+      recommendedEnvironment: 'coralReef',
+    },
+    config: Presets.ecosystemBalance(),
+  },
+  {
+    key: 'naturalSelection',
+    meta: {
+      name:                   'Natural Selection',
+      description:            'Antibiotic-resistant strains emerge under selection pressure. Paint an Antibiotic band and watch resistance evolve in ~300 ticks.',
+      difficulty:             3,
+      archetype:              'resilient',
+      recommendedEnvironment: 'antibioticGauntlet',
+    },
+    config: Presets.naturalSelection(),
+  },
+  {
+    key: 'coevolution',
+    meta: {
+      name:                   'Coevolution',
+      description:            'Two variants locked in an evolutionary arms race. Distinct lineages form territorial boundaries within ~500 ticks.',
+      difficulty:             3,
+      archetype:              'chaotic',
+      recommendedEnvironment: 'coralReef',
+    },
+    config: Presets.coevolution(),
+  },
+  {
+    key: 'mutagenicChaos',
+    meta: {
+      name:                   'Mutagenic Chaos',
+      description:            'Maximum genome diversity, minimal selective pressure. No lineage can consolidate — pure genetic drift at 3.5% mutation rate.',
+      difficulty:             2,
+      archetype:              'chaotic',
+      recommendedEnvironment: 'radioactiveWastes',
+    },
+    config: Presets.mutagenicChaos(),
+  },
+  {
+    key: 'stableColony',
+    meta: {
+      name:                   'Stable Colony',
+      description:            'Quorum sensing dominates. Dense cooperative clusters form and hold territory indefinitely with minimal mutation.',
+      difficulty:             2,
+      archetype:              'cooperative',
+      recommendedEnvironment: 'ancientForestFloor',
+    },
+    config: Presets.stableColony(),
+  },
+  {
+    key: 'radiationWasteland',
+    meta: {
+      name:                   'Radiation Wasteland',
+      description:            'Only highly resistant genomes survive. Watch toxin-resist tiers evolve in real time as weaker strains die out within 200 ticks.',
+      difficulty:             4,
+      archetype:              'resilient',
+      recommendedEnvironment: 'radioactiveWastes',
+    },
+    config: Presets.radiationWasteland(),
+  },
+  // --- Round 5 organism archetypes -----------------------------------------
+  {
+    key: 'ancientProkaryote',
+    meta: {
+      name:                   'Ancient Prokaryote',
+      description:            'Pre-Cambrian microbial mat — slow, diffusion-limited, nearly immortal cells with orthogonal (Von Neumann) spread.',
+      difficulty:             3,
+      archetype:              'primitive',
+      recommendedEnvironment: 'pristinePetri',
+    },
+    config: Presets.ancientProkaryote(),
+  },
+  {
+    key: 'viralStorm',
+    meta: {
+      name:                   'Viral Storm',
+      description:            'RNA virus outbreak dynamics: ultra-fast replication, 2% mutation rate, short lifespan. Saturates the grid then burns out.',
+      difficulty:             2,
+      archetype:              'aggressive',
+      recommendedEnvironment: 'antibioticGauntlet',
+    },
+    config: Presets.viralStorm(),
+  },
+  {
+    key: 'biofilmArchitect',
+    meta: {
+      name:                   'Biofilm Architect',
+      description:            'Strong quorum sensing and signal gradients drive territory demarcation. Watch Pioneer mode transition to Colony mode across the grid.',
+      difficulty:             2,
+      archetype:              'cooperative',
+      recommendedEnvironment: 'coralReef',
+    },
+    config: Presets.biofilmArchitect(),
+  },
+  {
+    key: 'evolutionarySprinter',
+    meta: {
+      name:                   'Evolutionary Sprinter',
+      description:            'Maximum evolution speed under selection pressure. Demonstrates Fisher\'s fundamental theorem — resistance appears in ~200 ticks.',
+      difficulty:             3,
+      archetype:              'chaotic',
+      recommendedEnvironment: 'antibioticGauntlet',
+    },
+    config: Presets.evolutionarySprinter(),
+  },
+  {
+    key: 'extremophile',
+    meta: {
+      name:                   'Extremophile',
+      description:            'Thrives where others die — 75% toxin resistance, ultra-efficient metabolism, exceptionally long-lived. Models archaea in hostile habitats.',
+      difficulty:             3,
+      archetype:              'resilient',
+      recommendedEnvironment: 'volcanicBadlands',
+    },
+    config: Presets.extremophile(),
+  },
+  {
+    key: 'territorialConquistador',
+    meta: {
+      name:                   'Territorial Conquistador',
+      description:            'Races to nutrients, blocks rival access, consolidates territory early via quorum. Aggressive expansion through chemical intelligence.',
+      difficulty:             2,
+      archetype:              'aggressive',
+      recommendedEnvironment: 'labyrinth',
+    },
+    config: Presets.territorialConquistador(),
+  },
+  {
+    key: 'nomadicScavenger',
+    meta: {
+      name:                   'Nomadic Scavenger',
+      description:            'Never settles — maximum chemotaxis, always in pioneer mode. Survives by constantly chasing nutrient gradients across complex terrain.',
+      difficulty:             3,
+      archetype:              'resilient',
+      recommendedEnvironment: 'labyrinth',
+    },
+    config: Presets.nomadicScavenger(),
+  },
+  {
+    key: 'jurassicMegaflora',
+    meta: {
+      name:                   'Jurassic Megaflora',
+      description:            'Slow-growing organisms with 3000-tick lifespans. Grove formation via quorum; falling old-growth enriches the forest floor.',
+      difficulty:             4,
+      archetype:              'primitive',
+      recommendedEnvironment: 'ancientForestFloor',
+    },
+    config: Presets.jurassicMegaflora(),
+  },
+  {
+    key: 'parasiticOverload',
+    meta: {
+      name:                   'Parasitic Overload',
+      description:            'Variant B is a parasite on Variant A. Watch population cycles like Lotka-Volterra predator-prey dynamics emerge over hundreds of ticks.',
+      difficulty:             4,
+      archetype:              'aggressive',
+      recommendedEnvironment: 'immuneBattleground',
+    },
+    config: Presets.parasiticOverload(),
+  },
+  {
+    key: 'neuralNetworkColony',
+    meta: {
+      name:                   'Neural Network Colony',
+      description:            'Near-global signal diffusion (97%) drives coordinated macro-structures. Large clusters synchronise into a single coordinated expansion wave.',
+      difficulty:             3,
+      archetype:              'cooperative',
+      recommendedEnvironment: 'deepSeaVents',
+    },
+    config: Presets.neuralNetworkColony(),
+  },
+];

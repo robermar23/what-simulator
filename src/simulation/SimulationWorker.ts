@@ -50,6 +50,7 @@
 import { GridState, CellType, type GridBuffers } from './GridState.js';
 import { SimulationEngine }                      from './SimulationEngine.js';
 import { defaultConfig, type SimulationConfig }  from './config/SimulationConfig.js';
+import { generateObstacles, mulberry32, seedFromKey } from './generators/ObstacleGenerator.js';
 import {
   makeControlView,
   makeBufferViews,
@@ -472,6 +473,63 @@ self.onmessage = (event: MessageEvent<SimWorkerInMsg>): void => {
     case 'highlightVariant':
       // No-op here; app.ts routes these messages to the render worker directly.
       break;
+
+    // --- applyEnvironment (Round 5) -----------------------------------------
+    case 'applyEnvironment': {
+      // Pause the tick loop while reconfiguring the grid so we don't race
+      // between the obstacle writer and the running engine.
+      const wasRunning = tickIntervalId !== null;
+      stopLoop();
+
+      // 1. Remove all existing obstacle cells, preserving life and empty cells.
+      grid.clearObstacles();
+
+      // 2. Generate obstacle layout from the declarative spec.
+      //    Use a seeded PRNG for deterministic specs, Math.random otherwise.
+      const rng = msg.spec.deterministic
+        ? mulberry32(seedFromKey(JSON.stringify(msg.spec.layers)))
+        : Math.random.bind(Math);
+      generateObstacles(msg.spec, grid.front.cellType, width, height, rng);
+
+      // 3. Re-seed life at the requested density.
+      //    seed() writes over any existing life too, so clear life first then
+      //    let seed() place fresh cells on the obstacle-painted grid.
+      {
+        const { cellType, energy, genome, variantId, generation,
+                toxinResist, nutrientAbs, heatResist, spreadBonus,
+                signalStrength, age, flags } = grid.front;
+        const total = width * height;
+        // Zero only the life/empty cells so obstacle cells are preserved.
+        for (let i = 0; i < total; i++) {
+          // 10 = CellType.LifeVariant (deprecated enum member, use literal to suppress warning)
+          if (cellType[i] === CellType.Life || cellType[i] === 10
+              || cellType[i] === CellType.Empty) {
+            cellType[i] = CellType.Empty;
+            energy[i] = genome[i] = variantId[i] = generation[i] = 0;
+            toxinResist[i] = nutrientAbs[i] = heatResist[i] = spreadBonus[i] = 0;
+            signalStrength[i] = age[i] = flags[i] = 0;
+          }
+        }
+      }
+      grid.seed(msg.seedDensity, msg.initialEnergy);
+
+      // 4. Reset census and variant tracking for the fresh start.
+      tickNum = 0;
+      variantPeakPop.fill(0);
+      prevCensusCounts.fill(0);
+      engine.resetVariantCounter();
+
+      // 5. Publish the new grid state to the SAB so the render worker sees it.
+      publishToSab();
+
+      // 6. Notify the main thread that the environment has been applied.
+      const envApplied: SimWorkerOutMsg = { type: 'environmentApplied' };
+      self.postMessage(envApplied);
+
+      // Resume the tick loop if it was running before.
+      if (wasRunning) startLoop(currentHz);
+      break;
+    }
   }
 };
 
