@@ -544,6 +544,77 @@ const CHEMICAL_SLIDERS: readonly SliderSpec[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Phase 21 — Predator-Prey slider specs
+// ---------------------------------------------------------------------------
+
+/**
+ * Phase 21 — Predator-Prey Dynamics slider specs.
+ *
+ * Controls the predator classification threshold, attack probability, spread
+ * rate, energy feed per kill, predator energy-decay multiplier, and the
+ * sporulation lifetime counter.
+ */
+const PREDATOR_SLIDERS: readonly SliderSpec[] = [
+  {
+    label: 'Predator Threshold',
+    key:   'predatorGenomeThreshold',
+    min: 0, max: 65535, step: 256,
+    title:
+      'Minimum genome value [0–65535] that classifies a Life cell as a predator. ' +
+      '0 = predator mechanics disabled (all cells are prey). ' +
+      'Higher values restrict predator status to rarer high-genome cells. ' +
+      'Visible in Pred/Prey render mode: predators are vivid red, prey are teal.',
+  },
+  {
+    label: 'Attack Strength',
+    key:   'predatorAttackStrength',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Base probability [0–1] that a predator kills an adjacent prey cell this tick. ' +
+      'Actual attack chance = Strength × (1 − prey.toxinResist). ' +
+      '0 = predators cannot attack; 1 = attack always succeeds against unresistant prey.',
+  },
+  {
+    label: 'Feed Energy',
+    key:   'predatorFeedEnergy',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Energy gained by the predator when it kills a prey cell [0–1]. ' +
+      'High values allow predators to sustain themselves at low prey density. ' +
+      'Low values force predators to hunt constantly to stay alive.',
+  },
+  {
+    label: 'Predator Spread Rate',
+    key:   'predatorSpreadRate',
+    min: 0, max: 1, step: 0.01,
+    title:
+      'Probability [0–1] that a predator spawns a daughter into the killed prey slot. ' +
+      '0 = predators never reproduce into prey; 1 = always spawn after a kill. ' +
+      'Controls how quickly predator colonies spread after a successful hunt.',
+  },
+  {
+    label: 'Predator Decay ×',
+    key:   'predatorEnergyDecayMultiplier',
+    min: 1, max: 5, step: 0.05,
+    title:
+      'Energy-decay rate multiplier applied to predator cells [1–5]. ' +
+      '1 = same decay as prey; 5 = predators burn energy 5× faster. ' +
+      'Higher values create boom-bust Lotka-Volterra cycles: predators ' +
+      'must hunt frequently or starve.',
+  },
+  {
+    label: 'Spore Lifetime',
+    key:   'sporeLifetime',
+    min: 50, max: 2000, step: 10,
+    title:
+      'Maximum age (ticks) a dormant Spore cell survives before dying [50–2000]. ' +
+      'Spores form when a prey cell has energy < 0.03 AND local alarm is high. ' +
+      'They revive when alarm fades AND a neighbouring Life cell has energy ≥ 0.3. ' +
+      'Visible in Pred/Prey render mode as brown cells.',
+  },
+];
+
+// ---------------------------------------------------------------------------
 // ControlPanel class
 // ---------------------------------------------------------------------------
 
@@ -613,6 +684,9 @@ export class ControlPanel {
 
     // --- Chemical Ecology section (Phase 20) ------------------------------
     panel.append(this._buildChemicalEcologySection());
+
+    // --- Predator-Prey section (Phase 21) ---------------------------------
+    panel.append(this._buildPredatorPreySection());
 
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
@@ -964,6 +1038,37 @@ export class ControlPanel {
     details.append(hint);
 
     for (const spec of CHEMICAL_SLIDERS) {
+      details.append(this._buildSlider(spec));
+    }
+
+    return details;
+  }
+
+  /**
+   * Builds the collapsible "Predator-Prey Dynamics" section (Phase 21).
+   *
+   * Contains sliders for predator classification threshold, attack strength,
+   * feed energy, spread rate, energy-decay multiplier, and spore lifetime.
+   *
+   * @returns The built `<details>` element.
+   */
+  private _buildPredatorPreySection(): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'panel-section collapsible';
+
+    const summary = document.createElement('summary');
+    summary.className   = 'panel-heading collapsible-heading';
+    summary.textContent = 'Predator-Prey';
+    details.append(summary);
+
+    const hint = document.createElement('p');
+    hint.className   = 'section-hint';
+    hint.textContent =
+      'Set Predator Threshold > 0 to enable. Cells with genome ≥ threshold hunt ' +
+      'prey; low-energy prey sporulate under alarm pressure. Use Pred/Prey render mode.';
+    details.append(hint);
+
+    for (const spec of PREDATOR_SLIDERS) {
       details.append(this._buildSlider(spec));
     }
 
@@ -1396,6 +1501,12 @@ export class ControlPanel {
           { mode: 'waste-field',     label: 'Waste Field'     },
           { mode: 'pheromone-field', label: 'Pheromone Field' },
           { mode: 'alarm-field',     label: 'Alarm Field'     },
+        ],
+      },
+      {
+        label: 'Predator-Prey',
+        entries: [
+          { mode: 'predprey', label: 'Pred/Prey' },
         ],
       },
     ];

@@ -36,6 +36,10 @@
  *   chemPheromone  Float32Array  1 048 576 bytes (~1 MB)  × 2
  *   chemAlarm      Float32Array  1 048 576 bytes (~1 MB)  × 2
  *
+ * ## Phase 21 predator-prey (NEW cell type, no new buffers)
+ *   Spore (CellType = 16): dormant Life cell — reuses existing buffers.
+ *   Predators are Life cells classified by genome >= predatorGenomeThreshold.
+ *
  * Total at 512×512: ~22.4 MB — well within browser constraints.
  */
 
@@ -112,6 +116,26 @@ export const enum CellType {
    * Visual: warm amber honeycomb.
    */
   Colony      = 15,
+
+  // --- Phase 21 additions -----------------------------------------------
+
+  /**
+   * Spore cell: a Life cell that has entered defensive dormancy under extreme
+   * threat (very low energy AND high local alarm pheromone).
+   *
+   * Spore behaviour:
+   *   - Energy is frozen at the value when sporulation occurred — no decay.
+   *   - The cell is impassable; predators cannot spread into Spore cells.
+   *   - `age` resets to 0 on sporulation and counts up each tick.
+   *   - If `age > config.sporeLifetime`, the spore dies permanently → Empty.
+   *   - Revival condition: alarm pheromone drops to 0 AND at least one
+   *     neighbouring Life cell has energy ≥ 0.3.  On revival the cell
+   *     becomes Life again with its original genome preserved.
+   *
+   * Visual: thick-walled brown circle with a very slow fading pulse that
+   *         communicates the remaining time-to-death without a UI number.
+   */
+  Spore       = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -544,8 +568,8 @@ export class GridState {
     const { cellType } = this.front;
     for (let i = 0; i < this.totalCells; i++) {
       const ct = cellType[i];
-      // Keep only Empty (0), Life (1), and LifeVariant (10) — clear everything else.
-      if (ct !== CellType.Empty && ct !== CellType.Life && ct !== CellType.LifeVariant) {
+      // Keep only Empty (0), Life (1), LifeVariant (10), and Spore (16) — clear everything else.
+      if (ct !== CellType.Empty && ct !== CellType.Life && ct !== CellType.LifeVariant && ct !== CellType.Spore) {
         cellType[i] = CellType.Empty;
       }
     }

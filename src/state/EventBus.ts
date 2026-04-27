@@ -75,6 +75,16 @@ export interface EventMap {
     liveCells: number;
     /** Number of LifeVariant (Variant B) cells currently alive. */
     variantCells: number;
+    /**
+     * Phase 21: predator Life cells alive this tick.
+     * 0 when predatorGenomeThreshold === 0 (mechanics disabled).
+     */
+    predatorCells: number;
+    /**
+     * Phase 21: dormant Spore cells alive this tick.
+     * 0 when predator-prey mechanics are disabled.
+     */
+    sporeCells: number;
   };
 
   /** Fired when the user requests a PNG snapshot of the canvas. */

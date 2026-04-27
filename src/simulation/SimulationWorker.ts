@@ -299,6 +299,8 @@ function tick(): void {
     variantCells: stats.variantCells,
     births:       stats.births,
     deaths:       stats.deaths,
+    predatorCells: stats.predatorCells,
+    sporeCells:    stats.sporeCells,
   };
   self.postMessage(msg);
 }

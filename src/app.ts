@@ -361,9 +361,11 @@ export class App {
         if (msg.tickNum % 15 === 0 || msg.tickNum < 2) {
           bus.emit('fpsUpdate', {
             fps,
-            tickNum:      msg.tickNum,
-            liveCells:    msg.liveCells + msg.variantCells,
-            variantCells: msg.variantCells,
+            tickNum:       msg.tickNum,
+            liveCells:     msg.liveCells + msg.variantCells,
+            variantCells:  msg.variantCells,
+            predatorCells: msg.predatorCells,
+            sporeCells:    msg.sporeCells,
           });
         }
         break;
@@ -460,9 +462,16 @@ export class App {
     });
 
     // Config — update simulation parameters for the next tick.
+    // Phase 21: also forward predatorGenomeThreshold to the render worker so the
+    // predprey render mode can classify Life cells as predator vs prey in GLSL.
     bus.on('configChange', ({ config }) => {
       const msg: SimWorkerInMsg = { type: 'configUpdate', config };
       this._simWorker.postMessage(msg);
+      const thresholdMsg: RenderWorkerInMsg = {
+        type:      'predatorThresholdChange',
+        rawUint16: config.predatorGenomeThreshold,
+      };
+      this._renderWorker.postMessage(thresholdMsg);
     });
 
     // Reset — stop the sim, re-seed, force a full render redraw.

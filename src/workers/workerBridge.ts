@@ -173,6 +173,16 @@ export type SimWorkerOutMsg =
       births:       number;
       /** Cells that died this tick. */
       deaths:       number;
+      /**
+       * Phase 21: predator Life cells alive this tick.
+       * 0 when predatorGenomeThreshold === 0 (mechanics disabled).
+       */
+      predatorCells: number;
+      /**
+       * Phase 21: dormant Spore cells alive this tick.
+       * 0 when predator-prey mechanics are disabled.
+       */
+      sporeCells:    number;
     }
   /**
    * Round 2: population genetics census, posted every `censusInterval` ticks.
@@ -250,7 +260,9 @@ export type RenderMode =
   | 'fitness'
   | 'signal'
   /** Phase 18: fixed green base + full sub-cell morphology anatomy. */
-  | 'morphology';
+  | 'morphology'
+  /** Phase 21: predators red / prey teal / spores brown. */
+  | 'predprey';
 
 /**
  * All messages the main thread can post to the RenderWorker.
@@ -321,6 +333,13 @@ export type RenderWorkerInMsg =
    * Ignored by the Canvas 2D renderer.
    */
   | { type: 'aliveDetailChange'; value: number }
+  /**
+   * Phase 21: update the predator genome threshold on the WebGL renderer.
+   * Passed as the raw Uint16 value from SimulationConfig.predatorGenomeThreshold.
+   * The renderer normalises to [0, 1] internally.
+   * Ignored by the Canvas 2D renderer.
+   */
+  | { type: 'predatorThresholdChange'; rawUint16: number }
   ;
 
 // ---------------------------------------------------------------------------

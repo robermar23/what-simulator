@@ -108,8 +108,12 @@ void main() {
  *   6 — **signal** (Phase 12): All cells overlaid with their signalStrength value.
  *       Zero signal → base cell colour; full signal → vivid cyan (#00eeff).
  *
+ *  12 — **predprey** (Phase 21): Life cells classified by genome threshold.
+ *       Predators → vivid red (#ff2200); prey → teal (#00ddbb); Spores → brown (#5c3d1a).
+ *       Non-Life cells render as in default mode.
+ *
  * Colour values stay in sync with ColorMap.ts COLOR_ENTRIES.
- * Round 2 cell types 11–15 are included.
+ * Round 2 cell types 11–15 and Phase 21 type 16 (Spore) are included.
  */
 export const FRAG_SRC = /* glsl */ `#version 300 es
 precision highp float;
@@ -225,6 +229,7 @@ uniform bool u_showGridLines;
  *   9 = waste-field     (Phase 20 chemWaste heat map: yellow → red)
  *  10 = pheromone-field (Phase 20 chemPheromone heat map: black → purple)
  *  11 = alarm-field     (Phase 20 chemAlarm heat map: black → orange)
+ *  12 = predprey        (Phase 21: predators vivid red / prey teal / spores brown)
  */
 uniform int u_renderMode;
 
@@ -256,6 +261,14 @@ uniform int u_time;
  * Only active when u_cellSize >= 4.0 (sub-pixel detail is invisible below that).
  */
 uniform float u_aliveDetail;
+
+/**
+ * Phase 21: predator genome threshold normalised to [0, 1] (divide the raw
+ * Uint16 threshold by 65535).  Life cells with normalised genome >= this value
+ * are rendered as predators in render mode 12.  0 = predprey mode disabled
+ * (all Life cells render as prey teal, which is the expected fallback).
+ */
+uniform float u_predatorThreshold;
 
 // --- Output -----------------------------------------------------------------
 out vec4 outColor;
@@ -398,6 +411,10 @@ vec3 baseColor(uint t) {
   // 15 Colony      #cc8811 — deep honeycomb amber
   if (t == 15u) return vec3(0.8,    0.5333, 0.0667);
 
+  // ---- Phase 21 -----------------------------------------------------------
+  // 16 Spore       #5c3d1a — thick-walled brown dormancy pod
+  if (t == 16u) return vec3(0.361,  0.239,  0.102);
+
   return vec3(0.0); // unknown type — invisible black
 }
 
@@ -437,6 +454,7 @@ float minBrightness(uint t) {
   if (t == 10u) return 0.15;   // Life Variant B
   if (t == 11u) return 0.25;   // Mutagen (dims as potency depletes)
   if (t == 15u) return 0.4;    // Colony (dims when starved of sacrificed energy)
+  if (t == 16u) return 0.3;    // Spore — never fully dark so the pod stays visible
   return 1.0;                  // all others: static brightness
 }
 
@@ -447,7 +465,9 @@ float minBrightness(uint t) {
  * @returns True if the colour should dim at low energy.
  */
 bool isEnergyModulated(uint t) {
-  return t == 1u || t == 7u || t == 8u || t == 10u || t == 11u || t == 15u;
+  // Phase 21: Spore energy is frozen at sporulation value, so modulating by it
+  // gives a natural visual indicator of how much "life" remains in the dormant cell.
+  return t == 1u || t == 7u || t == 8u || t == 10u || t == 11u || t == 15u || t == 16u;
 }
 
 // ---------------------------------------------------------------------------
@@ -799,6 +819,44 @@ void main() {
     // dying cells visibly dim.
     float bright = 0.25 + 0.75 * clamp(energy, 0.0, 1.0);
     cellRGB = srgbToLinearVec(vec3(0.0, 1.0, 0.533)) * bright; // #00ff88
+
+  } else if (u_renderMode == 12) {
+    // ---- Predator/Prey render mode (Phase 21) --------------------------------
+    //
+    // Three-way classification visible at a glance:
+    //   Predators (genome >= threshold, encoded by u_predatorThreshold) → vivid red
+    //   Prey      (Life, below threshold)                               → teal
+    //   Spores    (dormant prey)                                        → brown
+    //   Non-Life cells fall back to default rendering below this branch.
+    //
+    // u_predatorThreshold is passed as a float in [0, 1] normalised from the
+    // 16-bit genome range so the shader avoids integer division.
+
+    if (cellType == 16u) {
+      // Spore — energy-modulated brown; slow pulse from frozen energy value.
+      float bright = 0.3 + 0.7 * clamp(energy, 0.0, 1.0);
+      cellRGB = srgbToLinearVec(vec3(0.361, 0.239, 0.102)) * bright;
+
+    } else if (isLife) {
+      uint genomeVal  = texelFetch(u_genome, cellCoord, 0).r;
+      float genomeT   = float(genomeVal) / 65535.0;   // normalise to [0, 1]
+
+      if (genomeT >= u_predatorThreshold && u_predatorThreshold > 0.0) {
+        // Predator — vivid red (#ff2200), brightness from energy.
+        float bright = 0.2 + 0.8 * clamp(energy, 0.0, 1.0);
+        cellRGB = srgbToLinearVec(vec3(1.0, 0.133, 0.0)) * bright;
+      } else {
+        // Prey — teal (#00ddbb), brightness from energy.
+        float bright = 0.15 + 0.85 * clamp(energy, 0.0, 1.0);
+        cellRGB = srgbToLinearVec(vec3(0.0, 0.867, 0.733)) * bright;
+      }
+    } else {
+      // Non-Life cells: standard default rendering.
+      vec3 base = u_hdrOutput ? hdrBaseColor(cellType) : srgbToLinearVec(baseColor(cellType));
+      cellRGB = isEnergyModulated(cellType)
+        ? base * (minBrightness(cellType) + (1.0 - minBrightness(cellType)) * clamp(energy, 0.0, 1.0))
+        : base;
+    }
 
   } else {
     // ---- Default render mode: cellType + energy → colour -------------------
@@ -1353,7 +1411,9 @@ export class WebGLRenderer {
   /** Phase 18: frame counter uniform — drives pulse/flash animations in GLSL. */
   private readonly _uTime!: WebGLUniformLocation;
   /** Phase 18: morphology detail level uniform [0,1]. */
-  private readonly _uAliveDetail!: WebGLUniformLocation;
+  private readonly _uAliveDetail!:          WebGLUniformLocation;
+  /** Phase 21: uniform location for the normalised predator-genome threshold. */
+  private readonly _uPredatorThreshold!:    WebGLUniformLocation;
   /** Phase 19: uniform location for the vx (X-axis velocity) R32F texture. */
   private readonly _uVx!: WebGLUniformLocation;
   /** Phase 19: uniform location for the vy (Y-axis velocity) R32F texture. */
@@ -1373,6 +1433,12 @@ export class WebGLRenderer {
    * Only has visual effect when cellSize >= 4px.
    */
   private _aliveDetail = 1.0;
+
+  /**
+   * Phase 21: predator genome threshold normalised to [0, 1] (Uint16 ÷ 65535).
+   * 0 = predator mechanics disabled (no red highlighting in predprey mode).
+   */
+  private _predatorThreshold = 0.0;
 
   /** Current environment tint `[r, g, b, alpha]` — r/g/b normalised to [0,1]. */
   private _envTintVec: readonly [number, number, number, number] = [0, 0, 0, 0];
@@ -1535,7 +1601,9 @@ export class WebGLRenderer {
     this._uEnvTint         = this._requireUniform('u_envTint');
     this._uHdrOutput       = this._requireUniform('u_hdrOutput');
     this._uTime            = this._requireUniform('u_time');
-    this._uAliveDetail     = this._requireUniform('u_aliveDetail');
+    this._uAliveDetail         = this._requireUniform('u_aliveDetail');
+    // Phase 21: predator genome threshold for predprey render mode.
+    this._uPredatorThreshold   = this._requireUniform('u_predatorThreshold');
     // Phase 19: velocity texture samplers for flagellum rendering.
     this._uVx              = this._requireUniform('u_vx');
     this._uVy              = this._requireUniform('u_vy');
@@ -1716,7 +1784,27 @@ export class WebGLRenderer {
     this._aliveDetail = Math.max(0, Math.min(1, value));
   }
 
-  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' | 'nutrient-field' | 'waste-field' | 'pheromone-field' | 'alarm-field' {
+  /**
+   * Phase 21: returns the predator genome threshold as a normalised [0, 1] float.
+   * Used by the predprey render mode to classify Life cells as predator vs prey.
+   *
+   * @returns Normalised threshold (raw Uint16 ÷ 65535).  0 = disabled.
+   */
+  get predatorThreshold(): number {
+    return this._predatorThreshold;
+  }
+
+  /**
+   * Sets the predator genome threshold.  Takes effect on the next render call.
+   *
+   * @param rawUint16 - Raw genome threshold as a Uint16 integer [0, 65535].
+   *                    Internally normalised to [0, 1] for the shader.
+   */
+  set predatorThreshold(rawUint16: number) {
+    this._predatorThreshold = rawUint16 / 65535;
+  }
+
+  get renderMode(): 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' | 'nutrient-field' | 'waste-field' | 'pheromone-field' | 'alarm-field' | 'predprey' {
     if (this._renderMode === 1)  return 'lifecycle';
     if (this._renderMode === 2)  return 'variantId';
     if (this._renderMode === 3)  return 'genome';
@@ -1728,6 +1816,7 @@ export class WebGLRenderer {
     if (this._renderMode === 9)  return 'waste-field';
     if (this._renderMode === 10) return 'pheromone-field';
     if (this._renderMode === 11) return 'alarm-field';
+    if (this._renderMode === 12) return 'predprey';
     return 'default';
   }
 
@@ -1736,7 +1825,7 @@ export class WebGLRenderer {
    *
    * @param mode - New render mode string.
    */
-  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' | 'nutrient-field' | 'waste-field' | 'pheromone-field' | 'alarm-field') {
+  set renderMode(mode: 'default' | 'lifecycle' | 'variantId' | 'genome' | 'generation' | 'fitness' | 'signal' | 'morphology' | 'nutrient-field' | 'waste-field' | 'pheromone-field' | 'alarm-field' | 'predprey') {
     if (mode === 'lifecycle')          { this._renderMode = 1; }
     else if (mode === 'variantId')     { this._renderMode = 2; }
     else if (mode === 'genome')        { this._renderMode = 3; }
@@ -1748,6 +1837,7 @@ export class WebGLRenderer {
     else if (mode === 'waste-field')      { this._renderMode = 9; }
     else if (mode === 'pheromone-field')  { this._renderMode = 10; }
     else if (mode === 'alarm-field')      { this._renderMode = 11; }
+    else if (mode === 'predprey')         { this._renderMode = 12; }
     else                               { this._renderMode = 0; }
   }
 
@@ -2066,7 +2156,9 @@ export class WebGLRenderer {
     gl.uniform1i(this._uShowGridLines, this._showGridLines ? 1 : 0);
     gl.uniform1i(this._uRenderMode,    this._renderMode);
     gl.uniform1i(this._uTime,          this._frame);
-    gl.uniform1f(this._uAliveDetail,   this._aliveDetail);
+    gl.uniform1f(this._uAliveDetail,        this._aliveDetail);
+    // Phase 21: normalised predator threshold (0 = disabled).
+    gl.uniform1f(this._uPredatorThreshold,  this._predatorThreshold);
 
     // Upload environment tint — r/g/b normalised to [0,1] for the shader.
     const [tr, tg, tb, ta] = this._envTintVec;

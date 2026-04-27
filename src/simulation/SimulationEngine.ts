@@ -131,6 +131,17 @@ export interface TickStats {
   births: number;
   /** Number of cells that died this tick. */
   deaths: number;
+  /**
+   * Phase 21: number of predator Life cells alive this tick.
+   * Predators are Life cells with genome >= config.predatorGenomeThreshold.
+   * Zero when predatorGenomeThreshold === 0 (mechanics disabled).
+   */
+  predatorCells: number;
+  /**
+   * Phase 21: number of Spore cells (dormant Life cells) alive this tick.
+   * Zero when predator-prey mechanics are disabled.
+   */
+  sporeCells: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +203,7 @@ export class SimulationEngine {
   /** Reused stats object — mutated in place each tick. */
   private readonly _stats: TickStats = {
     liveCells: 0, variantCells: 0, births: 0, deaths: 0,
+    predatorCells: 0, sporeCells: 0,
   };
 
   // -------------------------------------------------------------------------
@@ -339,10 +351,12 @@ export class SimulationEngine {
     config: SimulationConfig,
   ): TickStats {
     // Reset stats each tick.
-    this._stats.liveCells    = 0;
-    this._stats.variantCells = 0;
-    this._stats.births       = 0;
-    this._stats.deaths       = 0;
+    this._stats.liveCells     = 0;
+    this._stats.variantCells  = 0;
+    this._stats.births        = 0;
+    this._stats.deaths        = 0;
+    this._stats.predatorCells = 0;
+    this._stats.sporeCells    = 0;
 
     // Reset variant event queue and per-tick creation cap for this tick.
     this._variantEventCount    = 0;
@@ -450,6 +464,13 @@ export class SimulationEngine {
       chemicalDecayRate,
       chemQuorumThreshold,
       quorumActivationEnergy,
+      // Phase 21: predator-prey parameters
+      predatorGenomeThreshold,
+      predatorFeedEnergy,
+      predatorAttackStrength,
+      predatorSpreadRate,
+      predatorEnergyDecayMultiplier,
+      sporeLifetime,
     } = config;
 
     const useMoore = neighbourhoodMode === 'moore';
@@ -503,7 +524,10 @@ export class SimulationEngine {
         type === CellType.Drain      ||
         type === CellType.Ice        ||
         type === CellType.RadioWaste ||
-        type === CellType.Rewinder
+        type === CellType.Rewinder   ||
+        // Phase 21: Spore cells are fully dormant — no energy decay, no spread,
+        // no lifecycle checks.  They are managed entirely in the Phase 21 pass.
+        type === CellType.Spore
       ) {
         continue;
       }
@@ -679,8 +703,16 @@ export class SimulationEngine {
         // Effective spread rate = (base + genome bonus) × stage multiplier.
         const cellSpreadRate = (baseSpreadRate + cellSpreadBns) * stageSpreadMult;
 
-        // Effective decay rate = base decay × stage multiplier.
-        const stageCellDecayRate = cellDecayRate * stageDecayMult;
+        // Phase 21: classify this cell as a predator if its genome meets the
+        // threshold.  Only checked when the feature is enabled (threshold > 0).
+        const isPredator = predatorGenomeThreshold > 0 &&
+          ftGenome[i] >= predatorGenomeThreshold;
+
+        // Effective decay rate = base decay × stage multiplier × predator cost.
+        // Predators have an elevated metabolic cost — they starve fast when
+        // prey is scarce, which limits population explosions.
+        const predatorDecayMult = isPredator ? predatorEnergyDecayMultiplier : 1.0;
+        const stageCellDecayRate = cellDecayRate * stageDecayMult * predatorDecayMult;
 
         const nLen = this._fillNeighbors(i, width, height, useMoore);
 
@@ -901,6 +933,8 @@ export class SimulationEngine {
             this._stats.variantCells++;
           } else {
             this._stats.liveCells++;
+            // Phase 21: count predators separately so the UI can track the ratio.
+            if (isPredator) this._stats.predatorCells++;
           }
         }
 
@@ -1338,6 +1372,166 @@ export class SimulationEngine {
         // Also clear QUORUM_ACTIVE since there is no chemistry driving it.
         bkFlags[i] &= ~CellFlags.QUORUM_ACTIVE;
       }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 21 — Predator-Prey Dynamics
+    //
+    // Runs AFTER the Phase 20 chemical pass so alarm pheromone from dying prey
+    // is already written to bkChemAlarm before the sporulation check reads it.
+    //
+    // Sub-pass 1 — Predator attacks:
+    //   For each predator Life cell (genome >= predatorGenomeThreshold) with
+    //   enough energy, attempt to attack adjacent Life cells (prey).
+    //   On a successful hit: prey → Empty, predator gains predatorFeedEnergy,
+    //   and a new predator daughter cell may spread into the vacated position.
+    //   Predators also emit alarm pheromone continuously so prey can detect them.
+    //
+    // Sub-pass 2 — Sporulation:
+    //   Non-predator Life cells at critical energy AND high local alarm enter
+    //   defensive dormancy: cellType → Spore, age reset to 0 (spore timer).
+    //
+    // Sub-pass 3 — Spore lifecycle:
+    //   Spore cells age each tick (age++).
+    //   Revival: alarm near zero AND a viable Life neighbour present → Life.
+    //   Timeout: age > sporeLifetime → Empty (permanent genome loss).
+    //
+    // All three sub-passes are skipped when predatorGenomeThreshold === 0.
+    // -----------------------------------------------------------------------
+
+    if (predatorGenomeThreshold > 0) {
+
+      // --- Sub-pass 1: Predator attacks ------------------------------------
+      for (let i = 0; i < total; i++) {
+        // Only consider back-buffer Life cells that are predators.
+        if (bkType[i] !== CellType.Life) continue;
+        if (bkGenome[i] < predatorGenomeThreshold) continue;
+
+        // Predators continuously emit alarm pheromone — prey detect and flee.
+        // Add a fixed burst; capped at 1.0 so the buffer does not overflow.
+        const alarmAfterPred = bkChemAlarm[i] + 0.25;
+        bkChemAlarm[i] = alarmAfterPred > 1.0 ? 1.0 : alarmAfterPred;
+
+        // Must have energy above reproduction threshold to hunt.
+        if (bkEnergy[i] < reproductionThreshold) continue;
+
+        // Scan Moore neighbours for prey (non-predator Life cells).
+        const nLen = this._fillNeighbors(i, width, height, useMoore);
+        for (let k = 0; k < nLen; k++) {
+          const ni = this._neighborBuf[k];
+
+          // Only attack non-predator Life cells (Spore cells are impassable).
+          if (bkType[ni] !== CellType.Life) continue;
+          if (bkGenome[ni] >= predatorGenomeThreshold) continue; // kin, skip
+
+          // Attack probability scales with predator strength, reduced by prey
+          // toxin resistance (arms-race: high-toxinResist prey survive longer).
+          const attackProb = predatorAttackStrength * (1.0 - bkToxinResist[ni]);
+          if (attackProb <= 0 || Math.random() >= attackProb) continue;
+
+          // --- Successful attack ---
+          // Kill the prey cell.
+          bkType[ni]   = CellType.Empty;
+          bkEnergy[ni] = 0;
+          bkAge[ni]    = 0;
+          bkFlags[ni]  = 0;
+          this._stats.deaths++;
+
+          // Predator gains energy from the kill.
+          const newPredEnergy = bkEnergy[i] + predatorFeedEnergy;
+          bkEnergy[i] = newPredEnergy > 1.0 ? 1.0 : newPredEnergy;
+
+          // Optionally spread a daughter predator into the vacated cell.
+          if (Math.random() < predatorSpreadRate) {
+            const childGenome = computeChildGenome(bkGenome[i], config.pointMutationRate, 0);
+            bkType[ni]   = CellType.Life;
+            bkEnergy[ni] = config.initialEnergy;
+            bkAge[ni]    = 0;
+            bkFlags[ni]  = 0;
+            bkGenome[ni] = childGenome;
+            bkVariantId[ni] = bkVariantId[i];
+            bkGeneration[ni] = bkGeneration[i] < 65535 ? bkGeneration[i] + 1 : 65535;
+            applyPhenotypeFromGenome(
+              childGenome, bkToxinResist, bkNutrientAbs, bkHeatResist, bkSpreadBonus, ni,
+            );
+            this._stats.births++;
+            this._stats.liveCells++;
+            this._stats.predatorCells++;
+          }
+
+          // Only one attack per predator per tick to keep the simulation fair.
+          break;
+        }
+      }
+
+      // --- Sub-pass 2: Sporulation -----------------------------------------
+      // Prey cells under extreme duress (critical energy + high local alarm)
+      // enter dormancy.  This gives the genome a chance to survive predation.
+      for (let i = 0; i < total; i++) {
+        if (bkType[i] !== CellType.Life) continue;
+        // Predators do not sporulate — they fight or starve.
+        if (bkGenome[i] >= predatorGenomeThreshold) continue;
+
+        // Sporulation triggers when energy is critically low AND local alarm
+        // pheromone is high (indicating active predation pressure nearby).
+        if (bkEnergy[i] < 0.03 && bkChemAlarm[i] > 0.2) {
+          bkType[i] = CellType.Spore;
+          // Reset age to 0 — used as the spore's survival countdown timer.
+          bkAge[i]  = 0;
+          // Energy is frozen at its current value (no decay while dormant).
+          // genome, variantId, flags, generation all preserved in-place.
+          this._stats.sporeCells++;
+        }
+      }
+
+      // --- Sub-pass 3: Spore lifecycle --------------------------------------
+      for (let i = 0; i < total; i++) {
+        if (bkType[i] !== CellType.Spore) continue;
+
+        this._stats.sporeCells++;
+
+        // Increment the spore's age (survival timer).
+        const sporeAge = bkAge[i] < 65535 ? bkAge[i] + 1 : 65535;
+        bkAge[i] = sporeAge;
+
+        // Timeout: spore has waited too long — the genome is permanently lost.
+        if (sporeAge > sporeLifetime) {
+          bkType[i]   = CellType.Empty;
+          bkEnergy[i] = 0;
+          bkAge[i]    = 0;
+          bkFlags[i]  = 0;
+          this._stats.deaths++;
+          continue;
+        }
+
+        // Revival check: safe when local alarm is low AND a viable neighbour
+        // Life cell can share energy (confirms the colony is recovering).
+        if (bkChemAlarm[i] > 0.05) continue; // still dangerous — stay dormant
+
+        // Check for a nearby Life cell with enough energy to signal revival.
+        const nLen = this._fillNeighbors(i, width, height, useMoore);
+        let canRevive = false;
+        for (let k = 0; k < nLen; k++) {
+          const ni = this._neighborBuf[k];
+          if (bkType[ni] === CellType.Life && bkEnergy[ni] >= 0.3) {
+            canRevive = true;
+            break;
+          }
+        }
+
+        if (canRevive) {
+          // Revive — restore Life type; genome and energy were preserved.
+          // Age is kept at the spore value so the cell enters as an adult
+          // (avoids another juvenile period that would slow recolonisation).
+          bkType[i] = CellType.Life;
+          this._stats.sporeCells--; // no longer a spore
+          this._stats.liveCells++;
+          if (bkGenome[i] >= predatorGenomeThreshold) this._stats.predatorCells++;
+        }
+      }
+    } else {
+      // Phase 21 disabled — ensure sporeCells stat is always 0 when inactive.
+      // (It was already reset at the top of tick(), so nothing to do here.)
     }
 
     return this._stats;

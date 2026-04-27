@@ -292,6 +292,14 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       }
       break;
 
+    // --- predatorThresholdChange (Phase 21) ----------------------------------
+    case 'predatorThresholdChange':
+      // Only the WebGL renderer uses this; Canvas 2D ignores predator colouring.
+      if (renderer instanceof WebGLRenderer) {
+        renderer.predatorThreshold = msg.rawUint16;
+      }
+      break;
+
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {
       // `convertToBlob` is available on OffscreenCanvas.

@@ -2355,3 +2355,253 @@ describe('SimulationEngine — Phase 20 quorum sensing', () => {
     expect(grid.front.flags[centre] & CellFlags.QUORUM_ACTIVE).toBeFalsy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 21 — Predator-Prey Dynamics
+// ---------------------------------------------------------------------------
+
+describe('SimulationEngine — Phase 21 predator-prey dynamics', () => {
+  /**
+   * Shared config overrides used across multiple predator-prey tests.
+   * Disables mutation, spread, and all Phase 20 chemistry so results are
+   * fully deterministic.
+   */
+  const BASE_PP_CONFIG = {
+    spreadRate:             0.0,
+    mutationRate:           0.0,
+    energyDecayRate:        0.001,
+    reproductionThreshold:  0.1,
+    predatorGenomeThreshold: 30000,
+    predatorAttackStrength:  1.0,
+    predatorFeedEnergy:      0.3,
+    predatorSpreadRate:      0.0,  // no daughter spawning by default
+    predatorEnergyDecayMultiplier: 1.0,
+    sporeLifetime:           500,
+    // Chemical settings — small diffusion so alarm is not zeroed by the else branch.
+    wasteSecretionRate:    0.0,
+    pheromoneSecretionRate: 0.0,
+    chemicalDiffusionRate: 0.001,
+    chemicalDecayRate:     0.0,
+  } as const;
+
+  it('counts predator cells in TickStats when genome >= threshold', () => {
+    // Single Life cell whose genome exceeds the predator threshold.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 0.8;
+    grid.front.genome[i]   = 40000; // >= threshold 30000
+
+    const { stats } = runOneTick(grid, engine, { ...BASE_PP_CONFIG });
+
+    expect(stats.predatorCells).toBe(1);
+  });
+
+  it('does not count prey cells as predators', () => {
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 0.8;
+    grid.front.genome[i]   = 5000; // < threshold 30000
+
+    const { stats } = runOneTick(grid, engine, { ...BASE_PP_CONFIG });
+
+    expect(stats.predatorCells).toBe(0);
+    expect(stats.liveCells).toBeGreaterThanOrEqual(1);
+  });
+
+  it('predator kills adjacent prey when attackStrength = 1 and toxinResist = 0', () => {
+    // Predator at (2,2), prey at (2,3) — adjacent vertically.
+    const predIdx = 2 * W + 2;
+    const preyIdx = 3 * W + 2;
+
+    grid.front.cellType[predIdx] = CellType.Life;
+    grid.front.energy[predIdx]   = 0.8;
+    grid.front.genome[predIdx]   = 40000; // predator
+
+    grid.front.cellType[preyIdx] = CellType.Life;
+    grid.front.energy[preyIdx]   = 0.5;
+    grid.front.genome[preyIdx]   = 5000;  // prey
+    // toxinResist[preyIdx] defaults to 0 — attack probability = 1.0
+
+    runOneTick(grid, engine, { ...BASE_PP_CONFIG });
+
+    // Prey should be dead (Empty) after the attack.
+    expect(grid.front.cellType[preyIdx]).toBe(CellType.Empty);
+  });
+
+  it('prey survives when it has full toxin resistance', () => {
+    // Toxin resistance of 1 reduces attack probability to 0 — prey always survives.
+    const predIdx = 2 * W + 2;
+    const preyIdx = 3 * W + 2;
+
+    grid.front.cellType[predIdx]  = CellType.Life;
+    grid.front.energy[predIdx]    = 0.8;
+    grid.front.genome[predIdx]    = 40000; // predator
+
+    grid.front.cellType[preyIdx]  = CellType.Life;
+    grid.front.energy[preyIdx]    = 0.5;
+    grid.front.genome[preyIdx]    = 5000;  // prey
+    grid.front.toxinResist[preyIdx] = 1.0; // full resistance
+
+    runOneTick(grid, engine, { ...BASE_PP_CONFIG });
+
+    expect(grid.front.cellType[preyIdx]).toBe(CellType.Life);
+  });
+
+  it('predator gains feed energy after killing prey', () => {
+    const predIdx = 2 * W + 2;
+    const preyIdx = 3 * W + 2;
+
+    grid.front.cellType[predIdx] = CellType.Life;
+    grid.front.energy[predIdx]   = 0.5; // starting energy
+    grid.front.genome[predIdx]   = 40000;
+
+    grid.front.cellType[preyIdx] = CellType.Life;
+    grid.front.energy[preyIdx]   = 0.5;
+    grid.front.genome[preyIdx]   = 5000;
+    // toxinResist = 0 (default)
+
+    runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      predatorFeedEnergy:    0.3,
+      energyDecayRate:       0.0, // no decay so energy change is only from feeding
+    });
+
+    // Predator energy should have increased by feedEnergy.
+    expect(grid.front.energy[predIdx]).toBeCloseTo(0.5 + 0.3, 3);
+  });
+
+  it('predator spawns daughter into killed prey slot when spreadRate = 1', () => {
+    const predIdx = 2 * W + 2;
+    const preyIdx = 3 * W + 2;
+
+    grid.front.cellType[predIdx] = CellType.Life;
+    grid.front.energy[predIdx]   = 0.8;
+    grid.front.genome[predIdx]   = 40000;
+
+    grid.front.cellType[preyIdx] = CellType.Life;
+    grid.front.energy[preyIdx]   = 0.5;
+    grid.front.genome[preyIdx]   = 5000;
+
+    runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      predatorSpreadRate: 1.0, // always spawn daughter
+    });
+
+    // The killed prey slot should now hold a new Life cell (the daughter).
+    expect(grid.front.cellType[preyIdx]).toBe(CellType.Life);
+    // Daughter genome should be >= threshold (inherits predator genome ± mutation).
+    expect(grid.front.genome[preyIdx]).toBeGreaterThanOrEqual(30000 - 1000);
+  });
+
+  it('spore cell energy is frozen (no decay while dormant)', () => {
+    // Place a Spore cell — it must skip all energy-decay processing.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Spore;
+    grid.front.energy[i]   = 0.05;
+    grid.front.age[i]      = 10; // far from sporeLifetime
+
+    // Low alarm so revival check runs but no Life neighbour → stays dormant.
+    grid.front.chemAlarm[i] = 0.0;
+
+    runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      energyDecayRate: 0.1, // high decay — would kill a Life cell but not a Spore
+    });
+
+    // Energy must be unchanged — Spore bypasses the decay loop.
+    expect(grid.front.energy[i]).toBeCloseTo(0.05, 5);
+    expect(grid.front.cellType[i]).toBe(CellType.Spore);
+  });
+
+  it('spore dies when its age exceeds sporeLifetime', () => {
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Spore;
+    grid.front.energy[i]   = 0.02;
+    grid.front.age[i]      = 500; // equals sporeLifetime; one more tick = 501 > 500
+
+    runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      sporeLifetime: 500,
+    });
+
+    expect(grid.front.cellType[i]).toBe(CellType.Empty);
+  });
+
+  it('spore revives when alarm fades and a viable Life neighbour is present', () => {
+    // Spore at (2,2), Life neighbour at (2,3) with high energy.
+    const sporeIdx = 2 * W + 2;
+    const lifeIdx  = 3 * W + 2;
+
+    grid.front.cellType[sporeIdx] = CellType.Spore;
+    grid.front.energy[sporeIdx]   = 0.02;
+    grid.front.age[sporeIdx]      = 50; // young spore — well within lifetime
+    grid.front.chemAlarm[sporeIdx] = 0.0; // low alarm → safe to revive
+
+    grid.front.cellType[lifeIdx] = CellType.Life;
+    grid.front.energy[lifeIdx]   = 0.7; // >= 0.3 — satisfies revival threshold
+    grid.front.genome[lifeIdx]   = 5000; // prey genome, not a predator
+
+    runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      energyDecayRate: 0.0, // no decay so neighbour stays at 0.7
+    });
+
+    // The spore should have revived into a Life cell.
+    expect(grid.front.cellType[sporeIdx]).toBe(CellType.Life);
+  });
+
+  it('sporulation: prey with critically low energy and high alarm becomes Spore', () => {
+    // Prey at (2,2), no predators placed so Sub-pass 1 does nothing.
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 0.01; // < 0.03 sporulation threshold
+    grid.front.genome[i]   = 5000; // prey (< threshold 30000)
+    // Pre-load alarm above sporulation trigger of 0.2.
+    grid.front.chemAlarm[i] = 0.5;
+
+    runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      energyDecayRate: 0.001, // tiny decay — prey survives main loop then sporulates
+    });
+
+    expect(grid.front.cellType[i]).toBe(CellType.Spore);
+  });
+
+  it('prey does NOT sporulate when energy is above the threshold', () => {
+    const i = 2 * W + 2;
+    grid.front.cellType[i] = CellType.Life;
+    grid.front.energy[i]   = 0.5; // well above 0.03
+    grid.front.genome[i]   = 5000;
+    grid.front.chemAlarm[i] = 0.9; // high alarm but energy is fine
+
+    runOneTick(grid, engine, { ...BASE_PP_CONFIG, energyDecayRate: 0.001 });
+
+    expect(grid.front.cellType[i]).toBe(CellType.Life);
+  });
+
+  it('counts spore cells in TickStats', () => {
+    // A pre-existing Spore cell plus a newly sporulating prey.
+    const sporeIdx     = 2 * W + 2;
+    const sporulateIdx = 2 * W + 3;
+
+    // Pre-existing spore (should be counted in Sub-pass 3).
+    grid.front.cellType[sporeIdx] = CellType.Spore;
+    grid.front.energy[sporeIdx]   = 0.02;
+    grid.front.age[sporeIdx]      = 10;
+    grid.front.chemAlarm[sporeIdx] = 1.0; // high alarm — stays dormant
+
+    // Newly sporulating prey (counted in Sub-pass 2).
+    grid.front.cellType[sporulateIdx] = CellType.Life;
+    grid.front.energy[sporulateIdx]   = 0.01;
+    grid.front.genome[sporulateIdx]   = 5000;
+    grid.front.chemAlarm[sporulateIdx] = 0.5;
+
+    const { stats } = runOneTick(grid, engine, {
+      ...BASE_PP_CONFIG,
+      energyDecayRate: 0.001,
+    });
+
+    // Both the pre-existing spore and the newly formed spore are counted.
+    expect(stats.sporeCells).toBeGreaterThanOrEqual(2);
+  });
+});
