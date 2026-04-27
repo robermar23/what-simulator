@@ -1,5 +1,5 @@
-/**
- * @fileoverview Simulation configuration — the single source of truth for all
+﻿/**
+ * @fileoverview Simulation configuration â€” the single source of truth for all
  * tuneable parameters.
  *
  * The `SimulationConfig` object is intentionally a plain record (no class, no
@@ -7,7 +7,7 @@
  * `postMessage`, and mutated in-place when sliders change.
  *
  * All parameters have sensible defaults that produce an interesting visible
- * spread from a 30%-density random seed at 256×256.
+ * spread from a 30%-density random seed at 256Ã—256.
  */
 
 // ---------------------------------------------------------------------------
@@ -17,9 +17,9 @@
 /**
  * Which cells are considered "neighbours" when a Life cell tries to spread.
  *
- *  - `moore`      — 8 neighbours (N, NE, E, SE, S, SW, W, NW).  Produces
+ *  - `moore`      â€” 8 neighbours (N, NE, E, SE, S, SW, W, NW).  Produces
  *                   faster diagonal spread and more circular blobs.
- *  - `vonNeumann` — 4 neighbours (N, E, S, W).  Produces cross-shaped spread
+ *  - `vonNeumann` â€” 4 neighbours (N, E, S, W).  Produces cross-shaped spread
  *                   and rectilinear boundaries.
  */
 export type NeighbourhoodMode = 'moore' | 'vonNeumann';
@@ -37,7 +37,7 @@ export interface SimulationConfig {
 
   /**
    * Probability [0, 1] that a Life cell attempts to spread into each empty
-   * eligible neighbour per tick.  Higher → faster expansion.
+   * eligible neighbour per tick.  Higher â†’ faster expansion.
    */
   spreadRate: number;
 
@@ -66,7 +66,7 @@ export interface SimulationConfig {
    * 0 disables mutation entirely.
    *
    * @deprecated Phase 9 onwards: Use `pointMutationRate` for per-bit genome
-   *   mutation.  This field still controls the legacy Life→LifeVariant
+   *   mutation.  This field still controls the legacy Lifeâ†’LifeVariant
    *   transformation (Round 1 behaviour, kept for backwards compat).
    */
   mutationRate: number;
@@ -75,8 +75,8 @@ export interface SimulationConfig {
    * Round 2: probability [0, 0.05] that a random bit in a child cell's
    * genome is flipped on each reproduction event (spread).
    *
-   * Default 0.002 — approximately 0.2% of spreads produce a one-bit
-   * genome change, giving visible evolution over ~500 ticks in a 512×512
+   * Default 0.002 â€” approximately 0.2% of spreads produce a one-bit
+   * genome change, giving visible evolution over ~500 ticks in a 512Ã—512
    * grid.  Set to 0 to disable genome mutation entirely.
    */
   pointMutationRate: number;
@@ -87,8 +87,8 @@ export interface SimulationConfig {
    * Age (in ticks) below which a Life cell is in the **juvenile** stage.
    *
    * Juvenile behaviour modifiers:
-   *   - Effective spread rate × 0.4   (slow expansion — still establishing)
-   *   - Effective energy decay  × 0.8 (reduced metabolic cost)
+   *   - Effective spread rate Ã— 0.4   (slow expansion â€” still establishing)
+   *   - Effective energy decay  Ã— 0.8 (reduced metabolic cost)
    *   - Point mutation rate     = 0   (juvenile cells cannot mutate)
    *
    * Range: [0, 200].  Default: 30 ticks.
@@ -99,9 +99,9 @@ export interface SimulationConfig {
    * Age (in ticks) above which a Life cell enters the **senescent** stage.
    *
    * Senescent behaviour modifiers:
-   *   - Effective spread rate × 0.1   (minimal expansion — near end of life)
-   *   - Effective energy decay  × 1.5 (elevated metabolic cost)
-   *   - Point mutation rate     × 2   (last-ditch diversity burst: SOS response)
+   *   - Effective spread rate Ã— 0.1   (minimal expansion â€” near end of life)
+   *   - Effective energy decay  Ã— 1.5 (elevated metabolic cost)
+   *   - Point mutation rate     Ã— 2   (last-ditch diversity burst: SOS response)
    *
    * A senescent cell whose energy drops below 0.05 undergoes **apoptosis**
    * (planned death): it emits a signal burst, feeds adjacent live cells, then
@@ -115,7 +115,7 @@ export interface SimulationConfig {
    * Energy bonus [0, 0.1] added to every live neighbour cell when a senescent
    * cell undergoes apoptosis.
    *
-   * Simulates the biological recycling of cellular material — the death of an
+   * Simulates the biological recycling of cellular material â€” the death of an
    * old dense cell feeds surrounding younger cells, driving the colony's
    * expansion frontier outward after the interior collapses.
    *
@@ -244,7 +244,7 @@ export interface SimulationConfig {
 
   /**
    * Multiplier applied to `pointMutationRate` for Life cells adjacent to a
-   * **Mutagen** cell.  A value of 3 means adjacent cells mutate 3× faster.
+   * **Mutagen** cell.  A value of 3 means adjacent cells mutate 3Ã— faster.
    *
    * Mutagen cells deplete over time (`mutagenDecayRate` per tick) and become
    * Empty when their energy reaches 0.  Life spreading into a Mutagen cell
@@ -264,7 +264,7 @@ export interface SimulationConfig {
 
   /**
    * Energy damage dealt per tick to Life cells adjacent to a **RadioWaste** cell.
-   * RadioWaste is permanent and never depletes — it acts as a constant radiation
+   * RadioWaste is permanent and never depletes â€” it acts as a constant radiation
    * source that also applies random genome bit flips to adjacent Life cells.
    *
    * Cells with high `toxinResist` phenotype take proportionally less damage.
@@ -275,7 +275,7 @@ export interface SimulationConfig {
   /**
    * Per-tick probability [0, 1] that an **Antibiotic** cell kills each adjacent
    * Life cell.  The kill chance is reduced by the cell's `toxinResist` phenotype:
-   *   effective = antibioticStrength × (1 − toxinResist)
+   *   effective = antibioticStrength Ã— (1 âˆ’ toxinResist)
    *
    * Antibiotic cells deplete over time (`antibioticDecayRate` per tick) and
    * become Empty when their energy reaches 0.
@@ -307,7 +307,7 @@ export interface SimulationConfig {
   /**
    * Energy provided per tick to each Life cell adjacent to a **Colony** cell.
    *
-   * Colony cells act as cooperative infrastructure — they boost adjacent Life
+   * Colony cells act as cooperative infrastructure â€” they boost adjacent Life
    * energy and emit a chemical signal pulse that further aids nearby cells.
    * Colony cells have their own energy that drains slowly over time; they
    * survive indefinitely unless they run out of energy.
@@ -321,9 +321,9 @@ export interface SimulationConfig {
   /**
    * When `true`, applies Lamarckian-lite directed mutation bias: genome bit
    * flips that improve local fitness (e.g. higher toxinResist when adjacent to
-   * Toxin) are 3× more likely than neutral flips.
+   * Toxin) are 3Ã— more likely than neutral flips.
    *
-   * Off by default — turning it on makes evolution dramatically more visible
+   * Off by default â€” turning it on makes evolution dramatically more visible
    * on short timescales by biasing random variation toward environmental fit.
    */
   adaptiveMutationBias: boolean;
@@ -342,8 +342,8 @@ export interface SimulationConfig {
   /**
    * Retention factor [0, 1] applied to the `signalStrength` buffer each tick.
    *
-   * 0.85 means 85% of signal remains after one tick — signal propagates
-   * roughly 1 / (1 - 0.85) = 6–7 cells from a colony or nutrient source.
+   * 0.85 means 85% of signal remains after one tick â€” signal propagates
+   * roughly 1 / (1 - 0.85) = 6â€“7 cells from a colony or nutrient source.
    * Lower values (e.g. 0.5) give very short-range signals; higher values
    * allow gradients to span the whole canvas.
    *
@@ -364,7 +364,7 @@ export interface SimulationConfig {
   quorumThreshold: number;
 
   /**
-   * Probability [0, 1] that a stress-adaptation (toxin survival → toxin tier
+   * Probability [0, 1] that a stress-adaptation (toxin survival â†’ toxin tier
    * increment) is inherited by the child cell during reproduction.
    *
    * Implements simplified Lamarckian-lite inheritance: cells that survive
@@ -381,7 +381,7 @@ export interface SimulationConfig {
    * Probability [0, 1] per tick that a motile Life cell (spreadBonus above
    * `motilityThreshold`) attempts to migrate one cell in its velocity direction.
    *
-   * 0.0 disables motility entirely (default — preserves pre-Phase 19 behaviour).
+   * 0.0 disables motility entirely (default â€” preserves pre-Phase 19 behaviour).
    * Higher values allow more frequent movement; set to 1.0 for near-constant
    * migration of all motile cells.
    *
@@ -407,8 +407,8 @@ export interface SimulationConfig {
    * Applied before chemotaxis so cells naturally decelerate if they stop
    * receiving a chemical signal or bounce off walls.
    *
-   * 0.0 = no damping (velocity persists forever — ballistic motion).
-   * 1.0 = full damping (velocity zeroed each tick — no persistence).
+   * 0.0 = no damping (velocity persists forever â€” ballistic motion).
+   * 1.0 = full damping (velocity zeroed each tick â€” no persistence).
    *
    * Range: [0, 1].  Default: 0.2.
    */
@@ -418,7 +418,7 @@ export interface SimulationConfig {
    * Fraction of the updated velocity derived from the chemical (signal)
    * gradient versus the persisted momentum vector.
    *
-   * At 0.0 the cell is purely inertial — chemical bias has no effect.
+   * At 0.0 the cell is purely inertial â€” chemical bias has no effect.
    * At 1.0 the cell ignores prior momentum and points entirely toward the
    * gradient peak each tick.
    *
@@ -506,7 +506,7 @@ export interface SimulationConfig {
    * Local pheromone concentration threshold [0, 1] required to activate
    * chemical quorum sensing on a Life cell.
    *
-   * When the sum of pheromone in the cell's 5×5 neighbourhood (scaled to [0,1])
+   * When the sum of pheromone in the cell's 5Ã—5 neighbourhood (scaled to [0,1])
    * exceeds this value, the cell enters quorum mode: spread suppressed to 10%,
    * energy bonus applied, pulse phase synchronised.
    *
@@ -520,14 +520,73 @@ export interface SimulationConfig {
   /**
    * Energy bonus added per tick to Life cells in chemical quorum mode
    * (`chemQuorumThreshold` exceeded).  Represents cooperative metabolism
-   * in dense biofilm — the collective harvests more energy than isolated cells.
+   * in dense biofilm â€” the collective harvests more energy than isolated cells.
    *
-   * Applied as `quorumActivationEnergy × 0.01` per tick so the units match
+   * Applied as `quorumActivationEnergy Ã— 0.01` per tick so the units match
    * the `energyDecayRate` scale.
    *
    * Range: [1, 4].  Default: 1.5.
    */
   quorumActivationEnergy: number;
+
+  // --- Phase 21: Predator-Prey Dynamics ------------------------------------
+
+  /**
+   * Minimum genome value [0, 65535] at which a Life cell is classified as a
+   * predator.  Predators can spread INTO adjacent Life cells (consuming them)
+   * and continuously emit alarm pheromone.
+   *
+   * Set to 0 to disable predator-prey mechanics entirely (default).
+   * A value of ~48000 gives predators the top ~27% of the genome range,
+   * creating a balanced arms-race where evolution can produce and lose predators.
+   *
+   * Range: [0, 65535].  Default: 0 (disabled).
+   */
+  predatorGenomeThreshold: number;
+
+  /**
+   * Energy gained by a predator cell on each successful attack (kill).
+   * Added directly to the predator's energy, capped at 1.0.
+   *
+   * Range: [0, 1].  Default: 0.4.
+   */
+  predatorFeedEnergy: number;
+
+  /**
+   * Base probability [0, 1] that a predator successfully attacks an adjacent
+   * prey cell in one tick.  Reduced by the prey's `toxinResist` phenotype:
+   *   effectiveProb = predatorAttackStrength Ã— (1 âˆ’ prey.toxinResist)
+   *
+   * Range: [0, 1].  Default: 0.3.
+   */
+  predatorAttackStrength: number;
+
+  /**
+   * Probability [0, 1] that a predator spawns a new daughter cell into the
+   * cell vacated by a killed prey, after a successful attack.
+   *
+   * Range: [0, 1].  Default: 0.6.
+   */
+  predatorSpreadRate: number;
+
+  /**
+   * Multiplier applied to `energyDecayRate` for predator cells.
+   * Predators have a higher metabolic cost â€” they starve fast when prey is scarce,
+   * which naturally limits their population and prevents immediate prey extinction.
+   *
+   * Range: [1, 5].  Default: 1.8.
+   */
+  predatorEnergyDecayMultiplier: number;
+
+  /**
+   * Number of ticks a Spore cell survives before dying permanently.
+   * When a prey cell sporulates (extreme low energy + high local alarm), it
+   * enters dormancy.  If conditions do not improve within `sporeLifetime`
+   * ticks the genome is lost forever â€” creating real scarcity.
+   *
+   * Range: [50, 2000].  Default: 500.
+   */
+  sporeLifetime: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -539,7 +598,7 @@ export interface SimulationConfig {
  * Drives the UI card (name, description, difficulty badge, archetype tag).
  */
 export interface PresetMeta {
-  /** Short display name shown in the UI card — max 28 characters. */
+  /** Short display name shown in the UI card â€” max 28 characters. */
   readonly name: string;
 
   /**
@@ -556,11 +615,11 @@ export interface PresetMeta {
 
   /**
    * Biology-inspired archetype used to group presets in the UI.
-   *  - `primitive`    — simple, slow, ancient life strategies
-   *  - `aggressive`   — fast-spreading, burn-and-conquer strategies
-   *  - `cooperative`  — quorum-driven, signal-coordinated colonies
-   *  - `resilient`    — stress-tolerant, adaptive, survives hostile environments
-   *  - `chaotic`      — high mutation, unpredictable, evolving rapidly
+   *  - `primitive`    â€” simple, slow, ancient life strategies
+   *  - `aggressive`   â€” fast-spreading, burn-and-conquer strategies
+   *  - `cooperative`  â€” quorum-driven, signal-coordinated colonies
+   *  - `resilient`    â€” stress-tolerant, adaptive, survives hostile environments
+   *  - `chaotic`      â€” high mutation, unpredictable, evolving rapidly
    */
   readonly archetype: 'primitive' | 'aggressive' | 'cooperative' | 'resilient' | 'chaotic';
 
@@ -574,7 +633,7 @@ export interface PresetMeta {
 
 /**
  * A fully-described named life preset: UI metadata + complete SimulationConfig.
- * Every field of SimulationConfig is explicitly set — no hidden defaults.
+ * Every field of SimulationConfig is explicitly set â€” no hidden defaults.
  */
 export interface LifePreset {
   /** Stable camelCase key used for serialisation and EventBus references. */
@@ -604,7 +663,7 @@ export function defaultConfig(): SimulationConfig {
     energyDecayRate:      0.005,
     reproductionThreshold: 0.1,
     initialEnergy:        0.9,
-    mutationRate:         0.0,   // legacy Life→LifeVariant mutation off by default
+    mutationRate:         0.0,   // legacy Lifeâ†’LifeVariant mutation off by default
     pointMutationRate:    0.005, // Round 2: per-bit genome mutation (0.5% per spread)
 
     // Phase 10: lifecycle stage thresholds
@@ -616,7 +675,7 @@ export function defaultConfig(): SimulationConfig {
     overpopulationLimit:  8,     // disabled (value > possible neighbours)
     underpopulationLimit: 0,     // disabled
 
-    // Life Variant B (Phase 3) — slightly more aggressive than base Life
+    // Life Variant B (Phase 3) â€” slightly more aggressive than base Life
     variantSpreadRate:             0.6,
     variantEnergyDecayRate:        0.008,
     variantReproductionThreshold:  0.1,
@@ -657,13 +716,13 @@ export function defaultConfig(): SimulationConfig {
     quorumThreshold:         4,     // same-variant neighbours needed for colony mode
     adaptiveInheritanceRate: 0.3,   // probability stress-adaptation is inherited
 
-    // Phase 19: motility disabled by default — preserves pre-Phase 19 behaviour
+    // Phase 19: motility disabled by default â€” preserves pre-Phase 19 behaviour
     motilityRate:               0.0,
     motilityThreshold:          0.3,
     motilityDamping:            0.2,
     chemotaxisMotilityFraction: 0.5,
 
-    // Phase 20: chemical ecology disabled by default — enable via sliders
+    // Phase 20: chemical ecology disabled by default â€” enable via sliders
     wasteSecretionRate:         0.01,
     pheromoneSecretionRate:     0.05,
     nutrientChemotaxis:         0.3,
@@ -674,11 +733,19 @@ export function defaultConfig(): SimulationConfig {
     chemicalDecayRate:          0.03,
     chemQuorumThreshold:        0.6,
     quorumActivationEnergy:     1.5,
+
+    // Phase 21: predator-prey disabled by default (threshold 0 = off)
+    predatorGenomeThreshold:        0,
+    predatorFeedEnergy:             0.4,
+    predatorAttackStrength:         0.3,
+    predatorSpreadRate:             0.6,
+    predatorEnergyDecayMultiplier:  1.8,
+    sporeLifetime:                  500,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Preset configs (legacy functional API — retained for backwards compat)
+// Preset configs (legacy functional API â€” retained for backwards compat)
 // ---------------------------------------------------------------------------
 
 /**
@@ -697,13 +764,13 @@ export const Presets = {
   // -------------------------------------------------------------------------
 
   /**
-   * Slow, careful spread — life clings on but barely expands.
+   * Slow, careful spread â€” life clings on but barely expands.
    * Good for watching sparse clusters stabilise.
    */
   slowBurn(): SimulationConfig {
     return {
       spreadRate:                  0.15, // crawling expansion
-      energyDecayRate:             0.02, // high metabolic cost — barely survives
+      energyDecayRate:             0.02, // high metabolic cost â€” barely survives
       reproductionThreshold:       0.30, // needs substantial energy to reproduce
       initialEnergy:               0.60, // starts with limited reserves
       mutationRate:                0.0,  // legacy variant mutation off
@@ -747,7 +814,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -758,14 +825,22 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
-  /** Aggressive spread — life floods the board in seconds. */
+  /** Aggressive spread â€” life floods the board in seconds. */
   plague(): SimulationConfig {
     return {
       spreadRate:                  0.90, // near-maximum replication
-      energyDecayRate:             0.001, // barely any decay — immortal-feeling
+      energyDecayRate:             0.001, // barely any decay â€” immortal-feeling
       reproductionThreshold:       0.05, // reproduces at near-death energy
       initialEnergy:               1.00,
       mutationRate:                0.0,
@@ -801,7 +876,7 @@ export const Presets = {
       rewinderStrength:            0.05,
       colonyBoost:                 0.012,
       adaptiveMutationBias:        false,
-      chemotaxisWeight:            0.1,  // blind flood — no gradient following
+      chemotaxisWeight:            0.1,  // blind flood â€” no gradient following
       signalDiffusion:             0.80,
       quorumThreshold:             8,    // never enters colony mode
       adaptiveInheritanceRate:     0.1,
@@ -809,7 +884,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -820,6 +895,14 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
@@ -830,11 +913,11 @@ export const Presets = {
   classicGameOfLife(): SimulationConfig {
     return {
       spreadRate:                  1.00,
-      energyDecayRate:             0.0001, // near-zero — cells survive indefinitely
+      energyDecayRate:             0.0001, // near-zero â€” cells survive indefinitely
       reproductionThreshold:       0.01,
       initialEnergy:               1.00,
       mutationRate:                0.0,
-      pointMutationRate:           0.0,   // no genome mutation — pure GoL rules
+      pointMutationRate:           0.0,   // no genome mutation â€” pure GoL rules
       juvenileThreshold:           0,     // no juvenile phase
       senescentThreshold:          9999,  // no senescence
       apoptosisBoost:              0.0,
@@ -858,7 +941,7 @@ export const Presets = {
       drainRate:                   0.01,
       fireBurnRate:                0.005,
       censusInterval:              10,
-      mutagenBoost:                1.0,  // no boost — genome is static
+      mutagenBoost:                1.0,  // no boost â€” genome is static
       mutagenDecayRate:            0.002,
       radioWasteDamage:            0.008,
       antibioticStrength:          0.12,
@@ -874,7 +957,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -885,11 +968,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Balanced ecosystem — moderate growth, mutation produces Variant B,
+   * Balanced ecosystem â€” moderate growth, mutation produces Variant B,
    * obstacles all play a meaningful role.  Good all-round starting point.
    */
   ecosystemBalance(): SimulationConfig {
@@ -911,7 +1002,7 @@ export const Presets = {
       variantReproductionThreshold: 0.15,
       variantInitialEnergy:        0.80,
       competitionStrength:         0.20,
-      toxinResistance:             0.30, // partial resistance — hotspots matter
+      toxinResistance:             0.30, // partial resistance â€” hotspots matter
       nutrientAbsorption:          1.00,
       gravityResponse:             0.80,
       toxinStrength:               0.04,
@@ -939,7 +1030,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -950,11 +1041,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Natural Selection — antibiotic-resistant strains emerge under pressure.
+   * Natural Selection â€” antibiotic-resistant strains emerge under pressure.
    * Paint an Antibiotic band across the midline, then watch resistance evolve.
    */
   naturalSelection(): SimulationConfig {
@@ -992,10 +1091,10 @@ export const Presets = {
       mutagenDecayRate:            0.002,
       radioWasteDamage:            0.008,
       antibioticStrength:          0.18, // strong antibiotic pressure
-      antibioticDecayRate:         0.0005, // slow depletion — pressure lasts longer
+      antibioticDecayRate:         0.0005, // slow depletion â€” pressure lasts longer
       rewinderStrength:            0.05,
       colonyBoost:                 0.012,
-      adaptiveMutationBias:        true,  // fitness-improving flips 3× more likely
+      adaptiveMutationBias:        true,  // fitness-improving flips 3Ã— more likely
       chemotaxisWeight:            0.50,
       signalDiffusion:             0.90,
       quorumThreshold:             3,
@@ -1004,7 +1103,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1015,11 +1114,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Coevolution — two competing variants in an evolutionary arms race.
+   * Coevolution â€” two competing variants in an evolutionary arms race.
    * Distinct lineages form territorial boundaries within ~500 ticks.
    */
   coevolution(): SimulationConfig {
@@ -1063,13 +1170,13 @@ export const Presets = {
       adaptiveMutationBias:        false,
       chemotaxisWeight:            0.35,
       signalDiffusion:             0.88,
-      quorumThreshold:             2,   // colony mode kicks in early — kin clusters form
+      quorumThreshold:             2,   // colony mode kicks in early â€” kin clusters form
       adaptiveInheritanceRate:     0.25,
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1080,11 +1187,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Mutagenic Chaos — maximum genome diversity, minimal selective pressure.
+   * Mutagenic Chaos â€” maximum genome diversity, minimal selective pressure.
    * Genome entropy stays near maximum; no single lineage consolidates.
    */
   mutagenicChaos(): SimulationConfig {
@@ -1095,7 +1210,7 @@ export const Presets = {
       initialEnergy:               0.90,
       mutationRate:                0.0,
       pointMutationRate:           0.035, // very high: ~3.5% per reproduction
-      juvenileThreshold:           10,    // fast cycles — short generations
+      juvenileThreshold:           10,    // fast cycles â€” short generations
       senescentThreshold:          200,
       apoptosisBoost:              0.020,
       neighbourhoodMode:           'moore',
@@ -1134,7 +1249,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1145,12 +1260,20 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Stable Colony — quorum dominates; dense cooperative clusters form.
-   * Nearly homogenous — one or two dominant variants hold territory indefinitely.
+   * Stable Colony â€” quorum dominates; dense cooperative clusters form.
+   * Nearly homogenous â€” one or two dominant variants hold territory indefinitely.
    */
   stableColony(): SimulationConfig {
     return {
@@ -1159,9 +1282,9 @@ export const Presets = {
       reproductionThreshold:       0.15,
       initialEnergy:               0.90,
       mutationRate:                0.0,
-      pointMutationRate:           0.001, // very low — minimal divergence
+      pointMutationRate:           0.001, // very low â€” minimal divergence
       juvenileThreshold:           40,
-      senescentThreshold:          600,  // long lifespan — stable, slow-cycling
+      senescentThreshold:          600,  // long lifespan â€” stable, slow-cycling
       apoptosisBoost:              0.040, // recycled nutrients sustain interior
       neighbourhoodMode:           'moore',
       overpopulationLimit:         8,
@@ -1199,7 +1322,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1210,11 +1333,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Radiation Wasteland — only highly resistant genomes survive long term.
+   * Radiation Wasteland â€” only highly resistant genomes survive long term.
    * Only strains that evolve high toxinResist phenotypes persist.
    */
   radiationWasteland(): SimulationConfig {
@@ -1224,8 +1355,8 @@ export const Presets = {
       reproductionThreshold:       0.12,
       initialEnergy:               0.90,
       mutationRate:                0.0,
-      pointMutationRate:           0.012, // elevated — resistance must evolve
-      juvenileThreshold:           15,    // short generations — fast turnover
+      pointMutationRate:           0.012, // elevated â€” resistance must evolve
+      juvenileThreshold:           15,    // short generations â€” fast turnover
       senescentThreshold:          250,
       apoptosisBoost:              0.025,
       neighbourhoodMode:           'moore',
@@ -1236,7 +1367,7 @@ export const Presets = {
       variantReproductionThreshold: 0.12,
       variantInitialEnergy:        0.85,
       competitionStrength:         0.35,
-      toxinResistance:             0.10, // starts low — must evolve resistance
+      toxinResistance:             0.10, // starts low â€” must evolve resistance
       nutrientAbsorption:          0.80,
       gravityResponse:             0.60,
       toxinStrength:               0.05,
@@ -1264,7 +1395,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1275,6 +1406,14 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
@@ -1283,17 +1422,17 @@ export const Presets = {
   // -------------------------------------------------------------------------
 
   /**
-   * Ancient Prokaryote — pre-Cambrian microbial mat.
+   * Ancient Prokaryote â€” pre-Cambrian microbial mat.
    * Slow, Von Neumann diffusion, near-zero mutation, very long-lived.
    */
   ancientProkaryote(): SimulationConfig {
     return {
       spreadRate:                  0.20, // diffusion-limited, not aggressive
-      energyDecayRate:             0.002, // very efficient — long-lived
-      reproductionThreshold:       0.12, // low bar — minimal energy to divide
+      energyDecayRate:             0.002, // very efficient â€” long-lived
+      reproductionThreshold:       0.12, // low bar â€” minimal energy to divide
       initialEnergy:               0.75,
       mutationRate:                0.0,
-      pointMutationRate:           0.001, // rare mutation — stable genome
+      pointMutationRate:           0.001, // rare mutation â€” stable genome
       juvenileThreshold:           50,   // long juvenile phase
       senescentThreshold:          1200, // very long-lived cells
       apoptosisBoost:              0.010, // minimal recycling signal
@@ -1304,9 +1443,9 @@ export const Presets = {
       variantEnergyDecayRate:      0.003,
       variantReproductionThreshold: 0.12,
       variantInitialEnergy:        0.70,
-      competitionStrength:         0.05, // minimal competition — peaceful coexistence
+      competitionStrength:         0.05, // minimal competition â€” peaceful coexistence
       toxinResistance:             0.15,
-      nutrientAbsorption:          0.70, // primitive — can't fully exploit nutrients
+      nutrientAbsorption:          0.70, // primitive â€” can't fully exploit nutrients
       gravityResponse:             0.30, // largely ignores physical forces
       toxinStrength:               0.04,
       toxinDurability:             8,
@@ -1333,7 +1472,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1344,18 +1483,26 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Viral Storm — RNA virus outbreak dynamics.
+   * Viral Storm â€” RNA virus outbreak dynamics.
    * Ultra-fast replication, high mutation, short lifecycle.
    * Saturates the grid then burns out. Pair with Antibiotic Gauntlet environment.
    */
   viralStorm(): SimulationConfig {
     return {
       spreadRate:                  0.95, // near-maximum replication rate
-      energyDecayRate:             0.025, // rapid burnout — live fast, die young
+      energyDecayRate:             0.025, // rapid burnout â€” live fast, die young
       reproductionThreshold:       0.02, // reproduces even at near-death
       initialEnergy:               1.00,
       mutationRate:                0.0,
@@ -1372,7 +1519,7 @@ export const Presets = {
       variantInitialEnergy:        1.00,
       competitionStrength:         0.70, // variant aggressively displaces base life
       toxinResistance:             0.10,
-      nutrientAbsorption:          0.60, // blind spread — no exploitation
+      nutrientAbsorption:          0.60, // blind spread â€” no exploitation
       gravityResponse:             0.20,
       toxinStrength:               0.05,
       toxinDurability:             5,    // toxins get consumed quickly
@@ -1391,15 +1538,15 @@ export const Presets = {
       rewinderStrength:            0.04,
       colonyBoost:                 0.005,
       adaptiveMutationBias:        true,  // immune evasion bias
-      chemotaxisWeight:            0.05, // blind spread — no targeting
+      chemotaxisWeight:            0.05, // blind spread â€” no targeting
       signalDiffusion:             0.70,
-      quorumThreshold:             8,    // no cooperation — purely selfish
+      quorumThreshold:             8,    // no cooperation â€” purely selfish
       adaptiveInheritanceRate:     0.60, // strong inheritance of acquired resistance
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1410,17 +1557,25 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Biofilm Architect — bacterial biofilm formation.
+   * Biofilm Architect â€” bacterial biofilm formation.
    * Strong quorum sensing, signal gradients drive territory, cooperative energy.
    * Watch for the transition from Pioneer to Colony mode across the grid.
    */
   biofilmArchitect(): SimulationConfig {
     return {
-      spreadRate:                  0.28, // moderate — waits for quorum
+      spreadRate:                  0.28, // moderate â€” waits for quorum
       energyDecayRate:             0.003,
       reproductionThreshold:       0.18,
       initialEnergy:               0.85,
@@ -1458,14 +1613,14 @@ export const Presets = {
       colonyBoost:                 0.030, // colony cells generously feed neighbours
       adaptiveMutationBias:        false,
       chemotaxisWeight:            0.70, // strong nutrient gradient following
-      signalDiffusion:             0.94, // wide signal field — whole colony communicates
+      signalDiffusion:             0.94, // wide signal field â€” whole colony communicates
       quorumThreshold:             3,    // colony mode activates at 3 same-variant neighbours
       adaptiveInheritanceRate:     0.50,
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1476,23 +1631,31 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Evolutionary Sprinter — optimised for rapid evolution under selection pressure.
+   * Evolutionary Sprinter â€” optimised for rapid evolution under selection pressure.
    * High mutation, strong adaptive bias, fast generation turnover.
    * Demonstrates Fisher's fundamental theorem in ~200 ticks.
    */
   evolutionarySprinter(): SimulationConfig {
     return {
       spreadRate:                  0.42,
-      energyDecayRate:             0.006, // moderate pressure — survival not trivial
+      energyDecayRate:             0.006, // moderate pressure â€” survival not trivial
       reproductionThreshold:       0.12,
       initialEnergy:               0.88,
       mutationRate:                0.0,
-      pointMutationRate:           0.018, // 1.8% per reproduction — diversity engine
-      juvenileThreshold:           12,   // fast maturation — short generations
+      pointMutationRate:           0.018, // 1.8% per reproduction â€” diversity engine
+      juvenileThreshold:           12,   // fast maturation â€” short generations
       senescentThreshold:          150,  // rapid generational turnover
       apoptosisBoost:              0.030, // recycling fuels next generation
       neighbourhoodMode:           'moore',
@@ -1503,7 +1666,7 @@ export const Presets = {
       variantReproductionThreshold: 0.12,
       variantInitialEnergy:        0.85,
       competitionStrength:         0.40, // fitter variant displaces wild type
-      toxinResistance:             0.10, // starts low — must evolve
+      toxinResistance:             0.10, // starts low â€” must evolve
       nutrientAbsorption:          0.90,
       gravityResponse:             0.70,
       toxinStrength:               0.05,
@@ -1522,7 +1685,7 @@ export const Presets = {
       antibioticDecayRate:         0.0005, // lasts long enough to create selection
       rewinderStrength:            0.04,
       colonyBoost:                 0.012,
-      adaptiveMutationBias:        true,  // fitness-improving flips 3× more likely
+      adaptiveMutationBias:        true,  // fitness-improving flips 3Ã— more likely
       chemotaxisWeight:            0.60, // seeks nutrients to maximise fitness
       signalDiffusion:             0.82,
       quorumThreshold:             5,    // stays in pioneer mode longer
@@ -1531,7 +1694,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1542,17 +1705,25 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Extremophile — thrives in conditions that kill normal cells.
+   * Extremophile â€” thrives in conditions that kill normal cells.
    * High toxin and radiation resistance, low nutrient requirement.
    * Models archaea in hydrothermal vents, acid baths, or high-radiation zones.
    */
   extremophile(): SimulationConfig {
     return {
-      spreadRate:                  0.22, // slow — extremophiles are not fast colonisers
+      spreadRate:                  0.22, // slow â€” extremophiles are not fast colonisers
       energyDecayRate:             0.001, // ultra-efficient metabolism
       reproductionThreshold:       0.20, // needs to be well-fed before dividing
       initialEnergy:               0.80,
@@ -1592,12 +1763,12 @@ export const Presets = {
       chemotaxisWeight:            0.30,
       signalDiffusion:             0.78,
       quorumThreshold:             6,
-      adaptiveInheritanceRate:     0.70, // strong Lamarckian — children born resistant
+      adaptiveInheritanceRate:     0.70, // strong Lamarckian â€” children born resistant
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1608,11 +1779,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Territorial Conquistador — aggressive expansion through high spread,
+   * Territorial Conquistador â€” aggressive expansion through high spread,
    * strong competition, early colony consolidation, and chemotaxis to block
    * rival access to nutrients.
    */
@@ -1624,12 +1803,12 @@ export const Presets = {
       initialEnergy:               0.92,
       mutationRate:                0.0,
       pointMutationRate:           0.005,
-      juvenileThreshold:           20,   // fast maturity — born fighters
+      juvenileThreshold:           20,   // fast maturity â€” born fighters
       senescentThreshold:          300,
       apoptosisBoost:              0.040, // dying cells fuel the frontier
       neighbourhoodMode:           'moore',
       overpopulationLimit:         6,    // crowding death enforces territory boundaries
-      underpopulationLimit:        1,    // can't survive alone — drives clustering
+      underpopulationLimit:        1,    // can't survive alone â€” drives clustering
       variantSpreadRate:           0.72, // variant even more aggressive
       variantEnergyDecayRate:      0.007, // higher cost for higher aggression
       variantReproductionThreshold: 0.10,
@@ -1657,13 +1836,13 @@ export const Presets = {
       adaptiveMutationBias:        true,  // evolves toward more competitive phenotypes
       chemotaxisWeight:            0.80, // races to nutrients before rivals
       signalDiffusion:             0.88, // wide territorial signals
-      quorumThreshold:             2,    // enters colony mode early — locks down territory
+      quorumThreshold:             2,    // enters colony mode early â€” locks down territory
       adaptiveInheritanceRate:     0.35,
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1674,12 +1853,20 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Nomadic Scavenger — constantly moving toward nutrients, evading threats.
-   * Never builds stable colonies — high chemotaxis, always in pioneer mode.
+   * Nomadic Scavenger â€” constantly moving toward nutrients, evading threats.
+   * Never builds stable colonies â€” high chemotaxis, always in pioneer mode.
    * Thrives in complex environments with scattered resource patches.
    */
   nomadicScavenger(): SimulationConfig {
@@ -1690,8 +1877,8 @@ export const Presets = {
       initialEnergy:               0.95,
       mutationRate:                0.0,
       pointMutationRate:           0.006,
-      juvenileThreshold:           8,    // near-instant maturity — always on the move
-      senescentThreshold:          120,  // short lifespan — constant turnover
+      juvenileThreshold:           8,    // near-instant maturity â€” always on the move
+      senescentThreshold:          120,  // short lifespan â€” constant turnover
       apoptosisBoost:              0.035, // recycled energy propels next generation
       neighbourhoodMode:           'moore',
       overpopulationLimit:         8,
@@ -1701,7 +1888,7 @@ export const Presets = {
       variantReproductionThreshold: 0.15,
       variantInitialEnergy:        0.90,
       competitionStrength:         0.30,
-      toxinResistance:             0.40, // moderate — survives brief toxin exposure
+      toxinResistance:             0.40, // moderate â€” survives brief toxin exposure
       nutrientAbsorption:          1.00, // maximum uptake when nutrients found
       gravityResponse:             0.85, // follows gravity wells strategically
       toxinStrength:               0.05,
@@ -1719,17 +1906,17 @@ export const Presets = {
       antibioticStrength:          0.12,
       antibioticDecayRate:         0.001,
       rewinderStrength:            0.05,
-      colonyBoost:                 0.010, // minimal — doesn't build infrastructure
+      colonyBoost:                 0.010, // minimal â€” doesn't build infrastructure
       adaptiveMutationBias:        true,
       chemotaxisWeight:            0.90, // maximum nutrient gradient following
-      signalDiffusion:             0.70, // short-range — localised decisions
-      quorumThreshold:             8,    // never enters colony mode — always pioneer
+      signalDiffusion:             0.70, // short-range â€” localised decisions
+      quorumThreshold:             8,    // never enters colony mode â€” always pioneer
       adaptiveInheritanceRate:     0.35,
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1740,28 +1927,36 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Jurassic Megaflora — slow-growing large organisms with long lifecycles.
+   * Jurassic Megaflora â€” slow-growing large organisms with long lifecycles.
    * Overpopulation-limited like plant competition; Von Neumann spread.
    * Grove formation via quorum; apoptosis enriches the forest floor.
    */
   jurassicMegaflora(): SimulationConfig {
     return {
       spreadRate:                  0.12, // trees don't rush
-      energyDecayRate:             0.001, // ultra-low — decades-long lifespan
+      energyDecayRate:             0.001, // ultra-low â€” decades-long lifespan
       reproductionThreshold:       0.50, // only reproduces when fully established
       initialEnergy:               0.70, // seeds start with moderate energy
       mutationRate:                0.0,
-      pointMutationRate:           0.001, // rare mutation — stable species
-      juvenileThreshold:           150,  // long juvenile phase — saplings
+      pointMutationRate:           0.001, // rare mutation â€” stable species
+      juvenileThreshold:           150,  // long juvenile phase â€” saplings
       senescentThreshold:          3000, // ancient old-growth
       apoptosisBoost:              0.060, // fallen tree enriches forest floor
       neighbourhoodMode:           'vonNeumann', // orthogonal root/canopy spread
       overpopulationLimit:         4,    // dense canopy prevents new growth
-      underpopulationLimit:        1,    // cannot survive alone — needs a grove
+      underpopulationLimit:        1,    // cannot survive alone â€” needs a grove
       variantSpreadRate:           0.14,
       variantEnergyDecayRate:      0.0012,
       variantReproductionThreshold: 0.50,
@@ -1788,14 +1983,14 @@ export const Presets = {
       colonyBoost:                 0.015,
       adaptiveMutationBias:        false,
       chemotaxisWeight:            0.50, // moderate nutrient seeking
-      signalDiffusion:             0.96, // wide canopy signalling — grove coordination
-      quorumThreshold:             3,    // colony mode at 3 neighbours — grove formation
+      signalDiffusion:             0.96, // wide canopy signalling â€” grove coordination
+      quorumThreshold:             3,    // colony mode at 3 neighbours â€” grove formation
       adaptiveInheritanceRate:     0.20,
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1806,11 +2001,19 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Parasitic Overload — Variant B is a parasite on Variant A (the host).
+   * Parasitic Overload â€” Variant B is a parasite on Variant A (the host).
    * High competition, Variant B has extreme aggression, minimal cooperation.
    * Watch host and parasite populations cycle like Lotka-Volterra predator-prey.
    */
@@ -1829,7 +2032,7 @@ export const Presets = {
       overpopulationLimit:         8,
       underpopulationLimit:        0,
       variantSpreadRate:           0.80, // parasite spreads aggressively
-      variantEnergyDecayRate:      0.020, // parasite burns fast — needs constant host
+      variantEnergyDecayRate:      0.020, // parasite burns fast â€” needs constant host
       variantReproductionThreshold: 0.05, // parasite reproduces at near-zero energy
       variantInitialEnergy:        1.00,
       competitionStrength:         0.85, // near-overwhelming parasite pressure
@@ -1861,7 +2064,7 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1872,27 +2075,35 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Neural Network Colony — cells cooperate via extremely wide signal fields
+   * Neural Network Colony â€” cells cooperate via extremely wide signal fields
    * to form coordinated macro-structures.  Large clusters required for colony mode.
    * Exhibits coordinated border expansion waves once enough cells synchronise.
    */
   neuralNetworkColony(): SimulationConfig {
     return {
-      spreadRate:                  0.40, // moderate — signal-coordinated expansion
+      spreadRate:                  0.40, // moderate â€” signal-coordinated expansion
       energyDecayRate:             0.004,
       reproductionThreshold:       0.15,
       initialEnergy:               0.90,
       mutationRate:                0.0,
-      pointMutationRate:           0.004, // low — stable genome for coordination
+      pointMutationRate:           0.004, // low â€” stable genome for coordination
       juvenileThreshold:           35,
       senescentThreshold:          600,  // stable long-lived interior cells
       apoptosisBoost:              0.050, // apoptosis triggers coordinated frontier wave
       neighbourhoodMode:           'moore',
-      overpopulationLimit:         7,    // near-disabled — dense packing allowed
+      overpopulationLimit:         7,    // near-disabled â€” dense packing allowed
       underpopulationLimit:        2,    // needs peers to survive
       variantSpreadRate:           0.45,
       variantEnergyDecayRate:      0.005,
@@ -1920,14 +2131,14 @@ export const Presets = {
       colonyBoost:                 0.025, // colony cells are energy hubs
       adaptiveMutationBias:        false, // coordination, not adaptation
       chemotaxisWeight:            0.80, // strong gradient following
-      signalDiffusion:             0.97, // near-maximum — global coordination
+      signalDiffusion:             0.97, // near-maximum â€” global coordination
       quorumThreshold:             6,    // large clusters needed for colony mode
       adaptiveInheritanceRate:     0.30,
       motilityRate:                0.0,
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: chemical ecology disabled by default — enable via sliders
+      // Phase 20: chemical ecology disabled by default â€” enable via sliders
       wasteSecretionRate:          0.0,
       pheromoneSecretionRate:      0.0,
       nutrientChemotaxis:          0.0,
@@ -1938,15 +2149,23 @@ export const Presets = {
       chemicalDecayRate:           0.03,
       chemQuorumThreshold:         0.6,
       quorumActivationEnergy:      1.5,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   // -------------------------------------------------------------------------
-  // Phase 20 — Chemical Ecology presets
+  // Phase 20 â€” Chemical Ecology presets
   // -------------------------------------------------------------------------
 
   /**
-   * Swimming Bacteria — fast motile cells chasing nutrient gradients via
+   * Swimming Bacteria â€” fast motile cells chasing nutrient gradients via
    * multi-channel chemotaxis.  All four chemical channels active; cells swarm
    * visibly toward food sources and flee waste zones.
    */
@@ -1998,7 +2217,7 @@ export const Presets = {
       motilityThreshold:           0.1,
       motilityDamping:             0.15,
       chemotaxisMotilityFraction:  0.7,
-      // Phase 20: full chemical ecology — nutrient gradient attracts, waste repels
+      // Phase 20: full chemical ecology â€” nutrient gradient attracts, waste repels
       wasteSecretionRate:          0.02,
       pheromoneSecretionRate:      0.04,
       nutrientChemotaxis:          0.8,
@@ -2009,18 +2228,26 @@ export const Presets = {
       chemicalDecayRate:           0.04,
       chemQuorumThreshold:         0.7,
       quorumActivationEnergy:      1.2,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Biofilm Colony — quorum-triggered biofilm formation.  Cells secrete
+   * Biofilm Colony â€” quorum-triggered biofilm formation.  Cells secrete
    * pheromone; once local concentration exceeds the quorum threshold they
    * stop spreading, synchronise their pulses, and gain a cooperative energy
-   * bonus — reproducing dense organised mats.
+   * bonus â€” reproducing dense organised mats.
    */
   biofilmColony(): SimulationConfig {
     return {
-      spreadRate:                  0.28, // moderate — waits for quorum before expanding
+      spreadRate:                  0.28, // moderate â€” waits for quorum before expanding
       energyDecayRate:             0.003,
       reproductionThreshold:       0.08,
       initialEnergy:               0.90,
@@ -2065,23 +2292,31 @@ export const Presets = {
       motilityThreshold:           0.3,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.5,
-      // Phase 20: dense pheromone field drives quorum — low threshold triggers early
+      // Phase 20: dense pheromone field drives quorum â€” low threshold triggers early
       wasteSecretionRate:          0.01,
-      pheromoneSecretionRate:      0.10,  // heavy pheromone emission — biofilm signal
+      pheromoneSecretionRate:      0.10,  // heavy pheromone emission â€” biofilm signal
       nutrientChemotaxis:          0.2,
       pheromoneChemotaxis:         0.1,
       wasteAvoidance:              0.1,
       alarmFlight:                 0.2,
-      chemicalDiffusionRate:       0.06,  // slower diffusion — local pheromone pools
-      chemicalDecayRate:           0.02,  // slow decay — gradient persists
-      chemQuorumThreshold:         0.4,   // low threshold — quorum activates early
+      chemicalDiffusionRate:       0.06,  // slower diffusion â€” local pheromone pools
+      chemicalDecayRate:           0.02,  // slow decay â€” gradient persists
+      chemQuorumThreshold:         0.4,   // low threshold â€” quorum activates early
       quorumActivationEnergy:      2.0,   // rich cooperative energy bonus
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Chemical Garden — maximal multi-channel chemistry, all four channels
-   * active at 2.5× normal rates.  Best viewed in render modes 8–11 to see
+   * Chemical Garden â€” maximal multi-channel chemistry, all four channels
+   * active at 2.5Ã— normal rates.  Best viewed in render modes 8â€“11 to see
    * the overlapping gradient landscapes.  Chemical overlay default on.
    */
   chemicalGarden(): SimulationConfig {
@@ -2131,7 +2366,7 @@ export const Presets = {
       motilityThreshold:           0.2,
       motilityDamping:             0.2,
       chemotaxisMotilityFraction:  0.6,
-      // Phase 20: all chemical rates × 2.5 — rich multi-channel landscape
+      // Phase 20: all chemical rates Ã— 2.5 â€” rich multi-channel landscape
       wasteSecretionRate:          0.025,
       pheromoneSecretionRate:      0.125,
       nutrientChemotaxis:          0.75,
@@ -2142,11 +2377,19 @@ export const Presets = {
       chemicalDecayRate:           0.05,
       chemQuorumThreshold:         0.45,
       quorumActivationEnergy:      1.8,
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
   /**
-   * Swarm Intelligence — coordinated kin swarms driven by pheromone gradients.
+   * Swarm Intelligence â€” coordinated kin swarms driven by pheromone gradients.
    * High pheromoneChemotaxis and low quorumThreshold ensure cells cluster
    * into synchronised pulsing super-organisms.  Motility enabled so clusters
    * visibly drift and merge.
@@ -2191,32 +2434,40 @@ export const Presets = {
       colonyBoost:                 0.020,
       adaptiveMutationBias:        false,
       chemotaxisWeight:            0.6,
-      signalDiffusion:             0.95,  // wide signal field — colony-scale coordination
-      quorumThreshold:             2,     // quorum triggers early — kin clusters form fast
+      signalDiffusion:             0.95,  // wide signal field â€” colony-scale coordination
+      quorumThreshold:             2,     // quorum triggers early â€” kin clusters form fast
       adaptiveInheritanceRate:     0.35,
       // Phase 19: slow drift allows clusters to cohese without scattering
       motilityRate:                0.3,
       motilityThreshold:           0.15,
       motilityDamping:             0.25,
       chemotaxisMotilityFraction:  0.8,   // highly responsive to pheromone gradient
-      // Phase 20: pheromone-dominant — kin attraction and quorum are the key forces
+      // Phase 20: pheromone-dominant â€” kin attraction and quorum are the key forces
       wasteSecretionRate:          0.008,
-      pheromoneSecretionRate:      0.12,  // heavy pheromone — kin clustering signal
+      pheromoneSecretionRate:      0.12,  // heavy pheromone â€” kin clustering signal
       nutrientChemotaxis:          0.3,
-      pheromoneChemotaxis:         0.70,  // primary driver — cells seek kin
+      pheromoneChemotaxis:         0.70,  // primary driver â€” cells seek kin
       wasteAvoidance:              0.15,
       alarmFlight:                 0.5,
       chemicalDiffusionRate:       0.09,
-      chemicalDecayRate:           0.025, // slow decay — pheromone trails persist
-      chemQuorumThreshold:         0.20,  // very low — quorum activates readily
+      chemicalDecayRate:           0.025, // slow decay â€” pheromone trails persist
+      chemQuorumThreshold:         0.20,  // very low â€” quorum activates readily
       quorumActivationEnergy:      2.5,   // strong cooperative energy reward
+
+      // Phase 21: predator-prey disabled by default
+      predatorGenomeThreshold:        0,
+      predatorFeedEnergy:             0.4,
+      predatorAttackStrength:         0.3,
+      predatorSpreadRate:             0.6,
+      predatorEnergyDecayMultiplier:  1.8,
+      sporeLifetime:                  500,
     };
   },
 
 } as const;
 
 // ---------------------------------------------------------------------------
-// LIFE_PRESETS — structured array with metadata for the UI preset panel
+// LIFE_PRESETS â€” structured array with metadata for the UI preset panel
 // ---------------------------------------------------------------------------
 
 /**
@@ -2242,7 +2493,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'plague',
     meta: {
       name:                   'Plague',
-      description:            'Floods the board in seconds. Near-zero decay and maximum spread rate — the definitive stress test for obstacles.',
+      description:            'Floods the board in seconds. Near-zero decay and maximum spread rate â€” the definitive stress test for obstacles.',
       difficulty:             1,
       archetype:              'aggressive',
       recommendedEnvironment: 'theVoid',
@@ -2297,7 +2548,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'mutagenicChaos',
     meta: {
       name:                   'Mutagenic Chaos',
-      description:            'Maximum genome diversity, minimal selective pressure. No lineage can consolidate — pure genetic drift at 3.5% mutation rate.',
+      description:            'Maximum genome diversity, minimal selective pressure. No lineage can consolidate â€” pure genetic drift at 3.5% mutation rate.',
       difficulty:             2,
       archetype:              'chaotic',
       recommendedEnvironment: 'radioactiveWastes',
@@ -2331,7 +2582,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'ancientProkaryote',
     meta: {
       name:                   'Ancient Prokaryote',
-      description:            'Pre-Cambrian microbial mat — slow, diffusion-limited, nearly immortal cells with orthogonal (Von Neumann) spread.',
+      description:            'Pre-Cambrian microbial mat â€” slow, diffusion-limited, nearly immortal cells with orthogonal (Von Neumann) spread.',
       difficulty:             3,
       archetype:              'primitive',
       recommendedEnvironment: 'pristinePetri',
@@ -2364,7 +2615,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'evolutionarySprinter',
     meta: {
       name:                   'Evolutionary Sprinter',
-      description:            'Maximum evolution speed under selection pressure. Demonstrates Fisher\'s fundamental theorem — resistance appears in ~200 ticks.',
+      description:            'Maximum evolution speed under selection pressure. Demonstrates Fisher\'s fundamental theorem â€” resistance appears in ~200 ticks.',
       difficulty:             3,
       archetype:              'chaotic',
       recommendedEnvironment: 'antibioticGauntlet',
@@ -2375,7 +2626,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'extremophile',
     meta: {
       name:                   'Extremophile',
-      description:            'Thrives where others die — 75% toxin resistance, ultra-efficient metabolism, exceptionally long-lived. Models archaea in hostile habitats.',
+      description:            'Thrives where others die â€” 75% toxin resistance, ultra-efficient metabolism, exceptionally long-lived. Models archaea in hostile habitats.',
       difficulty:             3,
       archetype:              'resilient',
       recommendedEnvironment: 'volcanicBadlands',
@@ -2397,7 +2648,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'nomadicScavenger',
     meta: {
       name:                   'Nomadic Scavenger',
-      description:            'Never settles — maximum chemotaxis, always in pioneer mode. Survives by constantly chasing nutrient gradients across complex terrain.',
+      description:            'Never settles â€” maximum chemotaxis, always in pioneer mode. Survives by constantly chasing nutrient gradients across complex terrain.',
       difficulty:             3,
       archetype:              'resilient',
       recommendedEnvironment: 'labyrinth',
@@ -2438,7 +2689,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     config: Presets.neuralNetworkColony(),
   },
 
-  // --- Phase 20 — Chemical Ecology presets -----------------------------------
+  // --- Phase 20 â€” Chemical Ecology presets -----------------------------------
 
   {
     key: 'swimmingBacteria',
@@ -2455,7 +2706,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'biofilmColony',
     meta: {
       name:                   'Biofilm Colony',
-      description:            'Quorum-triggered biofilm formation. Cells secrete pheromone until density tips the threshold — then pulses synchronise and a cooperative mat forms.',
+      description:            'Quorum-triggered biofilm formation. Cells secrete pheromone until density tips the threshold â€” then pulses synchronise and a cooperative mat forms.',
       difficulty:             2,
       archetype:              'cooperative',
       recommendedEnvironment: 'pristinePetri',
@@ -2466,7 +2717,7 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
     key: 'chemicalGarden',
     meta: {
       name:                   'Chemical Garden',
-      description:            'Dense multi-channel chemistry at 2.5× intensity. Switch to render modes 8–11 to see the overlapping gradient landscapes glowing like bioluminescence.',
+      description:            'Dense multi-channel chemistry at 2.5Ã— intensity. Switch to render modes 8â€“11 to see the overlapping gradient landscapes glowing like bioluminescence.',
       difficulty:             1,
       archetype:              'primitive',
       recommendedEnvironment: 'chemicalBog',
