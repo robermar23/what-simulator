@@ -270,6 +270,31 @@ uniform float u_aliveDetail;
  */
 uniform float u_predatorThreshold;
 
+/**
+ * Phase 22: when true, interior cells of tight clusters are subtly darkened
+ * by counting their live Moore-neighbourhood occupancy.
+ * Produces a subtle depth cue that makes colony edges pop against the interior.
+ */
+uniform bool u_ambientOcclusion;
+
+/**
+ * Phase 22: R32F texture — per-cell trail brightness [0, 1].
+ * Decays at 0.92× per frame; written to by motile cells as they vacate a cell.
+ * Composited over empty cells as a faint variant-coloured wake.
+ */
+uniform sampler2D u_trailBright;
+
+/**
+ * Phase 22: R8UI texture — variantId of the last motile cell to occupy each
+ * cell.  Looked up via the variant palette to colour the trail glow.
+ */
+uniform usampler2D u_trailVid;
+
+/**
+ * Phase 22: when true, trail glow is blended over empty cells.
+ */
+uniform bool u_trails;
+
 // --- Output -----------------------------------------------------------------
 out vec4 outColor;
 
@@ -1079,6 +1104,51 @@ void main() {
     cellRGB = mix(cellRGB, tintLinear, u_envTint.a);
   }
 
+  // ---- Phase 22: Ambient Occlusion (Life + Spore cells only) ----------------
+  //
+  // Count the 8 Moore-neighbourhood cells that are occupied by Life or Spore.
+  // Interior cells (high occupancy) get darkened; edge cells stay bright.
+  // The effect creates a subtle depth impression that makes colony boundaries
+  // visually "pop" without affecting colour hue.
+  //
+  // Gated on u_ambientOcclusion so it can be toggled from the Cinematic panel.
+  if (u_ambientOcclusion && (cellType == 1u || cellType == 16u)) {
+    int liveN = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        if (dx == 0 && dy == 0) continue;
+        ivec2 nc  = clamp(cellCoord + ivec2(dx, dy),
+                          ivec2(0), ivec2(u_gridWidth - 1, u_gridHeight - 1));
+        uint  nt  = texelFetch(u_cellType, nc, 0).r;
+        if (nt == 1u || nt == 16u) liveN++;
+      }
+    }
+    // occupancy in [0, 1]; edge cells have low occupancy (edgeness near 1).
+    float occupancy = float(liveN) / 8.0;
+    float edgeness  = 1.0 - occupancy;
+    // Interior cells (all 8 neighbours live, edgeness≈0) darken by up to 35%.
+    float ao = 1.0 - 0.35 * occupancy * (1.0 - smoothstep(0.0, 0.3, edgeness));
+    cellRGB *= ao;
+  }
+
+  // ---- Phase 22: Motile-cell trail glow (empty cells only) ------------------
+  //
+  // Each empty cell samples the trail-brightness texture written by the CPU
+  // trail update (0.92× decay per frame, written at 0.8 by motile cells).
+  // The trail colour is looked up from the variant palette using the stored
+  // variant ID.  Trails glow at low intensity so they feed bloom.
+  if (u_trails && cellType == 0u) {
+    float trailB = texelFetch(u_trailBright, cellCoord, 0).r;
+    if (trailB > 0.01) {
+      uint  tVid      = texelFetch(u_trailVid, cellCoord, 0).r;
+      vec3  trailCol  = srgbToLinearVec(
+                          texelFetch(u_variantPalette, ivec2(int(tVid), 0), 0).rgb);
+      // Additive blend: trail brightens the empty substrate.
+      // Multiply by 0.5 so it stays subtle and doesn't overpower the background.
+      cellRGB += trailCol * trailB * 0.5;
+    }
+  }
+
   // When u_hdrOutput is true (scene pass targeting an RGBA16F FBO), emit raw
   // linear values so the composite shader can tonemap HDR → LDR.  Empty cells
   // are output as fully transparent (alpha 0) so the background texture shows
@@ -1194,15 +1264,19 @@ void main() {
 `;
 
 /**
- * Composite + tonemap pass (Pass 5).
+ * Composite + tonemap pass (Pass 5) — Phase 22 extended.
  *
  * Additively blends the full-resolution HDR scene with the half-resolution
- * blurred bloom texture, then applies Reinhard extended tonemapping to map
- * HDR linear values to the [0, 1] display range, and finally sRGB-encodes
- * the output for the 8-bit display framebuffer.
+ * blurred bloom texture, then applies Reinhard extended tonemapping, optional
+ * depth-of-field blur, chromatic aberration, and a vignette darkening.
  *
  * Reinhard extended formula: c * (1 + c/w²) / (1 + c)
  * where w = whitePoint = 4.0  (HDR values at 4× display-white → near-white).
+ *
+ * Phase 22 additions:
+ *   u_depthOfField         — hexagonal 9-tap blur, radius from canvas centre.
+ *   u_chromaticAberration  — per-channel UV offset at canvas edges.
+ *   u_vignette             — radial darkening at the canvas perimeter.
  *
  * The sRGB transfer functions are duplicated here (not shared from the scene
  * shader) because this is a separate GLSL programme that cannot inherit from
@@ -1235,6 +1309,26 @@ uniform sampler2D u_background;
  */
 uniform bool u_hasBackground;
 
+/**
+ * Phase 22: enable a hexagonal 9-tap depth-of-field blur.
+ * Blur radius grows with distance from the canvas centre, simulating a
+ * shallow depth-of-field that draws attention to the middle of the colony.
+ */
+uniform bool u_depthOfField;
+
+/**
+ * Phase 22: enable lateral chromatic aberration at canvas edges.
+ * R, G, B channels are sampled at slightly different UV offsets proportional
+ * to distance from the canvas centre — replicates a wide-angle lens artefact.
+ */
+uniform bool u_chromaticAberration;
+
+/**
+ * Phase 22: enable radial vignette darkening at the canvas perimeter.
+ * Draws the viewer's eye toward the bright cell colony in the centre.
+ */
+uniform bool u_vignette;
+
 in  vec2 v_texCoord;
 out vec4 outColor;
 
@@ -1257,22 +1351,208 @@ vec3 reinhardExtended(vec3 c) {
   return c * (1.0 + c / (whitePoint * whitePoint)) / (1.0 + c);
 }
 
+/**
+ * Samples the scene texture with a 9-tap hexagonal kernel for depth of field.
+ * blurR is the blur radius in UV units (0 = sharp, 0.012 = heavy blur).
+ *
+ * Hexagonal taps give a more organic, photographic bokeh than a square grid.
+ *
+ * @param uv  - Centre UV coordinate to sample around.
+ * @param blurR - Blur radius in UV space.
+ * @returns Average RGB of the 9 samples.
+ */
+vec3 dofSample(vec2 uv, float blurR) {
+  // Hexagonal kernel: 1 centre + 6 ring + 2 extra diagonal = 9 taps.
+  const vec2 HEX[9] = vec2[](
+    vec2( 0.000,  0.000),
+    vec2( 1.000,  0.000),
+    vec2(-1.000,  0.000),
+    vec2( 0.500,  0.866),
+    vec2(-0.500,  0.866),
+    vec2( 0.500, -0.866),
+    vec2(-0.500, -0.866),
+    vec2( 0.000,  1.000),
+    vec2( 0.000, -1.000)
+  );
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < 9; i++) {
+    sum += texture(u_scene, uv + HEX[i] * blurR).rgb;
+  }
+  return sum / 9.0;
+}
+
 void main() {
-  vec4  sceneRGBA = texture(u_scene, v_texCoord);
-  vec3  bloom     = texture(u_bloom, v_texCoord).rgb * u_bloomStrength;
+  vec2  uv        = v_texCoord;
+  vec2  fromCentre = uv - 0.5;
+  float edgeDist   = dot(fromCentre, fromCentre); // in [0, 0.5] for corners
+
+  // ---- Depth of Field -------------------------------------------------------
+  // Sample the scene using a hexagonal blur kernel whose radius grows with
+  // distance from the canvas centre.  The simulated "focal plane" is the
+  // centre of the canvas, which is typically where the largest colony lives.
+  vec3 sceneSampled;
+  if (u_depthOfField) {
+    // blurRadius is 0 at centre, ~0.010 at canvas corners.
+    // Subtract a small dead zone (0.04) so the very centre stays pin-sharp.
+    float blurRadius = max(0.0, edgeDist * 12.0 - 0.04) * 0.001;
+    sceneSampled = dofSample(uv, blurRadius);
+  } else {
+    sceneSampled = texture(u_scene, uv).rgb;
+  }
+  float sceneAlpha = texture(u_scene, uv).a; // always fetch alpha at centre
+
+  // ---- Chromatic Aberration -------------------------------------------------
+  // Offset the R and B channels laterally in the direction away from centre,
+  // proportional to distance from centre.  The G channel is not moved so that
+  // the artefact is asymmetric and more natural-looking.
+  vec3 bloom;
+  if (u_chromaticAberration) {
+    // ab: lateral offset direction, scaled by 0.004 and edgeDist.
+    vec2 ab = fromCentre * edgeDist * 0.05;
+    float bloomR = texture(u_bloom, uv + ab).r;
+    float bloomG = texture(u_bloom, uv).g;
+    float bloomB = texture(u_bloom, uv - ab).b;
+    bloom = vec3(bloomR, bloomG, bloomB) * u_bloomStrength;
+
+    // Also apply CA to the scene sample (different axis scale for subtlety).
+    vec2 sceneAb = fromCentre * edgeDist * 0.008;
+    float sR = texture(u_scene, uv + sceneAb).r;
+    float sB = texture(u_scene, uv - sceneAb).b;
+    sceneSampled = vec3(sR, sceneSampled.g, sB);
+  } else {
+    bloom = texture(u_bloom, uv).rgb * u_bloomStrength;
+  }
 
   // Composite background behind the scene using scene alpha.
   // Empty cells (alpha = 0) fully reveal the background;
   // non-empty cells (alpha = 1) fully occlude it.
-  vec3 base = sceneRGBA.rgb;
+  vec3 base = sceneSampled;
   if (u_hasBackground) {
-    vec3 bg = texture(u_background, v_texCoord).rgb;
-    base    = mix(bg, sceneRGBA.rgb, sceneRGBA.a);
+    vec3 bg = texture(u_background, uv).rgb;
+    base    = mix(bg, sceneSampled, sceneAlpha);
   }
 
   vec3 hdr = base + bloom;
   vec3 ldr = reinhardExtended(hdr);
+
+  // ---- Vignette -------------------------------------------------------------
+  // Radial darkening at the canvas perimeter using a smoothstep roll-off.
+  // The multiplier is 1.0 at the centre and falls to ~0.55 at the corners.
+  if (u_vignette) {
+    float vignette = 1.0 - 0.45 * smoothstep(0.20, 0.70, length(fromCentre));
+    ldr *= vignette;
+  }
+
   outColor = vec4(linearToSrgbVec(clamp(ldr, 0.0, 1.0)), 1.0);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Phase 22 — GPU particle system shader sources
+// ---------------------------------------------------------------------------
+
+/**
+ * Vertex shader for the CPU-managed particle system (Phase 22).
+ *
+ * Each particle is stored as 8 floats in a VBO:
+ *   [x, y, vx, vy, life, r, g, b]
+ * where (x, y) are in grid-cell coordinates [0, gridW] × [0, gridH].
+ *
+ * The shader converts grid-cell coordinates to clip space and scales
+ * gl_PointSize with the particle lifetime so dying particles shrink gracefully.
+ * The particle colour is passed to the fragment shader via varying.
+ *
+ * Dead particles (life ≤ 0) are sent to clip-space corner (-2, -2) and given
+ * zero size so they are outside the viewport and never rasterized.
+ */
+export const PARTICLE_VERT_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+/** Grid-cell X coordinate (0 = left column). */
+in float a_px;
+/** Grid-cell Y coordinate (0 = top row). */
+in float a_py;
+/** X velocity (grid-units/tick) — unused in vertex shader but kept for stride. */
+in float a_vx;
+/** Y velocity (grid-units/tick) — unused in vertex shader but kept for stride. */
+in float a_vy;
+/** Remaining lifetime in [0, 1].  0 = dead; 1 = freshly emitted. */
+in float a_life;
+/** Linear sRGB red channel. */
+in float a_r;
+/** Linear sRGB green channel. */
+in float a_g;
+/** Linear sRGB blue channel. */
+in float a_b;
+
+out float v_life;
+out vec3  v_color;
+
+/** Canvas pixel dimensions — used to convert cell coords → clip space. */
+uniform vec2  u_particleCanvasSize;
+/** Pixels per cell (u_cellSize from the main scene shader). */
+uniform float u_particleCellSize;
+/** Grid height in cells — needed to flip the Y axis. */
+uniform int   u_particleGridH;
+
+void main() {
+  // Dead particles: shunt off-screen and skip rasterization.
+  if (a_life <= 0.0) {
+    gl_Position  = vec4(-2.0, -2.0, 0.0, 1.0);
+    gl_PointSize = 0.0;
+    v_life       = 0.0;
+    v_color      = vec3(0.0);
+    return;
+  }
+
+  // Grid → pixel: flip Y because grid row-0 is at the top but WebGL Y=0 is
+  // at the bottom.
+  float pixX = a_px * u_particleCellSize;
+  float pixY = (float(u_particleGridH) - a_py) * u_particleCellSize;
+
+  // Pixel → clip space: normalise to [−1, 1]² and centre on each axis.
+  vec2 clip = (vec2(pixX, pixY) / u_particleCanvasSize) * 2.0 - 1.0;
+
+  gl_Position  = vec4(clip, 0.0, 1.0);
+  // Point size scales with lifetime: fresh particles are 3 px, dying 1 px.
+  gl_PointSize = mix(1.0, 3.5, a_life);
+
+  v_life  = a_life;
+  v_color = vec3(a_r, a_g, a_b);
+}
+`;
+
+/**
+ * Fragment shader for the particle system (Phase 22).
+ *
+ * Renders each alive particle as a soft circular point sprite (gl.POINTS).
+ * The colour is output as an HDR value (linear light, may exceed 1.0) so
+ * bright particles (division flashes, nutrient sparks) feed the bloom
+ * extraction pass and produce visible glow.
+ *
+ * Chromatic aberration and vignette are applied in the composite pass, not
+ * here, so particles benefit from those post-processing effects automatically.
+ */
+export const PARTICLE_FRAG_SRC = /* glsl */ `#version 300 es
+precision highp float;
+
+in  float v_life;
+in  vec3  v_color;
+out vec4  outColor;
+
+void main() {
+  // gl_PointCoord: (0,0) top-left, (1,1) bottom-right of the point sprite.
+  // Shift to (-0.5, 0.5)² so dist=0 at centre.
+  vec2  uv   = gl_PointCoord - 0.5;
+  float dist = length(uv) * 2.0;       // 0 at centre, 1 at edge
+
+  // Soft circle: alpha = 1 at centre, 0 at edge.
+  float alpha = v_life * smoothstep(1.0, 0.0, dist);
+  if (alpha < 0.01) discard;
+
+  // HDR output: multiply by 1.6 so bright particles (white division flash,
+  // teal nutrient sparks) are above the bloom threshold and create visible glow.
+  outColor = vec4(v_color * 1.6, alpha);
 }
 `;
 
@@ -1509,6 +1789,129 @@ export class WebGLRenderer {
   /** Composite shader uniform location for the u_hasBackground bool. */
   private _uCompositeHasBg: WebGLUniformLocation | null = null;
 
+  // --- Phase 22: Trail system -----------------------------------------------
+
+  /**
+   * CPU-side Float32Array — per-cell trail brightness [0, 1].
+   * Decays by 0.92 each frame; written to 0.8 by motile cells that vacate.
+   * Allocated in _resize(); null before first render.
+   */
+  private _trailBuf: Float32Array | null = null;
+
+  /**
+   * CPU-side Uint8Array — per-cell variant ID of the last motile occupant.
+   * Used by the fragment shader to look up the trail colour from the palette.
+   * Allocated in _resize(); null before first render.
+   */
+  private _trailVidBuf: Uint8Array | null = null;
+
+  /** R32F GPU texture — trail brightness field (same dimensions as grid). */
+  private _trailBrightTex: WebGLTexture | null = null;
+
+  /** R8UI GPU texture — trail variant-ID field (same dimensions as grid). */
+  private _trailVidTex: WebGLTexture | null = null;
+
+  /** Uniform location for the trail-brightness sampler in the main shader. */
+  private _uTrailBright: WebGLUniformLocation | null = null;
+
+  /** Uniform location for the trail-variantId sampler in the main shader. */
+  private _uTrailVid: WebGLUniformLocation | null = null;
+
+  /** Uniform location for u_trails bool in the main shader. */
+  private _uTrails: WebGLUniformLocation | null = null;
+
+  /** Uniform location for u_ambientOcclusion bool in the main shader. */
+  private _uAmbientOcclusion: WebGLUniformLocation | null = null;
+
+  // --- Phase 22: Particle system -------------------------------------------
+
+  /**
+   * Fixed-size CPU particle pool.  Layout per particle (PARTICLE_STRIDE = 8):
+   *   [0] x        — grid-cell X (float)
+   *   [1] y        — grid-cell Y (float)
+   *   [2] vx       — X velocity (grid-units/frame)
+   *   [3] vy       — Y velocity (grid-units/frame)
+   *   [4] life     — remaining lifetime [0, 1]
+   *   [5] r        — linear sRGB red
+   *   [6] g        — linear sRGB green
+   *   [7] b        — linear sRGB blue
+   *
+   * Ring-buffer write head: _particleHead wraps at PARTICLE_COUNT.
+   */
+  private _particleBuf: Float32Array | null = null;
+
+  /** Write head for the ring buffer (wraps at PARTICLE_COUNT). */
+  private _particleHead = 0;
+
+  /** GPU VBO holding the particle pool; uploaded each frame via bufferSubData. */
+  private _particleVbo: WebGLBuffer | null = null;
+
+  /** VAO capturing the particle VBO attribute layout (a_px … a_b). */
+  private _particleVao: WebGLVertexArrayObject | null = null;
+
+  /** Compiled particle shader program (PARTICLE_VERT_SRC + PARTICLE_FRAG_SRC). */
+  private _particleProg: WebGLProgram | null = null;
+
+  /** Uniform location: canvas pixel size vec2. */
+  private _uParticleCanvasSize: WebGLUniformLocation | null = null;
+
+  /** Uniform location: cell size float. */
+  private _uParticleCellSize: WebGLUniformLocation | null = null;
+
+  /** Uniform location: grid height int. */
+  private _uParticleGridH: WebGLUniformLocation | null = null;
+
+  // --- Phase 22: Composite cinematic uniform locations ----------------------
+
+  /** Uniform location for u_depthOfField in the composite program. */
+  private _uCompositeDof: WebGLUniformLocation | null = null;
+
+  /** Uniform location for u_chromaticAberration in the composite program. */
+  private _uCompositeCa: WebGLUniformLocation | null = null;
+
+  /** Uniform location for u_vignette in the composite program. */
+  private _uCompositeVignette: WebGLUniformLocation | null = null;
+
+  // --- Phase 22: Cinematic state flags -------------------------------------
+
+  /**
+   * When true, interior cells of clusters are subtly darkened (AO).
+   * Default true for atmospheric depth; toggle via Cinematic panel.
+   */
+  private _ambientOcclusion = true;
+
+  /**
+   * When true, motile-cell trail glow is rendered on empty cells.
+   * Disabled automatically on low-end hardware (hardwareConcurrency < 4).
+   */
+  private _trails = true;
+
+  /**
+   * When true, the CPU particle system emits and renders particles.
+   * Disabled automatically on low-end hardware (hardwareConcurrency < 4).
+   */
+  private _particles = true;
+
+  /**
+   * When true, the composite pass applies a hexagonal depth-of-field blur
+   * that softens the canvas edges relative to the centre.
+   * Disabled by default; high visual impact when combined with vignette.
+   */
+  private _depthOfField = false;
+
+  /**
+   * When true, the composite pass applies lateral chromatic aberration
+   * proportional to distance from the canvas centre.
+   * Disabled by default.
+   */
+  private _chromaticAberration = false;
+
+  /**
+   * When true, the composite pass darkens the canvas perimeter.
+   * Default true — the vignette strongly focuses attention on the colony.
+   */
+  private _vignette = true;
+
   // --- State -----------------------------------------------------------------
 
   /** Pixels per cell. */
@@ -1612,6 +2015,11 @@ export class WebGLRenderer {
     this._uChemWaste       = this._requireUniform('u_chemWaste');
     this._uChemPheromone   = this._requireUniform('u_chemPheromone');
     this._uChemAlarm       = this._requireUniform('u_chemAlarm');
+    // Phase 22: cinematic effect uniforms in the main scene shader.
+    this._uAmbientOcclusion = this._requireUniform('u_ambientOcclusion');
+    this._uTrailBright      = this._requireUniform('u_trailBright');
+    this._uTrailVid         = this._requireUniform('u_trailVid');
+    this._uTrails           = this._requireUniform('u_trails');
 
     // --- Fullscreen quad geometry ---------------------------------------------
     // _vbo MUST be created before the HDR block below, because _createPPVao()
@@ -1645,6 +2053,14 @@ export class WebGLRenderer {
       this._uCompositeStrength = this._requireUniformIn(this._compositeProg,    'u_bloomStrength');
       this._uCompositeBg       = this._requireUniformIn(this._compositeProg,    'u_background');
       this._uCompositeHasBg    = this._requireUniformIn(this._compositeProg,    'u_hasBackground');
+      // Phase 22: cinematic effect uniform locations in the composite program.
+      this._uCompositeDof      = this._requireUniformIn(this._compositeProg,    'u_depthOfField');
+      this._uCompositeCa       = this._requireUniformIn(this._compositeProg,    'u_chromaticAberration');
+      this._uCompositeVignette = this._requireUniformIn(this._compositeProg,    'u_vignette');
+
+      // Phase 22: particle system — only when HDR pipeline is available so
+      // particles can be rendered into the RGBA16F FBO and feed bloom.
+      this._initParticleSystem();
 
       // Background texture + FBO (same RGBA16F format; sized in _resize).
       this._bgTex = this._createTexture();
@@ -1668,6 +2084,20 @@ export class WebGLRenderer {
       console.warn(
         'WebGLRenderer: EXT_color_buffer_float unavailable; bloom disabled.',
       );
+    }
+
+    // --- Phase 22: Trail textures (allocated empty; resized on first render) --
+    // Created unconditionally so the scene shader always has valid samplers.
+    this._trailBrightTex = this._createTexture();
+    this._trailVidTex    = this._createTexture();
+
+    // Auto-disable expensive cinematic effects on low-end hardware.
+    // hardwareConcurrency < 4 signals a device with limited CPU/GPU bandwidth.
+    if (typeof navigator !== 'undefined' && navigator.hardwareConcurrency < 4) {
+      this._particles          = false;
+      this._trails             = false;
+      this._depthOfField       = false;
+      this._chromaticAberration = false;
     }
 
     // --- Textures (allocated empty; resized on first render) -----------------
@@ -1849,6 +2279,100 @@ export class WebGLRenderer {
    */
   set envTint(tint: readonly [number, number, number, number]) {
     this._envTintVec = tint;
+  }
+
+  // --- Phase 22: Cinematic effect setters -----------------------------------
+
+  /**
+   * Enables or disables ambient occlusion darkening on Life and Spore cells.
+   * AO has no GPU-cost overhead — it is a GLSL-only loop over 8 neighbours.
+   *
+   * @param enabled - True to darken interior cluster cells.
+   */
+  set ambientOcclusion(enabled: boolean) {
+    this._ambientOcclusion = enabled;
+  }
+
+  /** Current ambient occlusion state. */
+  get ambientOcclusion(): boolean {
+    return this._ambientOcclusion;
+  }
+
+  /**
+   * Enables or disables the motile-cell trail glow on empty cells.
+   * When enabled, the CPU trail buffer is updated every frame and uploaded as
+   * two GPU textures (R32F brightness + R8UI variantId).
+   *
+   * @param enabled - True to show trail glow.
+   */
+  set trails(enabled: boolean) {
+    this._trails = enabled;
+  }
+
+  /** Current trail state. */
+  get trails(): boolean {
+    return this._trails;
+  }
+
+  /**
+   * Enables or disables the GPU particle system.
+   * When enabled, particles are emitted from simulation events and rendered
+   * into the HDR FBO before bloom extraction.
+   *
+   * @param enabled - True to show particles.
+   */
+  set particles(enabled: boolean) {
+    this._particles = enabled;
+  }
+
+  /** Current particle state. */
+  get particles(): boolean {
+    return this._particles;
+  }
+
+  /**
+   * Enables or disables depth-of-field blur in the composite pass.
+   * DoF adds ~9 texture samples per fragment — keep disabled on low-end GPUs.
+   *
+   * @param enabled - True to apply hexagonal DoF blur.
+   */
+  set depthOfField(enabled: boolean) {
+    this._depthOfField = enabled;
+  }
+
+  /** Current depth-of-field state. */
+  get depthOfField(): boolean {
+    return this._depthOfField;
+  }
+
+  /**
+   * Enables or disables lateral chromatic aberration in the composite pass.
+   * Purely a shader computation — negligible performance cost.
+   *
+   * @param enabled - True to apply RGB channel offset at canvas edges.
+   */
+  set chromaticAberration(enabled: boolean) {
+    this._chromaticAberration = enabled;
+  }
+
+  /** Current chromatic aberration state. */
+  get chromaticAberration(): boolean {
+    return this._chromaticAberration;
+  }
+
+  /**
+   * Enables or disables the vignette darkening in the composite pass.
+   * Purely a shader computation — negligible performance cost.
+   *
+   * @param enabled - True to darken the canvas perimeter.
+   */
+  set vignette(enabled: boolean) {
+    this._vignette = enabled;
+  }
+
+  /** Current vignette state. */
+  get vignette(): boolean {
+    return this._vignette;
   }
 
   // --- Phase 16c bloom controls ---------------------------------------------
@@ -2075,6 +2599,19 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this._chemAlarmTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.FLOAT, buffers.chemAlarm);
 
+    // --- Phase 22: Update trail CPU buffers and upload to GPU textures --------
+    // Must happen before the draw call so trail data is current this frame.
+    if (this._trails) {
+      this._updateTrails(buffers, width, height);
+    }
+
+    // --- Phase 22: Update particle pool (physics + emission) -----------------
+    // Uploads the updated VBO to the GPU; actual rendering happens in
+    // _drawHDRPipeline() after the scene pass so particles feed bloom.
+    if (this._particles && this._bloomEnabled) {
+      this._updateParticles(buffers, width, height);
+    }
+
     // --- Draw -----------------------------------------------------------------
 
     gl.useProgram(this._program);
@@ -2160,6 +2697,18 @@ export class WebGLRenderer {
     // Phase 21: normalised predator threshold (0 = disabled).
     gl.uniform1f(this._uPredatorThreshold,  this._predatorThreshold);
 
+    // Phase 22: cinematic booleans for the scene shader.
+    gl.uniform1i(this._uAmbientOcclusion!, this._ambientOcclusion ? 1 : 0);
+    gl.uniform1i(this._uTrails!,           this._trails ? 1 : 0);
+
+    // Bind trail textures to units 14 and 15.
+    gl.activeTexture(gl.TEXTURE14);
+    gl.bindTexture(gl.TEXTURE_2D, this._trailBrightTex);
+    gl.uniform1i(this._uTrailBright!, 14);
+    gl.activeTexture(gl.TEXTURE15);
+    gl.bindTexture(gl.TEXTURE_2D, this._trailVidTex);
+    gl.uniform1i(this._uTrailVid!, 15);
+
     // Upload environment tint — r/g/b normalised to [0,1] for the shader.
     const [tr, tg, tb, ta] = this._envTintVec;
     gl.uniform4f(this._uEnvTint, tr / 255, tg / 255, tb / 255, ta);
@@ -2242,6 +2791,18 @@ export class WebGLRenderer {
     this._allocateTexture(this._chemPheromoneTex, width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     this._allocateTexture(this._chemAlarmTex,     width, height, gl.R32F,  gl.RED,         gl.FLOAT);
     // Note: _variantPaletteTex is 256×1 and never resizes — skip here.
+
+    // Phase 22: trail textures (resized with the grid).
+    // Reallocate CPU trail buffers when grid dimensions change.
+    const totalCells = width * height;
+    this._trailBuf    = new Float32Array(totalCells);
+    this._trailVidBuf = new Uint8Array(totalCells);
+    if (this._trailBrightTex !== null) {
+      this._allocateTexture(this._trailBrightTex, width, height, gl.R32F,  gl.RED,         gl.FLOAT);
+    }
+    if (this._trailVidTex !== null) {
+      this._allocateTexture(this._trailVidTex,    width, height, gl.R8UI,  gl.RED_INTEGER, gl.UNSIGNED_BYTE);
+    }
 
     // --- HDR bloom textures (Phase 16c) --------------------------------------
     //
@@ -2495,6 +3056,13 @@ export class WebGLRenderer {
     gl.bindVertexArray(this._vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
+    // --- Pass 1b (Phase 22): Render particles into HDR FBO (additive) --------
+    // The HDR FBO is still bound from Pass 1.  Particles are rendered with
+    // additive blending so they brighten the scene and feed bloom extraction.
+    if (this._particles) {
+      this._renderParticles(cW, cH);
+    }
+
     // --- Pass 2: Bloom extract (full-res HDR → half-res extract FBO) --------
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._bloomExtractFbo);
     gl.viewport(0, 0, halfW, halfH);
@@ -2539,6 +3107,11 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, hasBg ? this._bgTex : null);
     gl.uniform1i(this._uCompositeBg!,    2);
     gl.uniform1i(this._uCompositeHasBg!, hasBg ? 1 : 0);
+
+    // Phase 22: cinematic post-processing toggles for the composite shader.
+    gl.uniform1i(this._uCompositeDof!,      this._depthOfField        ? 1 : 0);
+    gl.uniform1i(this._uCompositeCa!,       this._chromaticAberration ? 1 : 0);
+    gl.uniform1i(this._uCompositeVignette!, this._vignette             ? 1 : 0);
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -2656,6 +3229,375 @@ export class WebGLRenderer {
       throw new Error(`WebGLRenderer: uniform "${name}" not found in programme.`);
     }
     return loc;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 22 — Trail system helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Updates the CPU trail buffers for the current frame, then uploads them to
+   * the GPU as R32F (brightness) and R8UI (variantId) textures.
+   *
+   * Called every render frame from `render()` when `_trails` is enabled.
+   * The CPU update is O(totalCells) but each iteration is a simple multiply or
+   * branch, keeping total cost under 1 ms at 512×512.
+   *
+   * @param buffers - Current simulation front-buffer (read-only).
+   * @param width   - Grid width in cells.
+   * @param height  - Grid height in cells.
+   */
+  private _updateTrails(buffers: GridBuffers, width: number, height: number): void {
+    const gl         = this._gl;
+    const totalCells = width * height;
+
+    if (this._trailBuf === null || this._trailVidBuf === null) return;
+
+    const trailBuf    = this._trailBuf;
+    const trailVidBuf = this._trailVidBuf;
+
+    // --- Decay existing trail brightness by 0.92× per frame -----------------
+    for (let i = 0; i < totalCells; i++) {
+      const b = trailBuf[i] * 0.92;
+      // Clamp tiny values to zero to stop infinitesimal long-lived trails.
+      trailBuf[i] = b < 0.008 ? 0 : b;
+    }
+
+    // --- Write trail at positions of motile cells ----------------------------
+    // A cell is considered motile when its velocity magnitude exceeds 0.05
+    // grid-units/tick.  We write to the position the cell currently occupies
+    // (not the vacated position) so the trail "leads" slightly ahead — this
+    // looks better than trailing behind because most motile cells are still
+    // near where they just were.
+    const vx = buffers.vx;
+    const vy = buffers.vy;
+    const ct = buffers.cellType;
+    const vi = buffers.variantId;
+
+    for (let i = 0; i < totalCells; i++) {
+      // Only Life cells (type 1) can be motile.
+      if (ct[i] !== 1) continue;
+      const vmag = Math.abs(vx[i]) + Math.abs(vy[i]); // Manhattan approx is fast
+      if (vmag > 0.05) {
+        // Clamp so repeated writes don't perpetually max out the brightness.
+        trailBuf[i]    = Math.min(1.0, trailBuf[i] + 0.8);
+        trailVidBuf[i] = vi[i];
+      }
+    }
+
+    // --- Upload brightness texture (R32F) ------------------------------------
+    if (this._trailBrightTex !== null) {
+      gl.bindTexture(gl.TEXTURE_2D, this._trailBrightTex);
+      gl.texSubImage2D(
+        gl.TEXTURE_2D, 0, 0, 0,
+        width, height,
+        gl.RED, gl.FLOAT, trailBuf,
+      );
+    }
+
+    // --- Upload variantId texture (R8UI) -------------------------------------
+    if (this._trailVidTex !== null) {
+      gl.bindTexture(gl.TEXTURE_2D, this._trailVidTex);
+      gl.texSubImage2D(
+        gl.TEXTURE_2D, 0, 0, 0,
+        width, height,
+        gl.RED_INTEGER, gl.UNSIGNED_BYTE, trailVidBuf,
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase 22 — Particle system helpers
+  // ---------------------------------------------------------------------------
+
+  /** Number of floats per particle in the VBO. */
+  private static readonly PARTICLE_STRIDE = 8;
+
+  /** Maximum simultaneous live particles in the ring buffer. */
+  private static readonly PARTICLE_COUNT = 65_536;
+
+  /**
+   * Initialises the GPU particle system: compiles the particle shaders,
+   * creates the dynamic VBO, and sets up the VAO attribute layout.
+   *
+   * Called from the constructor only when `EXT_color_buffer_float` is
+   * available (HDR pipeline active) so particles always render into the
+   * RGBA16F HDR FBO and benefit from the bloom pass.
+   */
+  private _initParticleSystem(): void {
+    const gl = this._gl;
+
+    // Allocate the CPU-side ring buffer (cleared to zero = all particles dead).
+    this._particleBuf  = new Float32Array(
+      WebGLRenderer.PARTICLE_COUNT * WebGLRenderer.PARTICLE_STRIDE,
+    );
+    this._particleHead = 0;
+
+    // Compile the particle shader program.
+    this._particleProg = this._createProgram(PARTICLE_VERT_SRC, PARTICLE_FRAG_SRC);
+
+    // Cache uniform locations.
+    this._uParticleCanvasSize = this._requireUniformIn(this._particleProg, 'u_particleCanvasSize');
+    this._uParticleCellSize   = this._requireUniformIn(this._particleProg, 'u_particleCellSize');
+    this._uParticleGridH      = this._requireUniformIn(this._particleProg, 'u_particleGridH');
+
+    // Create the dynamic VBO for particle data.  DYNAMIC_DRAW signals to the
+    // driver that the buffer content changes every frame.
+    const vbo = gl.createBuffer();
+    if (vbo === null) throw new Error('WebGLRenderer: particle VBO creation failed.');
+    this._particleVbo = vbo;
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      this._particleBuf,
+      gl.DYNAMIC_DRAW,
+    );
+
+    // Set up the VAO with attribute pointers.
+    // Layout (STRIDE = 8 floats = 32 bytes per particle):
+    //   offset  0: a_px  (1 float)
+    //   offset  4: a_py  (1 float)
+    //   offset  8: a_vx  (1 float)
+    //   offset 12: a_vy  (1 float)
+    //   offset 16: a_life(1 float)
+    //   offset 20: a_r   (1 float)
+    //   offset 24: a_g   (1 float)
+    //   offset 28: a_b   (1 float)
+    const vao = gl.createVertexArray();
+    if (vao === null) throw new Error('WebGLRenderer: particle VAO creation failed.');
+    this._particleVao = vao;
+
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+
+    const stride = WebGLRenderer.PARTICLE_STRIDE * Float32Array.BYTES_PER_ELEMENT; // 32 bytes
+
+    const bindAttr = (name: string, offset: number): void => {
+      const loc = gl.getAttribLocation(this._particleProg!, name);
+      if (loc === -1) return; // shader may not expose unused attrs
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 1, gl.FLOAT, false, stride, offset * Float32Array.BYTES_PER_ELEMENT);
+    };
+
+    bindAttr('a_px',   0);
+    bindAttr('a_py',   1);
+    bindAttr('a_vx',   2);
+    bindAttr('a_vy',   3);
+    bindAttr('a_life', 4);
+    bindAttr('a_r',    5);
+    bindAttr('a_g',    6);
+    bindAttr('a_b',    7);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * Emits one particle into the ring buffer, overwriting the oldest entry.
+   *
+   * @param x    - Grid-cell X coordinate.
+   * @param y    - Grid-cell Y coordinate.
+   * @param vx   - Initial X velocity in grid-units/frame.
+   * @param vy   - Initial Y velocity in grid-units/frame.
+   * @param life - Initial lifetime [0, 1].
+   * @param r    - Linear sRGB red channel [0, 1+].
+   * @param g    - Linear sRGB green channel.
+   * @param b    - Linear sRGB blue channel.
+   */
+  private _emitParticle(
+    x: number, y: number,
+    vx: number, vy: number,
+    life: number,
+    r: number, g: number, b: number,
+  ): void {
+    if (this._particleBuf === null) return;
+
+    const base = this._particleHead * WebGLRenderer.PARTICLE_STRIDE;
+    const buf  = this._particleBuf;
+
+    buf[base + 0] = x;
+    buf[base + 1] = y;
+    buf[base + 2] = vx;
+    buf[base + 3] = vy;
+    buf[base + 4] = life;
+    buf[base + 5] = r;
+    buf[base + 6] = g;
+    buf[base + 7] = b;
+
+    // Advance ring-buffer write head.
+    this._particleHead = (this._particleHead + 1) % WebGLRenderer.PARTICLE_COUNT;
+  }
+
+  /**
+   * Updates the CPU particle pool (moves particles, decays lifetimes) and
+   * emits new particles based on the current simulation state.
+   *
+   * Emission rules (one particle type per simulation event):
+   *   Type 0 — Nutrient drift   : teal sparks float up from Nutrient cells.
+   *   Type 1 — Division flash   : white burst from JUST_DIVIDED Life cells.
+   *   Type 2 — Death exhaust    : grey wisps from dying (energy < 0.05) cells.
+   *   Type 3 — Pheromone trail  : faint cyan pulses from quorum-active cells.
+   *   Type 4 — Alarm scatter    : orange sparks from cells with high alarm chem.
+   *
+   * After updating, the full buffer is uploaded to the GPU VBO via
+   * `bufferSubData` (the VBO is DYNAMIC_DRAW).
+   *
+   * @param buffers - Current simulation front-buffer (read-only).
+   * @param width   - Grid width in cells.
+   * @param height  - Grid height in cells.
+   */
+  private _updateParticles(buffers: GridBuffers, width: number, height: number): void {
+    if (this._particleBuf === null || this._particleVbo === null) return;
+
+    const gl         = this._gl;
+    const buf        = this._particleBuf;
+    const stride     = WebGLRenderer.PARTICLE_STRIDE;
+    const totalCells = width * height;
+
+    // --- Step 1: CPU physics update for all alive particles -------------------
+    // Move each particle by its velocity, apply gravity, and decay lifetime.
+    for (let i = 0; i < WebGLRenderer.PARTICLE_COUNT; i++) {
+      const base = i * stride;
+      if (buf[base + 4] <= 0) continue; // dead particle — skip
+
+      buf[base + 0] += buf[base + 2]; // x += vx
+      buf[base + 1] += buf[base + 3]; // y += vy
+
+      // Gentle gravity + drag on Y-axis.
+      buf[base + 3] -= 0.003;  // gravitational pull downward
+      buf[base + 2] *= 0.96;   // X drag
+      buf[base + 3] *= 0.96;   // Y drag
+
+      // Lifetime decay — rate varies: fast for flashes, slow for drift.
+      buf[base + 4] -= 0.016;
+      if (buf[base + 4] < 0) buf[base + 4] = 0;
+    }
+
+    // --- Step 2: Emission scan — one pass over the simulation grid -----------
+    // Only emit on a fraction of frames to spread the burst budget over time.
+    // Also skip if particle budget is already heavily saturated.
+    const SCAN_FRACTION  = 0.15; // scan ~15 % of cells per frame (random subset)
+    const scanStep       = Math.max(1, Math.round(1 / SCAN_FRACTION));
+
+    for (let i = 0; i < totalCells; i += scanStep) {
+      const cellX = i % width;
+      const cellY = Math.floor(i / width);
+      const ct    = buffers.cellType[i];
+      const flags = buffers.flags[i];
+      const en    = buffers.energy[i];
+
+      // --- Type 0: Nutrient drift — teal sparks float up from Nutrient cells --
+      if (ct === 4 && Math.random() < 0.05) {
+        this._emitParticle(
+          cellX + Math.random(),
+          cellY - 0.2,
+          (Math.random() - 0.5) * 0.08,
+          -(0.1 + Math.random() * 0.25), // upward
+          0.4 + Math.random() * 0.4,
+          0.0, 0.85, 0.95,  // teal (#00d9f2 approx, linear)
+        );
+      }
+
+      // --- Type 1: Division flash — white burst on JUST_DIVIDED cells ---------
+      // Flag bit 7 (0x80) = JUST_DIVIDED set in SimulationEngine.
+      if (ct === 1 && (flags & 0x80) !== 0) {
+        for (let j = 0; j < 6; j++) {
+          const angle = Math.random() * Math.PI * 2;
+          const speed = 0.2 + Math.random() * 0.5;
+          this._emitParticle(
+            cellX + 0.5, cellY + 0.5,
+            Math.cos(angle) * speed,
+            Math.sin(angle) * speed,
+            0.25 + Math.random() * 0.2,
+            1.2, 1.2, 1.2, // super-white → strong bloom
+          );
+        }
+      }
+
+      // --- Type 2: Death exhaust — grey wisps from dying Life cells -----------
+      if (ct === 1 && en < 0.05 && Math.random() < 0.08) {
+        this._emitParticle(
+          cellX + Math.random(),
+          cellY + Math.random(),
+          (Math.random() - 0.5) * 0.05,
+          -(Math.random() * 0.15), // rise slowly
+          0.3 + Math.random() * 0.3,
+          0.18, 0.20, 0.22, // dark grey
+        );
+      }
+
+      // --- Type 3: Quorum pulse — cyan ring from quorum-active cells ----------
+      // Flag bit 5 (0x20) = QUORUM_ACTIVE / SIGNALING.
+      if (ct === 1 && (flags & 0x20) !== 0 && Math.random() < 0.03) {
+        const angle = Math.random() * Math.PI * 2;
+        this._emitParticle(
+          cellX + 0.5 + Math.cos(angle) * 0.5,
+          cellY + 0.5 + Math.sin(angle) * 0.5,
+          Math.cos(angle) * 0.15,
+          Math.sin(angle) * 0.15,
+          0.5 + Math.random() * 0.3,
+          0.0, 0.80, 0.95, // GFP cyan
+        );
+      }
+
+      // --- Type 4: Alarm scatter — orange sparks from high-alarm regions ------
+      if (ct === 1 && buffers.chemAlarm[i] > 0.5 && Math.random() < 0.04) {
+        const angle = Math.random() * Math.PI * 2;
+        this._emitParticle(
+          cellX + Math.random(),
+          cellY + Math.random(),
+          Math.cos(angle) * 0.3,
+          Math.sin(angle) * 0.3 - 0.1,
+          0.2 + Math.random() * 0.2,
+          1.0, 0.45, 0.0, // orange-red (#ff7200 approx)
+        );
+      }
+    }
+
+    // --- Step 3: Upload updated particle pool to GPU VBO ---------------------
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._particleVbo);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, buf);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  /**
+   * Renders all alive particles as point sprites into the currently-bound
+   * RGBA16F HDR framebuffer using additive blending.
+   *
+   * Additive blending ensures that overlapping particles brighten the scene
+   * instead of occluding each other, and that bright particles (division
+   * flashes) exceed the bloom threshold and produce visible glow.
+   *
+   * @param width  - Canvas pixel width.
+   * @param height - Canvas pixel height.
+   */
+  private _renderParticles(width: number, height: number): void {
+    if (
+      this._particleProg === null ||
+      this._particleVao  === null ||
+      this._particleBuf  === null
+    ) return;
+
+    const gl = this._gl;
+
+    gl.useProgram(this._particleProg);
+    gl.uniform2f(this._uParticleCanvasSize!, width, height);
+    gl.uniform1f(this._uParticleCellSize!,   this._cellSize);
+    gl.uniform1i(this._uParticleGridH!,      this._gridHeight);
+
+    // Additive blend: particles brighten whatever is behind them.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+
+    gl.bindVertexArray(this._particleVao);
+    gl.drawArrays(gl.POINTS, 0, WebGLRenderer.PARTICLE_COUNT);
+    gl.bindVertexArray(null);
+
+    // Restore default blend state (GL_ONE, GL_ZERO = opaque).
+    gl.disable(gl.BLEND);
+
+    gl.useProgram(null);
   }
 }
 

@@ -340,6 +340,27 @@ export type RenderWorkerInMsg =
    * Ignored by the Canvas 2D renderer.
    */
   | { type: 'predatorThresholdChange'; rawUint16: number }
+  /**
+   * Phase 22: toggle individual cinematic post-processing effects on the
+   * WebGL renderer.  All six flags are sent together so the renderer can
+   * update all uniforms atomically in one message handler.
+   * Ignored by the Canvas 2D renderer.
+   */
+  | {
+      type: 'cinematicChange';
+      /** AO — darken interior cluster cells by live-neighbour occupancy. */
+      ambientOcclusion: boolean;
+      /** Trail glow — motile cells leave a decaying variant-coloured wake. */
+      trails: boolean;
+      /** Particle system — emission at division/death/quorum events. */
+      particles: boolean;
+      /** Depth of field — hexagonal blur growing toward canvas edges. */
+      depthOfField: boolean;
+      /** Chromatic aberration — RGB fringing at canvas edges. */
+      chromaticAberration: boolean;
+      /** Vignette — radial darkening at canvas perimeter. */
+      vignette: boolean;
+    }
   ;
 
 // ---------------------------------------------------------------------------

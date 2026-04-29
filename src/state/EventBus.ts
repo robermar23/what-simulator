@@ -180,6 +180,27 @@ export interface EventMap {
    */
   environmentApplied: Record<string, never>;
 
+  /**
+   * Phase 22: fired when the user toggles one or more cinematic post-processing
+   * effects in the Cinematic section of the ControlPanel.
+   * Consumed by App, which forwards each flag to the RenderWorker so the WebGL
+   * renderer's GLSL uniforms are updated on the next composite pass.
+   */
+  cinematicChange: {
+    /** Darken interior cluster cells proportional to live-neighbour count. */
+    ambientOcclusion: boolean;
+    /** Motile cells leave a variant-coloured wake that decays over time. */
+    trails: boolean;
+    /** GPU particle effects emitted on division, death, and quorum events. */
+    particles: boolean;
+    /** Blur radius grows with distance from canvas centre (9-tap hexagonal). */
+    depthOfField: boolean;
+    /** RGB channel offset at canvas edges for lens fringing. */
+    chromaticAberration: boolean;
+    /** Radial darkening at canvas perimeter. */
+    vignette: boolean;
+  };
+
 }
 
 // ---------------------------------------------------------------------------

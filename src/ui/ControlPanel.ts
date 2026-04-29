@@ -688,6 +688,9 @@ export class ControlPanel {
     // --- Predator-Prey section (Phase 21) ---------------------------------
     panel.append(this._buildPredatorPreySection());
 
+    // --- Cinematic Effects section (Phase 22) -----------------------------
+    panel.append(this._buildCinematicSection());
+
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
 
@@ -1071,6 +1074,129 @@ export class ControlPanel {
     for (const spec of PREDATOR_SLIDERS) {
       details.append(this._buildSlider(spec));
     }
+
+    return details;
+  }
+
+  /**
+   * Builds the collapsible "Cinematic Effects" section (Phase 22).
+   *
+   * Contains six toggle checkboxes that map 1-to-1 to the WebGL renderer's
+   * post-processing flags.  Each change fires a `cinematicChange` event on the
+   * EventBus; App.ts forwards it to the RenderWorker as a `cinematicChange`
+   * message so the GPU uniforms update on the next composite pass.
+   *
+   * The section is auto-disabled when `navigator.hardwareConcurrency < 4`
+   * because the render worker itself will have already turned the heavy effects
+   * off — the UI reflects that fact so the user can see the current state.
+   *
+   * @returns The built `<details>` element.
+   */
+  private _buildCinematicSection(): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'panel-section collapsible';
+
+    const summary = document.createElement('summary');
+    summary.className   = 'panel-heading collapsible-heading';
+    summary.textContent = 'Cinematic Effects';
+    details.append(summary);
+
+    const hint = document.createElement('p');
+    hint.className   = 'section-hint';
+    hint.textContent =
+      'GPU post-processing (WebGL 2 only). Effects add visual depth without ' +
+      'changing simulation logic. Auto-disabled on low-core devices.';
+    details.append(hint);
+
+    // Current state — mirrors WebGLRenderer defaults set at construction.
+    // DoF and CA start off; the others start on.
+    const state = {
+      ambientOcclusion:    true,
+      trails:              true,
+      particles:           true,
+      depthOfField:        false,
+      chromaticAberration: false,
+      vignette:            true,
+    };
+
+    /** Emit a cinematicChange event whenever any flag changes. */
+    const emitChange = (): void => {
+      bus.emit('cinematicChange', { ...state });
+    };
+
+    /** Creates one labeled toggle row.
+     *
+     * @param id - Unique element id.
+     * @param labelText - Human-readable label.
+     * @param titleText - Tooltip description.
+     * @param key - Key in the local `state` object.
+     * @returns The toggle row element.
+     */
+    const makeToggle = (
+      id:        string,
+      labelText: string,
+      titleText: string,
+      key:       keyof typeof state,
+    ): HTMLElement => {
+      const row = document.createElement('div');
+      row.className = 'toggle-row';
+      row.title     = titleText;
+
+      const cb = document.createElement('input');
+      cb.type      = 'checkbox';
+      cb.id        = id;
+      cb.className = 'toggle-checkbox';
+      cb.checked   = state[key];
+      cb.addEventListener('change', () => {
+        state[key] = cb.checked;
+        emitChange();
+      });
+
+      const lbl = document.createElement('label');
+      lbl.htmlFor     = id;
+      lbl.className   = 'toggle-label';
+      lbl.textContent = labelText;
+
+      row.append(cb, lbl);
+      return row;
+    };
+
+    details.append(makeToggle(
+      'cinematic-ao',
+      'Ambient Occlusion',
+      'Darkens cells surrounded by neighbours, giving clusters a shaded 3-D depth cue.',
+      'ambientOcclusion',
+    ));
+    details.append(makeToggle(
+      'cinematic-trails',
+      'Slime Trails',
+      'Motile cells leave a variant-coloured wake that fades at 0.92× per frame.',
+      'trails',
+    ));
+    details.append(makeToggle(
+      'cinematic-particles',
+      'Particles',
+      'Bright particles emitted on cell division, death, quorum pulse, and alarm scatter.',
+      'particles',
+    ));
+    details.append(makeToggle(
+      'cinematic-dof',
+      'Depth of Field',
+      'Hexagonal blur grows toward canvas edges, simulating a shallow focal plane.',
+      'depthOfField',
+    ));
+    details.append(makeToggle(
+      'cinematic-ca',
+      'Chromatic Aberration',
+      'RGB channel fringing at canvas edges mimics lens distortion.',
+      'chromaticAberration',
+    ));
+    details.append(makeToggle(
+      'cinematic-vignette',
+      'Vignette',
+      'Radial darkening at the canvas perimeter draws the eye to the centre.',
+      'vignette',
+    ));
 
     return details;
   }

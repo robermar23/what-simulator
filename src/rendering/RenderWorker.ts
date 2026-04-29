@@ -300,6 +300,20 @@ self.onmessage = async (event: MessageEvent<RenderWorkerInMsg>): Promise<void> =
       }
       break;
 
+    // --- cinematicChange (Phase 22) ------------------------------------------
+    case 'cinematicChange':
+      // Only the WebGL renderer exposes the cinematic effect setters;
+      // the Canvas 2D renderer renders flat squares and ignores all flags.
+      if (renderer instanceof WebGLRenderer) {
+        renderer.ambientOcclusion    = msg.ambientOcclusion;
+        renderer.trails              = msg.trails;
+        renderer.particles           = msg.particles;
+        renderer.depthOfField        = msg.depthOfField;
+        renderer.chromaticAberration = msg.chromaticAberration;
+        renderer.vignette            = msg.vignette;
+      }
+      break;
+
     // --- snapshot -----------------------------------------------------------
     case 'snapshot': {
       // `convertToBlob` is available on OffscreenCanvas.

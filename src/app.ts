@@ -550,6 +550,13 @@ export class App {
       this._renderWorker.postMessage(msg);
     });
 
+    // Phase 22: cinematic effect toggles — forward all six flags to the render
+    // worker in a single message so the WebGL uniforms update atomically.
+    bus.on('cinematicChange', (payload) => {
+      const msg: RenderWorkerInMsg = { type: 'cinematicChange', ...payload };
+      this._renderWorker.postMessage(msg);
+    });
+
     // Round 5: environment preset application.
     // 1. Switch the renderer background immediately (visual feedback).
     // 2. Pause the sim, tell the SimWorker to generate obstacles + re-seed.

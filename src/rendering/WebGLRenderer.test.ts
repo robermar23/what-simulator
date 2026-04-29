@@ -557,7 +557,8 @@ describe('PP shader sources (Phase 16c)', () => {
   it('COMPOSITE_FRAG_SRC has background uniforms (Phase 16d)', () => {
     expect(COMPOSITE_FRAG_SRC).toContain('uniform sampler2D u_background');
     expect(COMPOSITE_FRAG_SRC).toContain('uniform bool u_hasBackground');
-    expect(COMPOSITE_FRAG_SRC).toContain('mix(bg, sceneRGBA.rgb, sceneRGBA.a)');
+    // Phase 22 rewrote the composite shader: sceneRGBA split into sceneSampled + sceneAlpha.
+    expect(COMPOSITE_FRAG_SRC).toContain('mix(bg, sceneSampled, sceneAlpha)');
   });
 
   it('COMPOSITE_FRAG_SRC sRGB-encodes the final output', () => {
