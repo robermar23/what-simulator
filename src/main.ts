@@ -19,6 +19,8 @@ import { DrawingTools } from './ui/DrawingTools.js';
 import { OverlayRenderer } from './rendering/OverlayRenderer.js';
 import { BackgroundManager } from './rendering/BackgroundManager.js';
 import { Tooltip } from './ui/Tooltip.js';
+import { ATPDisplay } from './ui/ATPDisplay.js';
+import { CrisisOverlay } from './ui/CrisisOverlay.js';
 import { bus } from './state/EventBus.js';
 import { appState } from './state/AppState.js';
 
@@ -196,6 +198,40 @@ function bootstrap(): void {
       canvasContainer.prepend(collapseBtn);
     }
   }
+
+  // --- Phase 23: ATP display bar -------------------------------------------
+  // A compact progress bar showing the player's ATP pool.
+  // Sits in the toolbar area if a dedicated slot exists; otherwise appended
+  // to the toolbar container.
+  const atpBarSlot = document.getElementById('atp-bar') ?? (() => {
+    const el = document.createElement('div');
+    el.id = 'atp-bar';
+    toolbarContainer.appendChild(el);
+    return el;
+  })();
+  new ATPDisplay(atpBarSlot);
+
+  // --- Phase 23: Crisis overlay (warning banner + active pill + toasts) ----
+  // The toast root is a fixed-position container bottom-right of the viewport.
+  const toastRoot = document.createElement('div');
+  toastRoot.id = 'toast-root';
+  toastRoot.style.cssText = [
+    'position:fixed',
+    'inset-block-end:24px',
+    'inset-inline-end:24px',
+    'z-index:9100',
+    'display:flex',
+    'flex-direction:column-reverse',
+    'align-items:flex-end',
+    'pointer-events:none',
+    'max-width:320px',
+  ].join(';');
+  document.body.appendChild(toastRoot);
+
+  new CrisisOverlay(
+    canvasContainer ?? canvasFrame,
+    toastRoot,
+  );
 
   // --- Snapshot download ----------------------------------------------------
   bus.on('snapshotReady', ({ url }) => {

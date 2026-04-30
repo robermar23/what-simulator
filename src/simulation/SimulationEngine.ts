@@ -1534,7 +1534,85 @@ export class SimulationEngine {
       // (It was already reset at the top of tick(), so nothing to do here.)
     }
 
+    // -------------------------------------------------------------------------
+    // Phase 23: Crisis Events — engine-side per-tick effects.
+    //
+    // Some crisis types cannot be expressed as static config overrides because
+    // they require per-cell iteration. Only two types need engine handling:
+    //
+    //   solarFlare      — grid-wide random genome bit-flips (like RadioWaste but
+    //                     without requiring physical RadioWaste cells present).
+    //   antibioticFlood — grid-wide antibiotic kill checks (like Antibiotic cells
+    //                     but applied uniformly to every Life cell).
+    //
+    // All other crisis types are handled by the main thread's CrisisScheduler,
+    // which sends config updates (e.g. energyDecayRate * 3 for desiccation).
+    // -------------------------------------------------------------------------
+    const activeCrisis = config.activeCrisis ?? 'none';
+    if (activeCrisis === 'solarFlare' || activeCrisis === 'antibioticFlood') {
+      const intensity = config.crisisIntensity ?? 1.0;
+      this._applyCrisisTick(
+        bkType, bkEnergy, bkGenome, bkFlags,
+        total, activeCrisis, intensity,
+      );
+    }
+
     return this._stats;
+  }
+
+  /**
+   * Phase 23: applies per-tick grid-wide crisis effects for the two crisis
+   * types that cannot be expressed as config overrides.
+   *
+   * @param bkType      - Back-buffer cell types (mutated in place).
+   * @param bkEnergy    - Back-buffer energy values (mutated in place).
+   * @param bkGenome    - Back-buffer genome values (mutated in place).
+   * @param bkFlags     - Back-buffer flags (mutated in place).
+   * @param total       - Total cell count.
+   * @param crisis      - Which crisis is active.
+   * @param intensity   - Crisis severity multiplier [0.5, 3.0].
+   */
+  private _applyCrisisTick(
+    bkType:   Uint8Array,
+    bkEnergy: Float32Array,
+    bkGenome: Uint16Array,
+    bkFlags:  Uint8Array,
+    total:    number,
+    crisis:   'solarFlare' | 'antibioticFlood',
+    intensity: number,
+  ): void {
+    if (crisis === 'solarFlare') {
+      // Solar flare: random genome bit-flips at a rate proportional to intensity.
+      // Approximately 2% of life cells per tick at intensity 1.0.
+      // High-intensity flares can trigger rapid speciation events.
+      const flipChance = 0.02 * intensity;
+      for (let i = 0; i < total; i++) {
+        if (bkType[i] !== CellType.Life) continue;
+        if (Math.random() < flipChance) {
+          // Flip a random bit in the 16-bit genome.
+          const bit = 1 << (Math.random() * 16 | 0);
+          bkGenome[i] = (bkGenome[i] ^ bit) & 0xFFFF;
+          // Mark the cell as mutated so the shader can highlight it.
+          bkFlags[i] |= CellFlags.MUTATED;
+        }
+      }
+    } else {
+      // Antibiotic flood: every life cell takes a kill-chance roll each tick
+      // regardless of whether Antibiotic cells are physically present.
+      // Base kill probability is 15% at intensity 1.0.
+      const killChance = 0.15 * intensity;
+      for (let i = 0; i < total; i++) {
+        if (bkType[i] !== CellType.Life) continue;
+        if (Math.random() < killChance) {
+          // Damage the cell; if energy reaches 0 it will be cleaned up next tick.
+          bkEnergy[i] = Math.max(0, bkEnergy[i] - 0.3 * intensity);
+          if (bkEnergy[i] <= 0) {
+            bkType[i] = CellType.Empty;
+            this._stats.deaths++;
+          }
+        }
+      }
+    }
   }
 
   // -------------------------------------------------------------------------

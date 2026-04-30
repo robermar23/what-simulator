@@ -691,6 +691,9 @@ export class ControlPanel {
     // --- Cinematic Effects section (Phase 22) -----------------------------
     panel.append(this._buildCinematicSection());
 
+    // --- Economy & Crisis section (Phase 23) ------------------------------
+    panel.append(this._buildEconomySection());
+
     // --- Neighbourhood toggle ----------------------------------------------
     panel.append(this._buildNeighbourhoodToggle());
 
@@ -1196,6 +1199,250 @@ export class ControlPanel {
       'Vignette',
       'Radial darkening at the canvas perimeter draws the eye to the centre.',
       'vignette',
+    ));
+
+    return details;
+  }
+
+  /**
+   * Builds the Economy & Crisis collapsible section (Phase 23).
+   *
+   * Controls two subsystems:
+   *   - ATP Economy: resource pool that gates cell painting.
+   *   - Crisis Events: extinction-level events that fire at random intervals
+   *     and override simulation config for a set duration.
+   *
+   * All changes are broadcast via a single `economySettingsChange` event so
+   * App can apply them to ATPSystem and CrisisScheduler without ControlPanel
+   * holding direct references to those singletons.
+   *
+   * @returns The collapsible section element.
+   */
+  private _buildEconomySection(): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'panel-section collapsible';
+
+    const summary = document.createElement('summary');
+    summary.className   = 'panel-heading collapsible-heading';
+    summary.textContent = 'Economy & Crisis';
+    details.append(summary);
+
+    const hint = document.createElement('p');
+    hint.className   = 'section-hint';
+    hint.textContent =
+      'ATP is the resource currency for painting cells. ' +
+      'Crisis events periodically stress the colony — survive them to earn bonus ATP.';
+    details.append(hint);
+
+    // Local mirror of current settings — emitted as one object on any change.
+    const state = {
+      atpEnabled:        false,
+      atpStart:          500,
+      atpMax:            1000,
+      atpIncomeRate:     0.0002,
+      crisisEnabled:     false,
+      crisisIntervalMin: 2000,
+      crisisIntervalMax: 5000,
+      crisisDuration:    500,
+      crisisIntensity:   1.0,
+    };
+
+    /** Emits the current state as an `economySettingsChange` event. */
+    const emit = (): void => {
+      bus.emit('economySettingsChange', { ...state });
+    };
+
+    // -------------------------------------------------------------------------
+    // Helper factories
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates a labeled checkbox toggle row.
+     *
+     * @param id        - Unique element id.
+     * @param labelText - Human-readable label.
+     * @param titleText - Tooltip description.
+     * @param key       - Key in the local `state` object (boolean fields only).
+     * @returns The toggle row element.
+     */
+    const makeToggle = (
+      id:        string,
+      labelText: string,
+      titleText: string,
+      key:       'atpEnabled' | 'crisisEnabled',
+    ): HTMLElement => {
+      const row = document.createElement('div');
+      row.className = 'toggle-row';
+      row.title     = titleText;
+
+      const cb = document.createElement('input');
+      cb.type      = 'checkbox';
+      cb.id        = id;
+      cb.className = 'toggle-checkbox';
+      cb.checked   = state[key];
+      cb.addEventListener('change', () => {
+        state[key] = cb.checked;
+        emit();
+      });
+
+      const lbl = document.createElement('label');
+      lbl.htmlFor     = id;
+      lbl.className   = 'toggle-label';
+      lbl.textContent = labelText;
+
+      row.append(cb, lbl);
+      return row;
+    };
+
+    /**
+     * Creates a labeled range slider row.
+     *
+     * @param id        - Unique element id.
+     * @param labelText - Human-readable label.
+     * @param titleText - Tooltip description.
+     * @param key       - Key in the local `state` object (numeric fields only).
+     * @param min       - Slider minimum value.
+     * @param max       - Slider maximum value.
+     * @param step      - Slider step increment.
+     * @param fmt       - Formatter for the live readout (defaults to String).
+     * @returns The slider row element.
+     */
+    const makeSlider = (
+      id:        string,
+      labelText: string,
+      titleText: string,
+      key:       keyof Omit<typeof state, 'atpEnabled' | 'crisisEnabled'>,
+      min:       number,
+      max:       number,
+      step:      number,
+      fmt:       (v: number) => string = String,
+    ): HTMLElement => {
+      const row = document.createElement('div');
+      row.className = 'slider-row';
+      row.title     = titleText;
+
+      const lbl = document.createElement('label');
+      lbl.htmlFor     = id;
+      lbl.className   = 'slider-label';
+      lbl.textContent = labelText;
+
+      const input = document.createElement('input');
+      input.type      = 'range';
+      input.id        = id;
+      input.className = 'slider';
+      input.min       = String(min);
+      input.max       = String(max);
+      input.step      = String(step);
+      input.value     = String(state[key]);
+
+      const readout = document.createElement('span');
+      readout.className   = 'slider-value';
+      readout.textContent = fmt(state[key]);
+
+      input.addEventListener('input', () => {
+        const v = Number(input.value);
+        (state as unknown as Record<string, number>)[key] = v;
+        readout.textContent = fmt(v);
+        emit();
+      });
+
+      row.append(lbl, input, readout);
+      return row;
+    };
+
+    // -------------------------------------------------------------------------
+    // ATP subsection heading
+    // -------------------------------------------------------------------------
+
+    const atpHeading = document.createElement('p');
+    atpHeading.className   = 'subsection-label';
+    atpHeading.textContent = 'ATP Economy';
+    details.append(atpHeading);
+
+    details.append(makeToggle(
+      'economy-atp-enabled',
+      'ATP Enabled',
+      'When on, painting cells costs ATP. Turn off for unrestricted mode.',
+      'atpEnabled',
+    ));
+
+    details.append(makeSlider(
+      'economy-atp-start',
+      'ATP Start',
+      'ATP pool on reset. You begin each new simulation with this amount.',
+      'atpStart',
+      100, 1000, 50,
+      (v) => String(v),
+    ));
+
+    details.append(makeSlider(
+      'economy-atp-max',
+      'ATP Max',
+      'Maximum ATP pool capacity. Income above this cap is lost.',
+      'atpMax',
+      500, 2000, 100,
+      (v) => String(v),
+    ));
+
+    details.append(makeSlider(
+      'economy-atp-income',
+      'Income Rate',
+      'ATP earned per living cell per tick. Higher = faster passive regen.',
+      'atpIncomeRate',
+      0, 0.001, 0.00005,
+      (v) => v.toFixed(5),
+    ));
+
+    // -------------------------------------------------------------------------
+    // Crisis subsection heading
+    // -------------------------------------------------------------------------
+
+    const crisisHeading = document.createElement('p');
+    crisisHeading.className   = 'subsection-label';
+    crisisHeading.textContent = 'Crisis Events';
+    details.append(crisisHeading);
+
+    details.append(makeToggle(
+      'economy-crisis-enabled',
+      'Crisis Enabled',
+      'Randomly fires extinction-level events that stress the colony. Surviving awards ATP.',
+      'crisisEnabled',
+    ));
+
+    details.append(makeSlider(
+      'economy-crisis-interval-min',
+      'Interval Min',
+      'Minimum ticks between crises. Shorter = more frequent events.',
+      'crisisIntervalMin',
+      500, 5000, 100,
+      (v) => `${v}t`,
+    ));
+
+    details.append(makeSlider(
+      'economy-crisis-interval-max',
+      'Interval Max',
+      'Maximum ticks between crises. Must stay above Interval Min.',
+      'crisisIntervalMax',
+      1000, 10000, 100,
+      (v) => `${v}t`,
+    ));
+
+    details.append(makeSlider(
+      'economy-crisis-duration',
+      'Duration',
+      'How many ticks each crisis lasts once it begins.',
+      'crisisDuration',
+      100, 2000, 50,
+      (v) => `${v}t`,
+    ));
+
+    details.append(makeSlider(
+      'economy-crisis-intensity',
+      'Intensity',
+      'Severity multiplier for crisis effects. 1.0 = normal; 3.0 = brutal.',
+      'crisisIntensity',
+      0.5, 3.0, 0.1,
+      (v) => v.toFixed(1),
     ));
 
     return details;

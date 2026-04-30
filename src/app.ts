@@ -37,6 +37,8 @@
 
 import { CellType }                           from './simulation/GridState.js';
 import { variantRegistry }                    from './simulation/genetics/VariantRegistry.js';
+import { atpSystem }                          from './simulation/economy/ATPSystem.js';
+import { CrisisScheduler }                    from './simulation/events/CrisisScheduler.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -123,6 +125,27 @@ export class App {
    * At 60 Hz this matches render FPS closely enough for the status bar.
    */
   private readonly _fpsCounter = new FpsCounter(60);
+
+  // --- Phase 23: Economy & Crisis -------------------------------------------
+
+  /**
+   * Crisis event scheduler.  Tracks tick counts, fires warnings and crises,
+   * and pushes config overrides to the SimulationWorker.
+   * Created once in the constructor; reset whenever the grid is reset.
+   */
+  private readonly _crisisScheduler: CrisisScheduler;
+
+  /**
+   * True after the first time total live cells exceed 10 000.
+   * Used to fire the 'populationBoom' milestone exactly once per simulation.
+   */
+  private _populationBoomFired = false;
+
+  /**
+   * Maps variantId → tick on which it first appeared.
+   * Used to detect the 'longLivedVariant' milestone (1 000+ ticks alive).
+   */
+  private readonly _variantBirthTick = new Map<number, number>();
 
   /**
    * @param canvas - The `<canvas>` element to hand off to the RenderWorker.
@@ -232,6 +255,29 @@ export class App {
       type: 'renderModeChange',
       mode: appState.renderMode,
     } as RenderWorkerInMsg);
+
+    // -----------------------------------------------------------------------
+    // 8. Phase 23: Initialise the crisis scheduler.
+    //    Passes callbacks so the scheduler can push config updates to the sim
+    //    worker and paint cells on the grid without holding references to the
+    //    workers directly.
+    // -----------------------------------------------------------------------
+    this._crisisScheduler = new CrisisScheduler(
+      // configUpdate callback: sends the mutated config to the sim worker.
+      (cfg) => {
+        const msg: SimWorkerInMsg = { type: 'configUpdate', config: cfg };
+        this._simWorker.postMessage(msg);
+      },
+      // paintCell callback: paints a single crisis cell (fire / ice).
+      (cx, cy, cellTypeNum) => {
+        const idx = cx + cy * appState.gridWidth;
+        const msg: SimWorkerInMsg = {
+          type: 'editCmd', index: idx, cellType: cellTypeNum, energy: 1.0,
+        };
+        this._simWorker.postMessage(msg);
+      },
+    );
+    this._crisisScheduler.setGridSize(appState.gridWidth, appState.gridHeight);
   }
 
   // -------------------------------------------------------------------------
@@ -264,6 +310,17 @@ export class App {
    */
   paintCell(cellX: number, cellY: number, type: CellType): void {
     const idx = cellX + cellY * appState.gridWidth;
+
+    // Phase 23: check ATP cost before painting. When economy mode is enabled,
+    // return early (without painting) if the player cannot afford the cell.
+    // The active drawing tool name is resolved from AppState so the cost table
+    // lookup matches what the user sees in the UI.
+    const toolName = appState.activeTool;
+    const cost     = atpSystem.costFor(toolName);
+    if (!atpSystem.spend(cost)) {
+      // Insufficient ATP — do not paint, UI will reflect the depleted pool.
+      return;
+    }
 
     // For Life cells, use the configured initial energy; obstacles default to
     // their own energy logic inside SimulationWorker.applyEdit.
@@ -368,6 +425,20 @@ export class App {
             sporeCells:    msg.sporeCells,
           });
         }
+
+        // Phase 23: passive ATP income from living cells every tick.
+        const totalLive = msg.liveCells + msg.variantCells;
+        atpSystem.onTick(totalLive);
+
+        // Phase 23: population boom milestone — fires once when total live
+        // cells first exceeds 10 000 in a given simulation run.
+        if (!this._populationBoomFired && totalLive >= 10_000) {
+          this._populationBoomFired = true;
+          atpSystem.onMilestone('populationBoom', msg.tickNum);
+        }
+
+        // Phase 23: drive the crisis scheduler every tick.
+        this._crisisScheduler.onTick(appState.config, msg.tickNum);
         break;
       }
 
@@ -383,6 +454,9 @@ export class App {
           msg.tick,
           msg.genome,
         );
+        // Phase 23: award ATP for each new variant lineage + track birth tick.
+        atpSystem.onMilestone('newVariant', msg.tick);
+        this._variantBirthTick.set(msg.variantId, msg.tick);
         break;
 
       case 'variantExtinct':
@@ -402,6 +476,29 @@ export class App {
           census:         msg.data,
           livingVariants: variantRegistry.livingCount,
         });
+
+        // Phase 23: detect variants that have survived >= 1 000 ticks.
+        // We check at census time (every censusInterval ticks) so the overhead
+        // is negligible and we don't need to scan on every tick message.
+        for (const [variantId, birthTick] of this._variantBirthTick) {
+          if (msg.data.counts[variantId] > 0) {
+            const age = msg.data.tick - birthTick;
+            if (age >= 1000) {
+              // Award once per variant by removing from the tracking map.
+              this._variantBirthTick.delete(variantId);
+              atpSystem.onMilestone('longLivedVariant', msg.data.tick);
+            }
+          } else {
+            // Variant is extinct — stop tracking it.
+            this._variantBirthTick.delete(variantId);
+          }
+        }
+        break;
+
+      case 'milestone':
+        // Phase 23: a simulation milestone was detected inside the worker.
+        // Forward to the ATP system to award the bonus.
+        atpSystem.onMilestone(msg.kind, msg.tick);
         break;
 
       case 'environmentApplied':
@@ -483,6 +580,12 @@ export class App {
       // all extinct lineage history is cleared for the fresh grid.
       variantRegistry.bootstrap();
 
+      // Phase 23: reset milestone state and crisis scheduler for the fresh run.
+      this._populationBoomFired = false;
+      this._variantBirthTick.clear();
+      atpSystem.reset(atpSystem.max); // restore full pool on reset
+      this._crisisScheduler.reset(appState.config);
+
       const resetMsg: SimWorkerInMsg = {
         type:          'reset',
         density:       appState.initialDensity,
@@ -555,6 +658,21 @@ export class App {
     bus.on('cinematicChange', (payload) => {
       const msg: RenderWorkerInMsg = { type: 'cinematicChange', ...payload };
       this._renderWorker.postMessage(msg);
+    });
+
+    // Phase 23: economy settings from the ControlPanel Economy section.
+    // ATPSystem and CrisisScheduler live on the main thread so they are updated
+    // directly here rather than via worker postMessage.
+    bus.on('economySettingsChange', (payload) => {
+      atpSystem.reconfigure(payload.atpStart, payload.atpMax, payload.atpIncomeRate);
+      atpSystem.setEnabled(payload.atpEnabled);
+      this._crisisScheduler.setEnabled(payload.crisisEnabled, appState.config);
+      this._crisisScheduler.setParams(
+        payload.crisisIntervalMin,
+        payload.crisisIntervalMax,
+        payload.crisisDuration,
+        payload.crisisIntensity,
+      );
     });
 
     // Round 5: environment preset application.

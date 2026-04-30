@@ -18,7 +18,7 @@
 
 import { type TickStats } from '../simulation/SimulationEngine.js';
 import { type SimulationConfig } from '../simulation/config/SimulationConfig.js';
-import { type RenderMode, type VariantCensus } from '../workers/workerBridge.js';
+import { type RenderMode, type VariantCensus, type CrisisType, type MilestoneKind } from '../workers/workerBridge.js';
 import type { BackgroundType } from '../rendering/BackgroundRenderer.js';
 
 // ---------------------------------------------------------------------------
@@ -199,6 +199,82 @@ export interface EventMap {
     chromaticAberration: boolean;
     /** Radial darkening at canvas perimeter. */
     vignette: boolean;
+  };
+
+  // --- Phase 23: Economy & Crisis Events ------------------------------------
+
+  /**
+   * Phase 23: fired when the Economy panel sliders change.
+   * Consumed by App, which applies the new settings to ATPSystem and
+   * CrisisScheduler without those classes needing a reference to the panel.
+   */
+  economySettingsChange: {
+    /** True when economy spending / earning constraints are active. */
+    atpEnabled: boolean;
+    /** Starting ATP amount on reset [100, 1000]. */
+    atpStart: number;
+    /** Maximum ATP pool size [500, 2000]. */
+    atpMax: number;
+    /** Passive income per live cell per tick [0, 0.001]. */
+    atpIncomeRate: number;
+    /** True when crisis events fire at random intervals. */
+    crisisEnabled: boolean;
+    /** Minimum ticks between crises [500, 5000]. */
+    crisisIntervalMin: number;
+    /** Maximum ticks between crises [1000, 10000]. */
+    crisisIntervalMax: number;
+    /** How many ticks a crisis lasts [100, 2000]. */
+    crisisDuration: number;
+    /** Crisis severity multiplier [0.5, 3.0]. */
+    crisisIntensity: number;
+  };
+
+  /**
+   * Phase 23: fired whenever the ATP pool changes (income tick, cell painted,
+   * milestone reward, or crisis reward).
+   * Consumed by ATPDisplay to update the progress bar and numeric readout.
+   */
+  atpChange: {
+    /** Current ATP in the pool [0, atpMax]. */
+    atp: number;
+    /** Maximum pool capacity. */
+    atpMax: number;
+    /** True while the economy mode is active. */
+    enabled: boolean;
+  };
+
+  /**
+   * Phase 23: fired when a crisis begins, advances its countdown, or ends.
+   * Consumed by CrisisOverlay to show/hide the warning panel and by App to
+   * apply or restore config overrides.
+   */
+  crisisChange: {
+    /** Currently active crisis type, or 'none' when no crisis is running. */
+    crisis: CrisisType | 'none';
+    /**
+     * Ticks remaining in the crisis (countdown or duration).
+     * Negative when in the warning phase (counting down to onset).
+     * Positive during the active crisis (counting down to end).
+     * Zero means the crisis has just ended.
+     */
+    ticksRemaining: number;
+    /** True while a crisis is actively damaging the simulation. */
+    active: boolean;
+  };
+
+  /**
+   * Phase 23: fired when the simulation crosses a significant milestone.
+   * Consumed by ATPSystem (to award ATP) and CrisisOverlay (to show a toast).
+   */
+  milestoneAchieved: {
+    /** Which milestone category was reached. */
+    kind: MilestoneKind;
+    /** ATP added to the pool as a reward. */
+    atpReward: number;
+    /** Human-readable description shown in the milestone toast. */
+    message: string;
+    /** Simulation tick on which the milestone occurred. */
+    tick: number;
   };
 
 }

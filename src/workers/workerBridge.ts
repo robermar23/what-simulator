@@ -31,6 +31,50 @@ import { type BackgroundType }   from '../rendering/BackgroundRenderer.js';
 import { type ObstacleSpec }     from '../simulation/generators/types.js';
 
 // ---------------------------------------------------------------------------
+// Phase 23 — Economy & Crisis Events
+// ---------------------------------------------------------------------------
+
+/**
+ * All crisis event types that can sweep the simulation.
+ *
+ * Each type maps to a distinct set of per-tick engine effects and/or
+ * SimulationConfig overrides applied for the duration of the crisis.
+ *
+ * | Type              | Primary Mechanic                                     |
+ * |-------------------|------------------------------------------------------|
+ * | solarFlare        | Grid-wide genome bit-flips; radiation storm          |
+ * | desiccation       | Energy decay tripled; water evaporates               |
+ * | antibioticFlood   | Grid-wide antibiotic kill checks per tick            |
+ * | nutrientDrought   | Nutrient emission suppressed; starvation pressure    |
+ * | predatorSurge     | Predator genome threshold halved; more predators     |
+ * | iceAge            | Spread rate collapsed 70%; motility halted           |
+ * | fireStorm         | Random fire cells placed at crisis onset             |
+ * | plagueSweep       | Point mutation rate × 10; hypermutation epoch        |
+ */
+export type CrisisType =
+  | 'solarFlare'
+  | 'desiccation'
+  | 'antibioticFlood'
+  | 'nutrientDrought'
+  | 'predatorSurge'
+  | 'iceAge'
+  | 'fireStorm'
+  | 'plagueSweep';
+
+/**
+ * Phase 23: milestone categories that award ATP bonuses when reached.
+ *
+ * Milestones are detected on the main thread from incoming worker messages
+ * (tick stats, variantCreated, etc.) and converted to ATP rewards by the
+ * ATPSystem.
+ */
+export type MilestoneKind =
+  | 'newVariant'          // a new genetic lineage has speciated (+50 ATP)
+  | 'populationBoom'      // population exceeds 10 000 cells for the first time (+25 ATP)
+  | 'survivedCrisis'      // colony persists through a full crisis duration (+100 ATP)
+  | 'longLivedVariant';   // a variant lineage passes 1 000 ticks alive (+75 ATP)
+
+// ---------------------------------------------------------------------------
 // Round 2 — Population genetics types
 // ---------------------------------------------------------------------------
 
@@ -223,7 +267,26 @@ export type SimWorkerOutMsg =
    * SAB updated).  The main thread uses this to re-enable the UI and
    * trigger an `invalidate` on the RenderWorker.
    */
-  | { type: 'environmentApplied' };
+  | { type: 'environmentApplied' }
+
+  /**
+   * Phase 23: posted when the simulation crosses a significant milestone
+   * that rewards the player with ATP.
+   *
+   * Milestones are detected inside the SimulationWorker's tick/census logic
+   * and posted once per milestone event.  The main thread's {@link ATPSystem}
+   * converts each `milestoneKind` to an ATP reward and emits a UI notification.
+   *
+   * @example
+   * { type: 'milestone', kind: 'newVariant', tick: 342 }
+   */
+  | {
+      type:  'milestone';
+      /** Which milestone category was reached. */
+      kind:  MilestoneKind;
+      /** Tick on which the milestone occurred. */
+      tick:  number;
+    };
 
 // ---------------------------------------------------------------------------
 // Main thread → RenderWorker

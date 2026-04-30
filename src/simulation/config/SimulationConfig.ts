@@ -587,6 +587,42 @@ export interface SimulationConfig {
    * Range: [50, 2000].  Default: 500.
    */
   sporeLifetime: number;
+
+  // --- Phase 23: Crisis Events (optional — engine falls back to 'none') ------
+
+  /**
+   * Phase 23: which extinction-level crisis is currently active.
+   *
+   * The CrisisScheduler on the main thread writes this field when a crisis
+   * begins and resets it to 'none' when the crisis ends. The SimulationEngine
+   * reads it each tick and applies additional per-tick effects beyond those
+   * achievable via config-value overrides alone.
+   *
+   * Effects handled IN THE ENGINE (require per-cell iteration):
+   *   - solarFlare      : random genome bit-flips across all Life cells
+   *   - antibioticFlood : grid-wide antibiotic damage regardless of proximity
+   *
+   * Effects handled by CONFIG OVERRIDE (CrisisScheduler mutates the config):
+   *   - desiccation    : energyDecayRate * 3
+   *   - nutrientDrought: nutrientBoost to 0
+   *   - predatorSurge  : predatorGenomeThreshold halved
+   *   - iceAge         : spreadRate * 0.3, motilityRate to 0
+   *   - fireStorm      : random fire cells painted at crisis start
+   *   - plagueSweep    : pointMutationRate * 10
+   *
+   * Optional — defaults to 'none' when absent (pre-Phase-23 configs).
+   */
+  activeCrisis?: 'none' | 'solarFlare' | 'desiccation' | 'antibioticFlood'
+    | 'nutrientDrought' | 'predatorSurge' | 'iceAge' | 'fireStorm' | 'plagueSweep';
+
+  /**
+   * Phase 23: how severe the active crisis is.
+   * Multiplies per-tick crisis damage applied in the SimulationEngine.
+   *
+   * Range: [0.5, 3.0]. Default: 1.0.
+   * Optional — defaults to 1.0 when absent.
+   */
+  crisisIntensity?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -2464,6 +2500,222 @@ export const Presets = {
     };
   },
 
+  // ---------------------------------------------------------------------------
+  // Phase 23 presets — tuned for the Crisis Events economy system
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Crisis Survivor — wide phenotypic variance so some cells always resist.
+   * Paired with all crisis types enabled; population crashes and rebounds.
+   * High mutation + adaptive inheritance = rapid post-crisis adaptation.
+   */
+  crisisSurvivor(): SimulationConfig {
+    return {
+      spreadRate:                  0.50,
+      energyDecayRate:             0.004,
+      reproductionThreshold:       0.10,
+      initialEnergy:               0.90,
+      mutationRate:                0.0,
+      pointMutationRate:           0.010, // high diversity = crisis insurance
+      juvenileThreshold:           15,
+      senescentThreshold:          350,
+      apoptosisBoost:              0.025,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.55,
+      variantEnergyDecayRate:      0.005,
+      variantReproductionThreshold: 0.10,
+      variantInitialEnergy:        0.85,
+      competitionStrength:         0.35,
+      toxinResistance:             0.30, // baseline toxin tolerance
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.60,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.025, // absorbs well — builds reserves
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.004,
+      censusInterval:              8,
+      mutagenBoost:                4.0,  // mutagens accelerate crisis adaptation
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.006, // partially radiation-hardened
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.04,
+      colonyBoost:                 0.014,
+      adaptiveMutationBias:        true,  // crises drive directed adaptation
+      chemotaxisWeight:            0.40,
+      signalDiffusion:             0.82,
+      quorumThreshold:             4,
+      adaptiveInheritanceRate:     0.55, // strong Lamarckian inheritance post-crisis
+      motilityRate:                0.20, // moderate motility to escape crisis zones
+      motilityThreshold:           0.25,
+      motilityDamping:             0.18,
+      chemotaxisMotilityFraction:  0.55,
+      wasteSecretionRate:          0.008,
+      pheromoneSecretionRate:      0.04,
+      nutrientChemotaxis:          0.35,
+      pheromoneChemotaxis:         0.25,
+      wasteAvoidance:              0.20,
+      alarmFlight:                 0.50, // flee alarm zones (predators + crises)
+      chemicalDiffusionRate:       0.08,
+      chemicalDecayRate:           0.03,
+      chemQuorumThreshold:         0.55,
+      quorumActivationEnergy:      1.6,
+      predatorGenomeThreshold:     0,
+      predatorFeedEnergy:          0.4,
+      predatorAttackStrength:      0.3,
+      predatorSpreadRate:          0.6,
+      predatorEnergyDecayMultiplier: 1.8,
+      sporeLifetime:               700, // long dormancy — crises can be outlasted
+    };
+  },
+
+  /**
+   * Feast or Famine — thrives in nutrient-boom/drought cycles.
+   * Rapid nutrient absorption and energy storage; survives droughts via spores.
+   */
+  feastOrFamine(): SimulationConfig {
+    return {
+      spreadRate:                  0.40,
+      energyDecayRate:             0.003,
+      reproductionThreshold:       0.08,
+      initialEnergy:               1.00, // starts fully fuelled
+      mutationRate:                0.0,
+      pointMutationRate:           0.004,
+      juvenileThreshold:           20,
+      senescentThreshold:          500,
+      apoptosisBoost:              0.030,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.45,
+      variantEnergyDecayRate:      0.004,
+      variantReproductionThreshold: 0.08,
+      variantInitialEnergy:        0.95,
+      competitionStrength:         0.20,
+      toxinResistance:             0.10,
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.70,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.04,  // maximum absorption during feast
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.008,
+      fireBurnRate:                0.005,
+      censusInterval:              10,
+      mutagenBoost:                3.0,
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.008,
+      antibioticStrength:          0.12,
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.05,
+      colonyBoost:                 0.015,
+      adaptiveMutationBias:        false,
+      chemotaxisWeight:            0.70, // races toward nutrients
+      signalDiffusion:             0.85,
+      quorumThreshold:             3,
+      adaptiveInheritanceRate:     0.30,
+      motilityRate:                0.35, // rushes to nutrients
+      motilityThreshold:           0.20,
+      motilityDamping:             0.15,
+      chemotaxisMotilityFraction:  0.70, // nutrient-gradient following dominant
+      wasteSecretionRate:          0.005,
+      pheromoneSecretionRate:      0.06,
+      nutrientChemotaxis:          0.80, // strong attraction to food
+      pheromoneChemotaxis:         0.20,
+      wasteAvoidance:              0.30, // flee exhaust zones
+      alarmFlight:                 0.35,
+      chemicalDiffusionRate:       0.10,
+      chemicalDecayRate:           0.02,
+      chemQuorumThreshold:         0.40,
+      quorumActivationEnergy:      2.0,  // biofilm mode stores energy during feast
+      predatorGenomeThreshold:     0,
+      predatorFeedEnergy:          0.4,
+      predatorAttackStrength:      0.3,
+      predatorSpreadRate:          0.6,
+      predatorEnergyDecayMultiplier: 1.8,
+      sporeLifetime:               900, // outlasts extended drought crises
+    };
+  },
+
+  /**
+   * Immune Legion — extreme stress resistance across all obstacle types.
+   * Slow-moving, heavily armoured colony.  Hard to kill; hard to grow.
+   * Survives any crisis at the cost of explosive expansion.
+   */
+  immuneLegion(): SimulationConfig {
+    return {
+      spreadRate:                  0.25, // slow but unstoppable
+      energyDecayRate:             0.002,
+      reproductionThreshold:       0.12,
+      initialEnergy:               0.95,
+      mutationRate:                0.0,
+      pointMutationRate:           0.002, // low mutation — tight adaptation
+      juvenileThreshold:           50,   // long maturation
+      senescentThreshold:          800,  // long-lived cells
+      apoptosisBoost:              0.035,
+      neighbourhoodMode:           'moore',
+      overpopulationLimit:         8,
+      underpopulationLimit:        0,
+      variantSpreadRate:           0.30,
+      variantEnergyDecayRate:      0.003,
+      variantReproductionThreshold: 0.12,
+      variantInitialEnergy:        0.90,
+      competitionStrength:         0.15,
+      toxinResistance:             0.80, // near-total toxin immunity
+      nutrientAbsorption:          1.00,
+      gravityResponse:             0.50,
+      toxinStrength:               0.05,
+      toxinDurability:             10,
+      nutrientBoost:               0.020,
+      nutrientDecayRate:           0.001,
+      barrierLifetime:             200,
+      gravityStrength:             0.5,
+      drainRate:                   0.01,
+      fireBurnRate:                0.004,
+      censusInterval:              12,
+      mutagenBoost:                1.20, // resistant to mutagenic exposure
+      mutagenDecayRate:            0.002,
+      radioWasteDamage:            0.002, // radiation shielded
+      antibioticStrength:          0.06, // highly antibiotic resistant
+      antibioticDecayRate:         0.001,
+      rewinderStrength:            0.02, // resists genome-rewinding
+      colonyBoost:                 0.012,
+      adaptiveMutationBias:        true,  // mutations biased toward resistance
+      chemotaxisWeight:            0.25,
+      signalDiffusion:             0.78,
+      quorumThreshold:             5,
+      adaptiveInheritanceRate:     0.75, // very strong Lamarckian inheritance
+      motilityRate:                0.0,  // immobile — fortified positions
+      motilityThreshold:           0.3,
+      motilityDamping:             0.2,
+      chemotaxisMotilityFraction:  0.5,
+      wasteSecretionRate:          0.005,
+      pheromoneSecretionRate:      0.03,
+      nutrientChemotaxis:          0.20,
+      pheromoneChemotaxis:         0.30,
+      wasteAvoidance:              0.10,
+      alarmFlight:                 0.20, // minimal panic — stands firm
+      chemicalDiffusionRate:       0.06,
+      chemicalDecayRate:           0.04,
+      chemQuorumThreshold:         0.70,
+      quorumActivationEnergy:      2.2,
+      predatorGenomeThreshold:     0,
+      predatorFeedEnergy:          0.4,
+      predatorAttackStrength:      0.3,
+      predatorSpreadRate:          0.6,
+      predatorEnergyDecayMultiplier: 1.8,
+      sporeLifetime:               1200, // maximum dormancy insurance
+    };
+  },
+
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -2734,5 +2986,41 @@ export const LIFE_PRESETS: readonly LifePreset[] = [
       recommendedEnvironment: 'huntingGrounds',
     },
     config: Presets.swarmIntelligence(),
+  },
+
+  // --- Phase 23 — Crisis Economy presets -------------------------------------
+
+  {
+    key: 'crisisSurvivor',
+    meta: {
+      name:                   'Crisis Survivor',
+      description:            'High mutation rate and adaptive inheritance create broad phenotypic variance. Some cells always resist any crisis — watch populations crash and rebound.',
+      difficulty:             4,
+      archetype:              'resilient',
+      recommendedEnvironment: 'dormancyDesert',
+    },
+    config: Presets.crisisSurvivor(),
+  },
+  {
+    key: 'feastOrFamine',
+    meta: {
+      name:                   'Feast or Famine',
+      description:            'Maximum nutrient chemotaxis and rush-to-food motility. Thrives during nutrient booms; survives droughts via long-duration spore dormancy.',
+      difficulty:             3,
+      archetype:              'aggressive',
+      recommendedEnvironment: 'chemicalBog',
+    },
+    config: Presets.feastOrFamine(),
+  },
+  {
+    key: 'immuneLegion',
+    meta: {
+      name:                   'Immune Legion',
+      description:            'Near-total toxin resistance, radiation shielding, and antibiotic immunity. Slow to expand but nearly indestructible — the ultimate crisis-proof fortress.',
+      difficulty:             5,
+      archetype:              'resilient',
+      recommendedEnvironment: 'antibioticGauntlet',
+    },
+    config: Presets.immuneLegion(),
   },
 ];
